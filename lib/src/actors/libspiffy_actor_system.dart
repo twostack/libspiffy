@@ -44,6 +44,7 @@ import 'payment_coordinator_actor.dart';
 import 'benford_coordinator_actor.dart';
 import 'payment_channel_manager_actor.dart';
 import 'import_actor.dart';
+import 'wallet_coordinator.dart';
 import 'wallet_coordinator_actor.dart';
 import 'coordinator_messages.dart' show CoordinatorEvent;
 
@@ -1339,16 +1340,22 @@ class LibSpiffyActorSystem {
 
   /// THE canonical interface for third-party apps.
   ///
-  /// Send coordinator commands to this actor:
   /// ```dart
-  /// libspiffy.coordinator.tell(CreateWalletCommand(...));
+  /// final created = await libspiffy.coordinator
+  ///     .ask(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet'));
+  /// libspiffy.coordinator.tell(StoreHeadersCommand(headers: headers));
+  /// libspiffy.coordinator.on<BalanceUpdatedEvent>(walletId: 'my-wallet').listen(render);
   /// ```
-  ActorRef get coordinator {
-    if (_coordinatorActor == null) {
+  WalletCoordinator get coordinator {
+    final ref = _coordinatorActor;
+    final actor = _coordinatorInstance;
+    if (ref == null || actor == null) {
       throw StateError('LibSpiffy actor system not initialized');
     }
-    return _coordinatorActor!;
+    return _coordinator ??= WalletCoordinator(ref, actor);
   }
+
+  WalletCoordinator? _coordinator;
 
   /// Event stream from the coordinator. Subscribe for async results.
   ///
@@ -1809,6 +1816,7 @@ class LibSpiffyActorSystem {
     _importActor = null;
     _coordinatorActor = null;
     _coordinatorInstance = null;
+    _coordinator = null;
     _headerSyncActorInstance = null;
     _walletProjectionRef = null;
     _invoiceProjectionRef = null;

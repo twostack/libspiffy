@@ -40,7 +40,7 @@ Stream<T> ofType<T extends CoordinatorEvent>(Stream<CoordinatorEvent> stream) {
 void main() {
   // Alice's system
   late LibSpiffyActorSystem aliceSystem;
-  late ActorRef aliceCoordinator;
+  late WalletCoordinator aliceCoordinator;
   late Stream<CoordinatorEvent> aliceEvents;
   late Directory aliceDir;
   late Isar aliceIsar;
@@ -48,7 +48,7 @@ void main() {
 
   // Bob's system
   late LibSpiffyActorSystem bobSystem;
-  late ActorRef bobCoordinator;
+  late WalletCoordinator bobCoordinator;
   late Stream<CoordinatorEvent> bobEvents;
   late Directory bobDir;
   late Isar bobIsar;

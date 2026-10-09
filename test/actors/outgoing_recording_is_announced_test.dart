@@ -216,17 +216,19 @@ void main() {
     });
 
     // The property bead libspiffy-kl4i established, which this change must
-    // not take away: a refusal has no TransactionRecordedResponse, it comes
-    // back as WalletCommandFailed and is announced as an error.
-    test('a recording the wallet cannot route still reaches the app as an error', () async {
+    // not take away: a refusal reaches the app. The wallet answers it with
+    // WalletCommandFailed, and since bead libspiffy-xc78.1 it is the
+    // recording's own reply that says so.
+    test('a recording the wallet cannot route still reaches the app, as a failed recording', () async {
       final tx = payment(paid: 40000);
 
       coordinator.tell(record(tx, paid: 40000, walletId: 'no-such-wallet'));
 
-      final failed = await nextEvent<ErrorEvent>();
+      final failed = await nextEvent<TransactionRecordedEvent>();
       expect(failed.walletId, 'no-such-wallet');
-      expect(failed.message, contains('Wallet not found'));
-      expect(events.whereType<TransactionRecordedEvent>(), isEmpty);
+      expect(failed.success, isFalse);
+      expect(failed.error, contains('Wallet not found'));
+      expect(failed.amountSatoshis, isNull);
     });
   });
 

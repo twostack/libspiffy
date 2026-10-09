@@ -22,6 +22,10 @@ class BlockHeadersReceivedMessage implements SPVMessage, Message {
   /// whether the peer has more; headers from a `StoreHeadersCommand` do
   /// neither.
   final bool answersGetHeaders;
+
+  /// The `StoreHeadersCommand` that handed these headers in; null for a
+  /// peer's.
+  final String? requestId;
   final DateTime receivedAt;
   final String _correlationId;
   final ActorRef? _replyTo;
@@ -33,6 +37,7 @@ class BlockHeadersReceivedMessage implements SPVMessage, Message {
     required this.startHeight,
     this.isReorganization = false,
     this.answersGetHeaders = true,
+    this.requestId,
     DateTime? receivedAt,
     String? correlationId,
     ActorRef? replyTo,

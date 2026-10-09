@@ -132,7 +132,7 @@ class HeaderSyncActor extends Actor {
         _coordinator = message.coordinator;
         _report();
       } else if (message is GetHeaderSyncStatusQuery) {
-        _report(queryId: message.queryId);
+        _report(requestId: message.requestId);
       } else {
         _logger.warning('HeaderSyncActor received unknown message: ${message.runtimeType}');
       }
@@ -348,6 +348,7 @@ class HeaderSyncActor extends Actor {
         lastHeight: lastStoredHeight ?? 0,
         rejected: failureCount,
         firstRejection: firstRejection,
+        requestId: msg.requestId,
       ));
 
       // A reorganization first: SPVActor takes back confirmations that rested
@@ -382,6 +383,20 @@ class HeaderSyncActor extends Actor {
     } catch (e) {
       _logger.severe('Error processing headers from ${msg.peerId}: $e');
       if (fromPeer) _syncRequestedAt = null; // Clear flag on error
+      // A StoreHeadersCommand is answered either way: none of its headers
+      // were stored.
+      if (!fromPeer) {
+        _report(batch: HeaderBatchOutcome(
+          fromPeer: false,
+          source: msg.peerId,
+          stored: 0,
+          firstHeight: 0,
+          lastHeight: 0,
+          rejected: msg.headers.length,
+          firstRejection: 'The headers could not be processed: $e',
+          requestId: msg.requestId,
+        ));
+      }
       
       if (context.sender != null) {
         context.sender!.tell(SPVErrorMessage(
@@ -733,8 +748,8 @@ class HeaderSyncActor extends Actor {
       networkHeightOf(peers ?? _peers(), _headerChain.bestHeight);
 
   /// Tells the coordinator where sync stands, after [batch] or in answer
-  /// to the query [queryId].
-  void _report({HeaderBatchOutcome? batch, String? queryId}) {
+  /// to the query [requestId].
+  void _report({HeaderBatchOutcome? batch, String? requestId}) {
     final coordinator = _coordinator;
     if (coordinator == null) return;
     final peers = _peers();
@@ -744,7 +759,7 @@ class HeaderSyncActor extends Actor {
       synced: _synced,
       peerCount: peers.length,
       batch: batch,
-      queryId: queryId,
+      requestId: requestId,
     ));
   }
 

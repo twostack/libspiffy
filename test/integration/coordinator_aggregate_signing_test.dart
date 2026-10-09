@@ -802,13 +802,13 @@ void main() {
     }
 
     Future<coord.BalanceResponse> balance(String walletId) async {
-      final queryId = 'balance-${DateTime.now().microsecondsSinceEpoch}';
+      final requestId = 'balance-${DateTime.now().microsecondsSinceEpoch}';
       final response = libspiffy.coordinatorEvents!
-          .where((e) => e is coord.BalanceResponse && e.queryId == queryId)
+          .where((e) => e is coord.BalanceResponse && e.requestId == requestId)
           .cast<coord.BalanceResponse>()
           .first
           .timeout(const Duration(seconds: 10));
-      libspiffy.coordinator.tell(coord.GetBalanceQuery(walletId: walletId, queryId: queryId));
+      libspiffy.coordinator.tell(coord.GetBalanceQuery(walletId: walletId, requestId: requestId));
       return response;
     }
 

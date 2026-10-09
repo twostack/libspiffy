@@ -116,7 +116,7 @@ void main() {
   }
 
   Future<DeferredPaymentsResponse> list(GetDeferredPaymentsQuery query) =>
-      send<DeferredPaymentsResponse>(query, (e) => e.queryId == query.correlationId);
+      send<DeferredPaymentsResponse>(query, (e) => e.requestId == query.correlationId);
 
   /// Every wallet journal event replayed into a fresh read model.
   Future<InMemoryWalletStorage> rebuildFromJournal() async {
@@ -136,7 +136,7 @@ void main() {
   test('list and search, check now, broadcast ourselves: outstanding -> seen, the input spent once', () async {
     final ready = await pay('inv-list');
 
-    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'q1'));
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, requestId: 'q1'));
     expect(listed.nextCursor, isNull);
     final detail = listed.payments.single;
     expect(detail.txid, ready.txid);
@@ -153,7 +153,7 @@ void main() {
 
     // Search: not older than an hour; by invoice and recipient; not checked yet.
     expect((await list(GetDeferredPaymentsQuery(
-            walletId: walletId, olderThan: const Duration(hours: 1), queryId: 'q2')))
+            walletId: walletId, olderThan: const Duration(hours: 1), requestId: 'q2')))
         .payments, isEmpty);
     expect((await list(GetDeferredPaymentsQuery(
             walletId: walletId,
@@ -161,7 +161,7 @@ void main() {
             recipientAddress: _recipient,
             lastNetworkStatuses: const {DeferredNetworkStatus.unchecked},
             includeBeef: false,
-            queryId: 'q3')))
+            requestId: 'q3')))
         .payments
         .single
         .beef, isNull);
@@ -176,7 +176,7 @@ void main() {
     expect((await storage().getDeferredPayment(walletId, ready.txid))!.lastCheckedAt, isNotNull,
         reason: 'the answer came before the read model had the status');
     final notFound = (await list(GetDeferredPaymentsQuery(
-            walletId: walletId, lastNetworkStatuses: const {DeferredNetworkStatus.notFound}, queryId: 'q4')))
+            walletId: walletId, lastNetworkStatuses: const {DeferredNetworkStatus.notFound}, requestId: 'q4')))
         .payments
         .single;
     expect(notFound.state, DeferredPaymentState.outstanding);
@@ -199,9 +199,9 @@ void main() {
         (e) => e.requestId == 'b2');
     expect(again.success, isTrue);
 
-    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'q5'))).payments, isEmpty,
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, requestId: 'q5'))).payments, isEmpty,
         reason: 'no longer outstanding');
-    final resolved = await list(GetDeferredPaymentsQuery(walletId: walletId, includeResolved: true, queryId: 'q6'));
+    final resolved = await list(GetDeferredPaymentsQuery(walletId: walletId, includeResolved: true, requestId: 'q6'));
     expect(resolved.payments.single.state, DeferredPaymentState.seen);
 
     // Cancelling a payment the network has is refused.
@@ -307,7 +307,7 @@ void main() {
     expect(held.status, UTXOStatus.reserved);
     expect(held.reservedByTxId, first.txid);
     expect(held.reservationExpiresAt, isNull, reason: 'a hold, not an expiring reservation');
-    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'r2'));
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, requestId: 'r2'));
     expect(listed.payments.map((p) => p.txid), [first.txid]);
 
     // History: recorded once, held, cancelled, held again.
@@ -383,7 +383,7 @@ void main() {
 
     expect((await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus,
         DeferredNetworkStatus.doubleSpendAttempted);
-    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'ds2'));
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, requestId: 'ds2'));
     // Old code: failed (not listed as outstanding) and its input released.
     expect(listed.payments.map((p) => (p.txid, p.state, p.lastNetworkStatus)),
         [(ready.txid, DeferredPaymentState.outstanding, DeferredNetworkStatus.doubleSpendAttempted)]);
@@ -430,7 +430,7 @@ void main() {
     expect(checked.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
     expect(checked.competingTxids, [rival]);
 
-    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'pk2'));
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, requestId: 'pk2'));
     expect(listed.payments.single.txid, ready.txid);
     expect(listed.payments.single.state, DeferredPaymentState.outstanding);
     expect(listed.payments.single.competingTxids, [rival]);
@@ -460,7 +460,7 @@ void main() {
     expect((await funding()).status, UTXOStatus.available);
     expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.failed);
     final failed = await list(GetDeferredPaymentsQuery(
-        walletId: walletId, states: const {DeferredPaymentState.failed}, queryId: 'q7'));
+        walletId: walletId, states: const {DeferredPaymentState.failed}, requestId: 'q7'));
     expect(failed.payments.single.lastNetworkStatus, DeferredNetworkStatus.rejected);
 
     final rebuilt = await rebuildFromJournal();
@@ -519,7 +519,7 @@ void main() {
     final original = (await storage().getTransaction(ready.txid, walletId: walletId))!;
     expect(original.rawHex, isNotEmpty);
     final listed = await list(
-        GetDeferredPaymentsQuery(walletId: walletId, includeResolved: true, queryId: 'rc2'));
+        GetDeferredPaymentsQuery(walletId: walletId, includeResolved: true, requestId: 'rc2'));
     expect(listed.payments.map((p) => (p.txid, p.state)).toSet(), {
       (ready.txid, DeferredPaymentState.reclaimed),
       (reclaimTxid, DeferredPaymentState.seen),
@@ -649,9 +649,9 @@ void main() {
     // Distinct amounts: the same coin to the same recipient for the same amount
     // is the same transaction, and a cancelled payment recorded again is
     // outstanding again (bead libspiffy-4r0), not a second payment.
-    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'dl1'))).payments.single.payment.deadline,
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, requestId: 'dl1'))).payments.single.payment.deadline,
         now.add(const Duration(seconds: 2)));
-    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, dueBefore: now, queryId: 'dl2'))).payments, isEmpty,
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, dueBefore: now, requestId: 'dl2'))).payments, isEmpty,
         reason: 'not due yet');
     final gone = await send<DeferredPaymentCancelledEvent>(
         CancelDeferredPaymentCommand(walletId: walletId, txid: cancelled.txid, requestId: 'dl-cancel'),
@@ -688,7 +688,7 @@ void main() {
     final still = (await storage().getDeferredPayment(walletId, later.txid))!;
     expect(still.state, DeferredPaymentState.outstanding);
     expect(still.deadline, far);
-    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, dueBefore: far, queryId: 'dl3'))).payments.single.txid,
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, dueBefore: far, requestId: 'dl3'))).payments.single.txid,
         later.txid);
 
     // Journaled: a read model rebuilt from the journal has the deadlines and the states.

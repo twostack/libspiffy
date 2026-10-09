@@ -68,12 +68,13 @@ void main() {
       .first
       .timeout(const Duration(seconds: 10));
 
-  Future<HeaderSyncStatus> status() async {
-    final queryId = 'q-${DateTime.now().microsecondsSinceEpoch}';
-    final answer = next<HeaderSyncStatusResponse>((r) => r.queryId == queryId);
-    libspiffy.coordinator.tell(GetHeaderSyncStatusQuery(queryId: queryId));
-    return (await answer).status;
-  }
+  Future<HeaderSyncStatus> status() async =>
+      (await libspiffy.coordinator.ask(GetHeaderSyncStatusQuery(), timeout: const Duration(seconds: 10))).status;
+
+  /// The headers' answer, or the failure's when they were refused.
+  Future<BlockHeadersStoredEvent> store(StoreHeadersCommand command) => libspiffy.coordinator
+      .ask(command, timeout: const Duration(seconds: 10))
+      .catchError((Object e) => (e as CoordinatorFailure).event! as BlockHeadersStoredEvent);
 
   /// A batch of headers as a peer's answer to getheaders.
   void fromPeer(List<BlockHeader> headers) => libspiffy.headerSyncActor.tell(
@@ -117,12 +118,10 @@ void main() {
 
   test('StoreHeadersCommand validates its headers into the header chain', () async {
     final headers = RegtestMiner.mineChain(genesis, 3);
-    final answer = next<BlockHeadersStoredEvent>();
-    libspiffy.coordinator.tell(StoreHeadersCommand(
+    final stored = await store(StoreHeadersCommand(
       headers: [for (var i = 0; i < headers.length; i++) asCommandRow(headers[i], i + 1)],
       source: 'bundle',
     ));
-    final stored = await answer;
     expect(stored.success, isTrue, reason: stored.error);
     expect(stored.source, 'bundle');
     expect((stored.headersStored, stored.startHeight, stored.endHeight), (3, 1, 3));
@@ -131,9 +130,7 @@ void main() {
 
     // A header that does not connect to the chain is refused, not stored.
     final stranger = RegtestMiner.mineChain(NetworkParams.testnet.genesisHeader, 1).single;
-    final refused = next<BlockHeadersStoredEvent>();
-    libspiffy.coordinator.tell(StoreHeadersCommand(headers: [asCommandRow(stranger, 4)], source: 'bundle'));
-    final r = await refused;
+    final r = await store(StoreHeadersCommand(headers: [asCommandRow(stranger, 4)], source: 'bundle'));
     expect(r.success, isFalse);
     expect(r.headersStored, 0);
     expect(r.error, contains('unknownParent'));
@@ -142,11 +139,9 @@ void main() {
   });
 
   test('a malformed StoreHeadersCommand is answered with the reason', () async {
-    final answer = next<BlockHeadersStoredEvent>();
-    libspiffy.coordinator.tell(StoreHeadersCommand(headers: [
+    final r = await store(StoreHeadersCommand(headers: [
       {'height': 1, 'version': 1}
     ], source: 'bundle'));
-    final r = await answer;
     expect(r.success, isFalse);
     expect(r.error, contains('malformed header'));
   });

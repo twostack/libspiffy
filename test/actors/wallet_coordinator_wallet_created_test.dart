@@ -200,31 +200,34 @@ void main() {
       );
     }
 
-    test('a command the manager cannot route becomes an ErrorEvent', () async {
+    // Since bead libspiffy-xc78.1 a request's failure is its own reply, the
+    // one it is asked with, carrying the wallet's reason.
+    test('a command the manager cannot route is answered as failed', () async {
       final coordinator = await coordinatorOver(await actorSystem.spawn(
           'wallet-manager', () => _RefusingWalletManager()));
+      final request = DeleteWalletCommand(walletId: _walletId);
 
-      coordinator.tell(DeleteWalletCommand(walletId: _walletId));
+      coordinator.tell(request);
 
-      final error = await nextEvent<ErrorEvent>(const Duration(seconds: 3));
-      expect(error.walletId, _walletId);
-      expect(error.message, contains('Wallet not found'));
-      expect(error.message, contains('WalletCommandMessage'),
-          reason: 'the app is told which request was refused');
-      expect(error.source, 'WalletManagerActor');
+      final deleted = await nextEvent<WalletDeletedEvent>(const Duration(seconds: 3));
+      expect(deleted.requestId, request.requestId);
+      expect(deleted.walletId, _walletId);
+      expect(deleted.success, isFalse);
+      expect(deleted.error, contains('Wallet not found'));
     });
 
-    test('a command the aggregate refuses becomes an ErrorEvent', () async {
+    test('a command the aggregate refuses is answered as failed', () async {
       final coordinator = await coordinatorOver(await actorSystem.spawn(
           'wallet-manager', () => _RefusingWalletManager(fromAggregate: true)));
+      final request = ReleaseUTXOsCommand(walletId: _walletId, reservationId: 'r1');
 
-      coordinator.tell(ReleaseUTXOsCommand(
-          walletId: _walletId, reservationId: 'r1'));
+      coordinator.tell(request);
 
-      final error = await nextEvent<ErrorEvent>(const Duration(seconds: 3));
-      expect(error.walletId, _walletId);
-      expect(error.message, contains('nothing reserved'));
-      expect(error.source, 'BitcoinWalletAggregate');
+      final released = await nextEvent<UTXOsReleasedEvent>(const Duration(seconds: 3));
+      expect(released.requestId, request.requestId);
+      expect(released.walletId, _walletId);
+      expect(released.success, isFalse);
+      expect(released.error, contains('nothing reserved'));
     });
 
     test('a creation the manager gives up on is reported as a failed '
@@ -239,7 +242,7 @@ void main() {
       expect(created.success, isFalse);
       expect(created.error, contains('Wallet not found'));
       expect(events.whereType<ErrorEvent>(), isEmpty,
-          reason: 'the pending creation is failed by name, not generically');
+          reason: 'the creation is failed by its own reply, not generically');
     });
 
     test('a failure naming no wallet still reaches the app', () async {

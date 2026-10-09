@@ -401,10 +401,61 @@ void main() {
         expect(r.batch!.stored, 5);
       });
 
-      test('a status query is answered with its id', () async {
-        headerSyncActor.tell(GetHeaderSyncStatusQuery(queryId: 'q1'));
+      test('a StoreHeadersCommand\'s batch is reported with its request id', () async {
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'app', headers: RegtestMiner.mineChain(genesis, 2), startHeight: 1,
+            answersGetHeaders: false, requestId: 'store-1'));
         await Future.delayed(Duration(milliseconds: 100));
-        expect(probe.reports.last.queryId, 'q1');
+        expect(probe.reports.last.batch!.requestId, 'store-1');
+        expect(probe.reports.last.batch!.stored, 2);
+      });
+
+      test('a StoreHeadersCommand whose headers cannot be written is answered with why', () async {
+        final failing = BlockHeaderChain(_UnwritableStorage(), params: regtest, clock: clock);
+        await failing.initialize();
+        final reports = _ReportProbe();
+        final reportsRef = await actorSystem.spawn('unwritable-reports', () => reports);
+        final actor = await actorSystem.spawn('unwritable-header-sync', () => HeaderSyncActor(headerChain: failing));
+        actor.tell(SetCoordinatorForHeadersMessage(reportsRef));
+        actor.tell(BlockHeadersReceivedMessage(
+            peerId: 'app', headers: RegtestMiner.mineChain(genesis, 3), startHeight: 1,
+            answersGetHeaders: false, requestId: 'store-2'));
+        await Future.delayed(Duration(milliseconds: 200));
+        await actorSystem.stop(actor);
+        await actorSystem.stop(reportsRef);
+
+        final batch = reports.reports.last.batch!;
+        expect(batch.requestId, 'store-2');
+        expect(batch.stored, 0);
+        expect(batch.rejected, 3);
+        expect(batch.firstRejection, contains('the disk is full'));
+      });
+
+      test('a StoreHeadersCommand whose batch throws is still answered', () async {
+        // Without this report the command's ask waited until it timed out.
+        final throwing = _ThrowingChain(InMemoryWalletStorage(), params: regtest, clock: clock);
+        await throwing.initialize();
+        final reports = _ReportProbe();
+        final reportsRef = await actorSystem.spawn('throwing-reports', () => reports);
+        final actor = await actorSystem.spawn('throwing-header-sync', () => HeaderSyncActor(headerChain: throwing));
+        actor.tell(SetCoordinatorForHeadersMessage(reportsRef));
+        actor.tell(BlockHeadersReceivedMessage(
+            peerId: 'app', headers: RegtestMiner.mineChain(genesis, 3), startHeight: 1,
+            answersGetHeaders: false, requestId: 'store-3'));
+        await Future.delayed(Duration(milliseconds: 200));
+        await actorSystem.stop(actor);
+        await actorSystem.stop(reportsRef);
+
+        final batch = reports.reports.last.batch!;
+        expect(batch.requestId, 'store-3');
+        expect((batch.stored, batch.rejected), (0, 3));
+        expect(batch.firstRejection, contains('the chain is busy'));
+      });
+
+      test('a status query is answered with its id', () async {
+        headerSyncActor.tell(GetHeaderSyncStatusQuery(requestId: 'q1'));
+        await Future.delayed(Duration(milliseconds: 100));
+        expect(probe.reports.last.requestId, 'q1');
         expect(probe.reports.last.batch, isNull);
       });
 
@@ -726,6 +777,21 @@ void main() {
 }
 
 /// Stands in for the coordinator: keeps what header sync reports.
+/// A header chain that fails every batch.
+class _ThrowingChain extends BlockHeaderChain {
+  _ThrowingChain(super.storage, {required super.params, super.clock});
+
+  @override
+  Future<List<HeaderAcceptResult>> acceptHeaders(List<BlockHeader> headers) =>
+      Future.error(StateError('the chain is busy'));
+}
+
+/// Header storage that cannot write.
+class _UnwritableStorage extends InMemoryWalletStorage {
+  @override
+  Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) => Future.error(StateError('the disk is full'));
+}
+
 class _ReportProbe extends Actor {
   final List<HeaderSyncReport> reports = [];
   final List<dynamic> other = [];

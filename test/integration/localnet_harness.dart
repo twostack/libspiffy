@@ -314,7 +314,7 @@ class LocalnetNode {
 
   LocalnetNode._(this.peerId, this.dir, this.isar, this.timing);
 
-  ActorRef get coordinator => system.coordinator;
+  WalletCoordinator get coordinator => system.coordinator;
 
   static Future<LocalnetNode> start(String peerId, ChannelTiming timing) async {
     _printLogsWhenAsked();
@@ -419,18 +419,18 @@ class LocalnetNode {
 
   /// [walletId]'s balance, as the coordinator answers it.
   Future<BalanceResponse> balance(String walletId) {
-    final queryId = '$peerId-balance-${_queries++}';
-    final answer = next<BalanceResponse>((e) => e.queryId == queryId);
-    coordinator.tell(GetBalanceQuery(walletId: walletId, queryId: queryId));
+    final requestId = '$peerId-balance-${_queries++}';
+    final answer = next<BalanceResponse>((e) => e.requestId == requestId);
+    coordinator.tell(GetBalanceQuery(walletId: walletId, requestId: requestId));
     return answer;
   }
 
   /// [txid] as [walletId]'s history holds it, or null when it does not.
   Future<BitcoinTransaction?> transaction(String walletId, String txid) async {
-    final queryId = '$peerId-tx-${_queries++}';
-    final answer = next<TransactionDetailResponse>((e) => e.queryId == queryId);
+    final requestId = '$peerId-tx-${_queries++}';
+    final answer = next<TransactionDetailResponse>((e) => e.requestId == requestId);
     coordinator.tell(GetTransactionDetailQuery(
-        walletId: walletId, txid: txid, queryId: queryId));
+        walletId: walletId, txid: txid, requestId: requestId));
     return (await answer).transaction;
   }
 

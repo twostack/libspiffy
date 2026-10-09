@@ -299,12 +299,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         // A reclaim journals a whole recording (its transaction, its wallet
         // outputs and its hold) and answers once, with the reclaim
         // (libspiffy-87a); the per-event replies below would answer the ask
-        // with the first of those instead.
+        // with the first of those instead. An outgoing recording is
+        // answered once too, with the TransactionRecordedResponse below,
+        // not first with a UTXOReceivedResponse for each change output.
         for (final event in command is ReclaimDeferredSpendCommand
             ? events.whereType<DeferredSpendReclaimedEvent>()
             : command is CompleteDeferredSpendCommand
                 ? events.whereType<DeferredSpendCompletedEvent>()
-                : events) {
+                : command is RecordOutgoingTransactionCommand
+                    ? const <Event>[]
+                    : events) {
           if (event is WalletCreatedEvent) {
             sender.tell(WalletCreatedResponse(
               walletId: event.walletId,
@@ -379,6 +383,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
             walletId: command.walletId,
             txid: command.txid,
             paymentAmount: recorded == null ? null : BigInt.tryParse(recorded.paymentAmount),
+            success: true,
+          ));
+        }
+        if (command is DeleteWalletCommand) {
+          sender.tell(WalletDeletedResponse(walletId: command.walletId, success: true));
+        }
+        // Answered also when the reservation held nothing to release.
+        if (command is ReleaseUTXOsCommand) {
+          sender.tell(UTXOsReleasedResponse(
+            walletId: command.walletId,
+            reservationId: command.reservationId,
+            releasedUtxoKeys: [for (final e in events.whereType<UTXOReleasedEvent>()) '${e.txid}:${e.vout}'],
             success: true,
           ));
         }

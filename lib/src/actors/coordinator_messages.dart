@@ -11,19 +11,124 @@ import '../models/payment_privacy.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/key_path.dart';
 import '../models/persistent_map.dart';
+import '../utils/unique_id.dart';
 
 export '../models/deferred_payment.dart';
 
 /// Base class for all coordinator events emitted on the event stream.
 ///
 /// Third-party apps subscribe to `Stream<CoordinatorEvent>` to receive
-/// async results from the coordinator.
+/// async results from the coordinator, or wait for one request's answer
+/// with `WalletCoordinator.ask`.
 abstract class CoordinatorEvent {
+  CoordinatorEvent() : eventTimestamp = DateTime.now();
+
   /// Optional wallet ID for filtering events by wallet
   String? get walletId;
 
-  /// Timestamp of the event
-  DateTime get eventTimestamp;
+  /// When the event was made.
+  final DateTime eventTimestamp;
+}
+
+/// The event that answers a [CoordinatorRequest]: each request names its
+/// reply type, and the coordinator answers it with exactly one, on success
+/// and on failure, carrying the request's [requestId].
+///
+/// A reply is still published on the event stream like every other event.
+/// The same type is also emitted without a request where something else
+/// caused it (a receive replayed when its block header arrived, a peer's
+/// batch of headers); [requestId] is null then.
+abstract class CoordinatorReply extends CoordinatorEvent {
+  /// The [CoordinatorRequest.requestId] of the request this answers; null
+  /// when no request caused it.
+  String? get requestId;
+
+  /// Why the request failed, or null when it succeeded.
+  /// `WalletCoordinator.ask` throws a [CoordinatorFailure] carrying this
+  /// reply when it is not null.
+  String? get failure;
+}
+
+/// A command or query the coordinator answers with one [R].
+///
+/// [requestId] is fixed when the request is made: given, or generated. The
+/// reply carries it back, and so does an [ErrorEvent] the request causes,
+/// so two requests of the same kind running at once each get their own
+/// answer. `WalletCoordinator.ask` sends a request and completes with its
+/// reply; `WalletCoordinator.tell` sends it and leaves the reply on the
+/// event stream.
+abstract class CoordinatorRequest<R extends CoordinatorReply> implements Message {
+  CoordinatorRequest({String? requestId})
+      : requestId = requestId ?? uniqueId('request'),
+        timestamp = DateTime.now();
+
+  /// Identifies this request; its reply carries it back.
+  final String requestId;
+
+  /// How long `WalletCoordinator.ask` waits for the reply when the caller
+  /// gives no timeout. A request that is still running then is not
+  /// cancelled: its reply arrives on the event stream later.
+  Duration get replyTimeout => defaultTimeout;
+
+  /// A request the coordinator answers from its own state, or after one
+  /// round trip to the wallet (each of which waits up to 30 s).
+  static const defaultTimeout = Duration(minutes: 1);
+
+  /// Building a payment: reserving its inputs, building and signing it, and
+  /// collecting its ancestry, each a wallet round trip.
+  static const paymentTimeout = Duration(minutes: 3);
+
+  /// Receiving a transaction: recording the addresses it pays when it
+  /// names them, SPV validation, the read model holding it, and, for a
+  /// payment, ARC's answer to its submission (up to 2 minutes) and the
+  /// invoice it pays marked paid.
+  static const receiveTimeout = Duration(minutes: 5);
+
+  /// A request that waits on ARC: one broadcast or status check (up to 2
+  /// minutes) and the read model showing the answer.
+  static const networkTimeout = Duration(minutes: 3);
+
+  /// A reclaim: ARC's fee quote, an address, signing, journaling, and the
+  /// broadcast, each waited for in turn.
+  static const reclaimTimeout = Duration(minutes: 6);
+
+  /// A split: one transaction per source UTXO, each built, signed and
+  /// broadcast and ARC's answer waited for.
+  static const splitTimeout = Duration(minutes: 15);
+
+  /// Checking outputs for a foreign spend: a data source lookup per output
+  /// and a receive per proven spender.
+  static const foreignSpendsTimeout = Duration(minutes: 15);
+
+  /// An import: the wallet's whole history, fetched and proven.
+  static const importTimeout = Duration(hours: 1);
+
+  @override
+  String get correlationId => requestId;
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  final DateTime timestamp;
+}
+
+/// Why `WalletCoordinator.ask` has no reply to return.
+///
+/// [event] is what reported the failure: the request's own reply, whose
+/// [CoordinatorReply.failure] is [message], or an [ErrorEvent] the request
+/// caused. It is null when the coordinator stopped before answering
+/// ([closed]).
+class CoordinatorFailure implements Exception {
+  final String requestId;
+  final String message;
+  final CoordinatorEvent? event;
+
+  const CoordinatorFailure(this.requestId, this.message, {this.event});
+
+  /// The coordinator stopped before it answered.
+  bool get closed => event == null;
+
+  @override
+  String toString() => 'CoordinatorFailure($requestId: $message)';
 }
 
 // ==========================================================================
@@ -31,7 +136,7 @@ abstract class CoordinatorEvent {
 // ==========================================================================
 
 /// Create a new wallet
-class CreateWalletCommand implements Message {
+class CreateWalletCommand extends CoordinatorRequest<WalletCreatedEvent> {
   final String walletId;
   final String name;
   final String? mnemonic;
@@ -48,33 +153,22 @@ class CreateWalletCommand implements Message {
     this.xpriv,
     this.xpub,
     Map<String, dynamic>? walletMetadata,
+    super.requestId,
   }) : walletMetadata = frozenPlainMapOrNull(walletMetadata);
 
   @override
-  String get correlationId => 'create-wallet-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Delete a wallet permanently (event-sourced)
-class DeleteWalletCommand implements Message {
+class DeleteWalletCommand extends CoordinatorRequest<WalletDeletedEvent> {
   final String walletId;
   final String? reason;
 
-  DeleteWalletCommand({required this.walletId, this.reason});
+  DeleteWalletCommand({required this.walletId, this.reason, super.requestId});
 
   @override
-  String get correlationId => 'delete-wallet-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Import a wallet from extended private key or WIF.
@@ -85,7 +179,7 @@ class DeleteWalletCommand implements Message {
 /// command resumes an import after the host was killed, retries one that
 /// finished with `ImportCompleteEvent.transactionsFailed` above zero, and
 /// rescans a wallet for new history.
-class ImportWalletCommand implements Message {
+class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
   final String walletId;
   final String walletName;
   final String? xpriv;
@@ -104,83 +198,59 @@ class ImportWalletCommand implements Message {
     this.gapLimit = 20,
     this.networkType = 'test',
     this.resume = false,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'import-wallet-$walletId';
+  Duration get replyTimeout => CoordinatorRequest.importTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Query wallet balance
-class GetBalanceQuery implements Message {
+class GetBalanceQuery extends CoordinatorRequest<BalanceResponse> {
   final String walletId;
-  final String? queryId;
 
-  GetBalanceQuery({required this.walletId, this.queryId});
+  GetBalanceQuery({required this.walletId, super.requestId});
 
-  @override
-  String get correlationId => queryId ?? 'get-balance-$walletId';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Query wallet transactions
-class GetTransactionsQuery implements Message {
+class GetTransactionsQuery extends CoordinatorRequest<TransactionsResponse> {
   final String walletId;
   final int limit;
   final int offset;
-  final String? queryId;
 
   GetTransactionsQuery({
     required this.walletId,
     this.limit = 50,
     this.offset = 0,
-    this.queryId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => queryId ?? 'get-transactions-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Query specific transaction detail
-class GetTransactionDetailQuery implements Message {
+class GetTransactionDetailQuery extends CoordinatorRequest<TransactionDetailResponse> {
   final String walletId;
   final String txid;
-  final String? queryId;
 
   GetTransactionDetailQuery({
     required this.walletId,
     required this.txid,
-    this.queryId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => queryId ?? 'get-tx-detail-$txid';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Create a payment invoice
-class CreateInvoiceCommand implements Message {
+class CreateInvoiceCommand extends CoordinatorRequest<InvoiceCreatedEvent> {
   final String walletId;
   final BigInt? amount;
   final List<InvoiceOutputSpec>? outputs;
@@ -199,6 +269,7 @@ class CreateInvoiceCommand implements Message {
     this.expiresInSeconds,
     Map<String, dynamic>? invoiceMetadata,
     this.numberOfAddresses = 1,
+    super.requestId,
   })  : outputs = frozenOutputSpecsOrNull(outputs),
         invoiceMetadata = frozenPlainMapOrNull(invoiceMetadata);
 
@@ -207,17 +278,11 @@ class CreateInvoiceCommand implements Message {
       expiresIn ?? (expiresInSeconds != null ? Duration(seconds: expiresInSeconds!) : null);
 
   @override
-  String get correlationId => 'create-invoice-$walletId-${DateTime.now().millisecondsSinceEpoch}';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Pay an invoice (builds BEEF, does NOT broadcast)
-class PayInvoiceCommand implements Message {
+class PayInvoiceCommand extends CoordinatorRequest<PaymentReadyEvent> {
   final String walletId;
   final String invoiceId;
   final List<String> addresses;
@@ -261,18 +326,15 @@ class PayInvoiceCommand implements Message {
     this.memo,
     this.deadline,
     this.privacy,
+    super.requestId,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);
 
   @override
-  String get correlationId => 'pay-invoice-$invoiceId';
+  Duration get replyTimeout => CoordinatorRequest.paymentTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'invoiceId': invoiceId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Provision earmark-aware funding UTXOs for a token lifecycle.
@@ -281,7 +343,7 @@ class PayInvoiceCommand implements Message {
 /// transactions (split + earmarks) from a single large UTXO. The coordinator
 /// records each transaction, marks the original UTXO as spent, and registers
 /// the earmarked UTXOs in the wallet's read model.
-class ProvisionFundingCommand implements Message {
+class ProvisionFundingCommand extends CoordinatorRequest<ProvisioningCompleteEvent> {
   final String walletId;
   final String pluginId;
   final Map<String, dynamic> pluginParams;
@@ -290,20 +352,17 @@ class ProvisionFundingCommand implements Message {
     required this.walletId,
     required this.pluginId,
     required Map<String, dynamic> pluginParams,
+    super.requestId,
   }) : pluginParams = frozenPlainMap(pluginParams);
 
   @override
-  String get correlationId => 'provision-funding-${walletId}-${DateTime.now().millisecondsSinceEpoch}';
+  Duration get replyTimeout => CoordinatorRequest.paymentTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'pluginId': pluginId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Validate incoming BEEF data (structural + SPV validation)
-class ValidateBEEFCommand implements Message {
+class ValidateBEEFCommand extends CoordinatorRequest<BEEFValidationResultEvent> {
   final String walletId;
   final String beefHex;
   final String? invoiceId;
@@ -336,20 +395,17 @@ class ValidateBEEFCommand implements Message {
     this.fromCounterparty,
     this.memo,
     List<Type42Derivation> type42Derivations = const [],
+    super.requestId,
   }) : type42Derivations = frozenList(type42Derivations);
 
   @override
-  String get correlationId => 'validate-beef-$walletId-${DateTime.now().millisecondsSinceEpoch}';
+  Duration get replyTimeout => CoordinatorRequest.receiveTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Record an outgoing transaction in the wallet
-class RecordOutgoingCommand implements Message {
+class RecordOutgoingCommand extends CoordinatorRequest<TransactionRecordedEvent> {
   final String walletId;
   final String txid;
   final String rawHex;
@@ -397,17 +453,12 @@ class RecordOutgoingCommand implements Message {
     this.changeAmount,
     this.counterpartyMarker,
     this.memo,
+    super.requestId,
   })  : spentUtxoKeys = frozenList(spentUtxoKeys),
         recipientAddresses = frozenList(recipientAddresses);
 
   @override
-  String get correlationId => 'record-outgoing-$txid';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Import a transaction the wallet already knows to be mined: recovering a
@@ -439,7 +490,7 @@ class RecordOutgoingCommand implements Message {
 /// must give the anchor: a wallet restored from its seed has issued none),
 /// derives each address from its anchor key and records it before the
 /// import, as for [delegatedIndices].
-class ImportTransactionCommand implements Message {
+class ImportTransactionCommand extends CoordinatorRequest<TransactionImportedEvent> {
   final String walletId;
   final List<int> beef;
   final String? fromCounterparty;
@@ -457,18 +508,15 @@ class ImportTransactionCommand implements Message {
     this.memo,
     List<int> delegatedIndices = const [],
     List<Type42Derivation> type42Derivations = const [],
+    super.requestId,
   })  : beef = frozenList(beef),
         delegatedIndices = frozenList(delegatedIndices),
         type42Derivations = frozenList(type42Derivations);
 
   @override
-  String get correlationId => 'import-tx-$walletId-${DateTime.now().microsecondsSinceEpoch}';
+  Duration get replyTimeout => CoordinatorRequest.receiveTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Export a transaction of the wallet with its merkle proof, as a BEEF that
@@ -483,25 +531,18 @@ class ImportTransactionCommand implements Message {
 /// Answered with a [TransactionExportedEvent]; refused while the
 /// transaction has no proof verified on our header chain, because the
 /// importing wallet accepts only a proven transaction.
-class ExportTransactionQuery implements Message {
+class ExportTransactionQuery extends CoordinatorRequest<TransactionExportedEvent> {
   final String walletId;
   final String txid;
-  final String? queryId;
 
   ExportTransactionQuery({
     required this.walletId,
     required this.txid,
-    this.queryId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => queryId ?? 'export-tx-$txid';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Issues the wallet's anchor key for [anchorContext] (beads
@@ -517,22 +558,15 @@ class ExportTransactionQuery implements Message {
 /// the payer knows t). An empty context is refused. The same context always
 /// gives the same anchor; the wallet journals it the first time, so a
 /// hand-off that names only the anchor is matched to its context.
-class IssueAnchorKeyCommand implements Message {
+class IssueAnchorKeyCommand extends CoordinatorRequest<AnchorPublicKeyEvent> {
   final String walletId;
   final List<int> anchorContext;
-  final String? requestId;
 
-  IssueAnchorKeyCommand({required this.walletId, required List<int> anchorContext, this.requestId})
+  IssueAnchorKeyCommand({required this.walletId, required List<int> anchorContext, super.requestId})
       : anchorContext = frozenList(anchorContext);
 
   @override
-  String get correlationId => requestId ?? 'anchor-key-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Signs `SHA-256(message)` with the wallet's anchor key for
@@ -541,28 +575,21 @@ class IssueAnchorKeyCommand implements Message {
 /// hashed by the wallet, so the anchor key never signs a digest the caller
 /// chose; the message should name its purpose (domain separation).
 /// Answered with [AnchorSignedEvent].
-class SignWithAnchorKeyCommand implements Message {
+class SignWithAnchorKeyCommand extends CoordinatorRequest<AnchorSignedEvent> {
   final String walletId;
   final List<int> anchorContext;
   final List<int> message;
-  final String? requestId;
 
   SignWithAnchorKeyCommand({
     required this.walletId,
     required List<int> anchorContext,
     required List<int> message,
-    this.requestId,
+    super.requestId,
   })  : anchorContext = frozenList(anchorContext),
         message = frozenList(message);
 
   @override
-  String get correlationId => requestId ?? 'anchor-sign-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Runs the BRC-100 key operation [request] with a BRC-42 child of the
@@ -574,27 +601,20 @@ class SignWithAnchorKeyCommand implements Message {
 /// The private keys stay in the wallet. Operations other than
 /// `getPublicKey` are refused for the anchor's payment spend keys: the
 /// BRC-29 protocol, and any type-42 address the wallet recorded.
-class Brc100KeyOperationCommand implements Message {
+class Brc100KeyOperationCommand extends CoordinatorRequest<Brc100KeyOperationEvent> {
   final String walletId;
   final List<int> anchorContext;
   final Brc100KeyRequest request;
-  final String? requestId;
 
   Brc100KeyOperationCommand({
     required this.walletId,
     required List<int> anchorContext,
     required this.request,
-    this.requestId,
+    super.requestId,
   }) : anchorContext = frozenList(anchorContext);
 
   @override
-  String get correlationId => requestId ?? 'brc100-key-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Derives a type-42 destination for paying the holder of anchor key
@@ -613,7 +633,7 @@ class Brc100KeyOperationCommand implements Message {
 /// it makes up a BRC-29 one. The payee is offline, so the payer broadcasts
 /// the payment itself (`BroadcastDeferredPaymentCommand`), follows it to
 /// its block, and hands it over with `ExportTransactionQuery`.
-class DeriveType42DestinationCommand implements Message {
+class DeriveType42DestinationCommand extends CoordinatorRequest<Type42DestinationEvent> {
   final String walletId;
   final String anchorPublicKey;
   final List<int>? anchorContext;
@@ -624,7 +644,6 @@ class DeriveType42DestinationCommand implements Message {
   /// anchor stands for (the sender of a BRC-29 payment to a BRC-100
   /// wallet is its identity key).
   final List<int>? payerAnchorContext;
-  final String? requestId;
 
   DeriveType42DestinationCommand({
     required this.walletId,
@@ -632,18 +651,12 @@ class DeriveType42DestinationCommand implements Message {
     List<int>? anchorContext,
     this.invoiceNumber,
     List<int>? payerAnchorContext,
-    this.requestId,
+    super.requestId,
   })  : anchorContext = frozenListOrNull(anchorContext),
         payerAnchorContext = frozenListOrNull(payerAnchorContext);
 
   @override
-  String get correlationId => requestId ?? 'type42-destination-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Store block headers for SPV validation.
@@ -653,23 +666,18 @@ class DeriveType42DestinationCommand implements Message {
 /// header's `height` is informational; the chain derives it from the
 /// parent. Answered with [BlockHeadersStoredEvent] (its `source` is
 /// [source]).
-class StoreHeadersCommand implements Message {
+class StoreHeadersCommand extends CoordinatorRequest<BlockHeadersStoredEvent> {
   final List<Map<String, dynamic>> headers;
   final String source;
 
   StoreHeadersCommand({
     required List<Map<String, dynamic>> headers,
     this.source = 'external',
+    super.requestId,
   }) : headers = frozenMapList(headers);
 
   @override
-  String get correlationId => 'store-headers-${DateTime.now().millisecondsSinceEpoch}';
-  @override
   Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Asks wallet [walletId] for a fresh address of its own: a key no payment
@@ -681,38 +689,32 @@ class StoreHeadersCommand implements Message {
 /// [AddressGeneratedEvent] once the read model holds the address, so a
 /// payment to it validates at once (SPV attributes outputs by the read
 /// model's address rows).
-class GenerateAddressCommand implements Message {
+class GenerateAddressCommand extends CoordinatorRequest<AddressGeneratedEvent> {
   final String walletId;
   final String? label;
   final String? purpose;
   final bool includePublicKey;
-  final String? requestId;
 
   GenerateAddressCommand({
     required this.walletId,
     this.label,
     this.purpose,
     this.includePublicKey = false,
-    this.requestId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => requestId ?? 'generate-address-$walletId-${DateTime.now().microsecondsSinceEpoch}';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Result of [GenerateAddressCommand]: the wallet's fresh [address], where
 /// it sits on the wallet's keys ([chain], [derivationIndex]) and, when asked
 /// for, its [publicKeyHex].
-class AddressGeneratedEvent extends CoordinatorEvent {
+class AddressGeneratedEvent extends CoordinatorReply {
   @override
   final String walletId;
-  final String requestId;
+  @override
+  final String? requestId;
   final bool success;
   final String? address;
   final int? derivationIndex;
@@ -722,7 +724,7 @@ class AddressGeneratedEvent extends CoordinatorEvent {
 
   AddressGeneratedEvent({
     required this.walletId,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.address,
     this.derivationIndex,
@@ -732,11 +734,11 @@ class AddressGeneratedEvent extends CoordinatorEvent {
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'No address was generated';
 }
 
 /// Register an address to watch for activity
-class RegisterWatchAddressCommand implements Message {
+class RegisterWatchAddressCommand extends CoordinatorRequest<WatchAddressRegisteredEvent> {
   final String walletId;
   final String address;
   final String scriptType;
@@ -747,40 +749,56 @@ class RegisterWatchAddressCommand implements Message {
     required this.address,
     required this.scriptType,
     this.label,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'register-watch-$address';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Release reserved UTXOs
-class ReleaseUTXOsCommand implements Message {
+class ReleaseUTXOsCommand extends CoordinatorRequest<UTXOsReleasedEvent> {
   final String walletId;
   final String reservationId;
 
   ReleaseUTXOsCommand({
     required this.walletId,
     required this.reservationId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'release-utxos-$reservationId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
+}
+
+/// Answer to [ReleaseUTXOsCommand]: the UTXOs the reservation held are
+/// available again. [releasedUtxoKeys] is empty when the reservation held
+/// none (already released, or expired).
+class UTXOsReleasedEvent extends CoordinatorReply {
   @override
-  ActorRef? get replyTo => null;
+  final String walletId;
   @override
-  DateTime get timestamp => DateTime.now();
+  final String? requestId;
+  final String reservationId;
+  final List<String> releasedUtxoKeys;
+  final bool success;
+  final String? error;
+
+  UTXOsReleasedEvent({
+    required this.walletId,
+    required this.reservationId,
+    required this.success,
+    List<String> releasedUtxoKeys = const [],
+    this.error,
+    this.requestId,
+  }) : releasedUtxoKeys = frozenList(releasedUtxoKeys);
+
+  @override
+  String? get failure => success ? null : error ?? 'The reservation was not released';
 }
 
 /// Split UTXOs using Benford's Law distribution for privacy
-class SplitUTXOsCommand implements Message {
+class SplitUTXOsCommand extends CoordinatorRequest<UTXOSplitCompleteEvent> {
   final String walletId;
   final int? targetUtxoCount;
   final int? maxUtxosToSplit;
@@ -802,20 +820,17 @@ class SplitUTXOsCommand implements Message {
     List<String>? utxoKeys,
     this.partSats,
     this.minPartSats,
+    super.requestId,
   }) : utxoKeys = frozenListOrNull(utxoKeys);
 
   @override
-  String get correlationId => 'split-utxos-$walletId';
+  Duration get replyTimeout => CoordinatorRequest.splitTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Create a timestamp archive (OP_RETURN data on-chain)
-class TimestampCommand implements Message {
+class TimestampCommand extends CoordinatorRequest<TimestampCompleteEvent> {
   final String archiveId;
   final String walletId;
   final List<String> fileHashes;
@@ -826,32 +841,14 @@ class TimestampCommand implements Message {
     required this.walletId,
     required List<String> fileHashes,
     this.archiveTitle,
+    super.requestId,
   }) : fileHashes = frozenList(fileHashes);
 
+  /// Building the payment, then ARC's answer to its broadcast.
   @override
-  String get correlationId => 'timestamp-$archiveId';
+  Duration get replyTimeout => CoordinatorRequest.paymentTimeout + CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'archiveId': archiveId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Refresh wallet data
-class RefreshWalletCommand implements Message {
-  final String walletId;
-
-  RefreshWalletCommand({required this.walletId});
-
-  @override
-  String get correlationId => 'refresh-wallet-$walletId';
-  @override
-  Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Settle a BEEF by broadcasting all unsettled transactions (hasMerkle=false)
@@ -861,7 +858,7 @@ class RefreshWalletCommand implements Message {
 /// settles when they choose to bank the cheque. Self-pay operations
 /// (token issuance, identity anchor) must settle immediately because
 /// there is no counterparty to hand the cheque to.
-class SettleBEEFCommand implements Message {
+class SettleBEEFCommand extends CoordinatorRequest<BEEFSettledEvent> {
   final String walletId;
   final String beefHex;
   final String txid;
@@ -870,16 +867,13 @@ class SettleBEEFCommand implements Message {
     required this.walletId,
     required this.beefHex,
     required this.txid,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'settle-$txid';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Gracefully shutdown the coordinator
@@ -916,7 +910,7 @@ class ShutdownCommand implements Message {
 /// to find the payments whose recipient has not broadcast them yet, and
 /// [includeResolved] (or [states]) to include seen, mined, failed and
 /// cancelled ones: nothing is ever deleted.
-class GetDeferredPaymentsQuery implements Message {
+class GetDeferredPaymentsQuery extends CoordinatorRequest<DeferredPaymentsResponse> {
   final String walletId;
 
   /// States to list; overrides [includeResolved]. Default: outstanding only.
@@ -957,7 +951,6 @@ class GetDeferredPaymentsQuery implements Message {
 
   /// Rebuild each payment's BEEF from the stored ancestors and proofs.
   final bool includeBeef;
-  final String? queryId;
 
   GetDeferredPaymentsQuery({
     required this.walletId,
@@ -974,7 +967,7 @@ class GetDeferredPaymentsQuery implements Message {
     this.cursor,
     this.oldestFirst = false,
     this.includeBeef = true,
-    this.queryId,
+    super.requestId,
   })  : states = frozenSetOrNull(states),
         lastNetworkStatuses = frozenSetOrNull(lastNetworkStatuses);
 
@@ -1001,13 +994,7 @@ class GetDeferredPaymentsQuery implements Message {
   }
 
   @override
-  String get correlationId => queryId ?? 'get-deferred-payments-$walletId';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Broadcast a deferred payment yourself, e.g. when the recipient is slow to
@@ -1021,27 +1008,22 @@ class GetDeferredPaymentsQuery implements Message {
 /// inputs held, and is reported with success false.
 /// With [via] including the data source, a transaction ARC refuses to take
 /// is submitted to the configured `BlockchainDataSource`.
-class BroadcastDeferredPaymentCommand implements Message {
+class BroadcastDeferredPaymentCommand extends CoordinatorRequest<DeferredPaymentBroadcastEvent> {
   final String walletId;
   final String txid;
   final DeferredPaymentNetworkSource via;
-  final String? requestId;
 
   BroadcastDeferredPaymentCommand({
     required this.walletId,
     required this.txid,
     this.via = DeferredPaymentNetworkSource.arc,
-    this.requestId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => requestId ?? 'broadcast-deferred-$txid';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Ask the network about a deferred payment now instead of waiting for the
@@ -1056,27 +1038,22 @@ class BroadcastDeferredPaymentCommand implements Message {
 /// status is journaled. [via]: ARC, the configured `BlockchainDataSource`
 /// (does it know the transaction; its merkle proof), or ARC then the data
 /// source when ARC fails or does not know it.
-class CheckDeferredPaymentStatusCommand implements Message {
+class CheckDeferredPaymentStatusCommand extends CoordinatorRequest<DeferredPaymentStatusEvent> {
   final String walletId;
   final String txid;
   final DeferredPaymentNetworkSource via;
-  final String? requestId;
 
   CheckDeferredPaymentStatusCommand({
     required this.walletId,
     required this.txid,
     this.via = DeferredPaymentNetworkSource.arc,
-    this.requestId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => requestId ?? 'check-deferred-$txid';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Cancel an outstanding deferred payment and release its inputs. Answered
@@ -1093,7 +1070,7 @@ class CheckDeferredPaymentStatusCommand implements Message {
 /// wallet then records the original payment as seen). To make the old
 /// transaction unspendable, spend its inputs back to yourself:
 /// [ReclaimDeferredPaymentCommand] does that.
-class CancelDeferredPaymentCommand implements Message {
+class CancelDeferredPaymentCommand extends CoordinatorRequest<DeferredPaymentCancelledEvent> {
   final String walletId;
   final String txid;
   final String? reason;
@@ -1102,7 +1079,6 @@ class CancelDeferredPaymentCommand implements Message {
   /// Cancel even when the network could not be asked (never when it knows
   /// the transaction).
   final bool force;
-  final String? requestId;
 
   CancelDeferredPaymentCommand({
     required this.walletId,
@@ -1110,17 +1086,13 @@ class CancelDeferredPaymentCommand implements Message {
     this.reason,
     this.via = DeferredPaymentNetworkSource.arc,
     this.force = false,
-    this.requestId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => requestId ?? 'cancel-deferred-$txid';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 // ==========================================================================
@@ -1463,13 +1435,13 @@ class P2PMessageReceived implements Message {
   }) : payload = frozenPlainMap(payload);
 
   @override
-  String get correlationId => 'p2p-${DateTime.now().millisecondsSinceEpoch}';
+  final String correlationId = uniqueId('p2p');
   @override
   Map<String, dynamic> get metadata => {'fromPeerId': fromPeerId, 'messageType': messageType};
   @override
   ActorRef? get replyTo => null;
   @override
-  DateTime get timestamp => DateTime.now();
+  final DateTime timestamp = DateTime.now();
 }
 
 /// Incoming P2P message for a payment channel.
@@ -1483,9 +1455,6 @@ class ChannelP2PReceived extends P2PMessageReceived {
     required super.messageType,
     required super.payload,
   });
-
-  @override
-  String get correlationId => 'channel-p2p-${DateTime.now().millisecondsSinceEpoch}';
 }
 
 /// Ask the counterparty who handed us [txid] for a fresh merkle proof for its
@@ -1508,7 +1477,7 @@ class ChannelP2PReceived extends P2PMessageReceived {
 /// (a payment received before markers existed, or an app that supplied none)
 /// nobody can be asked: [AncestorProofRequestedEvent] reports the output as
 /// unrecoverable by request.
-class RequestAncestorProofCommand implements Message {
+class RequestAncestorProofCommand extends CoordinatorRequest<AncestorProofRequestedEvent> {
   final String walletId;
 
   /// The transaction *we received* whose ancestry no longer reaches a proof.
@@ -1519,34 +1488,28 @@ class RequestAncestorProofCommand implements Message {
   /// `ReadModelStorage.getOutputsAwaitingAncestorProof` when left empty.
   final List<String> ancestorTxids;
 
-  /// Correlates the answer with this request; generated when omitted.
-  final String? requestId;
-
   RequestAncestorProofCommand({
     required this.walletId,
     required this.txid,
     List<String> ancestorTxids = const [],
-    this.requestId,
+    super.requestId,
   }) : ancestorTxids = frozenList(ancestorTxids);
 
   @override
-  String get correlationId => requestId ?? 'proof-request-$txid';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 // ==========================================================================
 // EVENTS (coordinator → app via broadcast stream)
 // ==========================================================================
 
-/// Wallet successfully created
-class WalletCreatedEvent extends CoordinatorEvent {
+/// Answer to [CreateWalletCommand]: the wallet is created and the read
+/// model holds it, or why not.
+class WalletCreatedEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final String? rootAddress;
   final bool success;
   final String? error;
@@ -1556,10 +1519,26 @@ class WalletCreatedEvent extends CoordinatorEvent {
     this.rootAddress,
     required this.success,
     this.error,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The wallet was not created';
+}
+
+/// Answer to [DeleteWalletCommand]: the wallet's deletion is journaled.
+class WalletDeletedEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final bool success;
+  final String? error;
+
+  WalletDeletedEvent({required this.walletId, required this.success, this.error, this.requestId});
+
+  @override
+  String? get failure => success ? null : error ?? 'The wallet was not deleted';
 }
 
 /// Wallet import progress update
@@ -1584,15 +1563,14 @@ class ImportProgressEvent extends CoordinatorEvent {
     this.transactionsProcessed = 0,
     this.totalTransactions = 0,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Wallet import completed
-class ImportCompleteEvent extends CoordinatorEvent {
+class ImportCompleteEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final bool success;
   final String? error;
   final int addressCount;
@@ -1616,10 +1594,11 @@ class ImportCompleteEvent extends CoordinatorEvent {
     this.transactionCount = 0,
     this.transactionsSkipped = 0,
     this.transactionsFailed = 0,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The import failed';
 }
 
 /// UTXO confirmed by aggregate during import
@@ -1638,9 +1617,6 @@ class ImportUTXOConfirmedEvent extends CoordinatorEvent {
     required this.success,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Transaction confirmed by aggregate during import
@@ -1657,9 +1633,6 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
     required this.success,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Balance query response, computed from the read model.
@@ -1683,10 +1656,11 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
 /// every layer makes (`WalletBalances.bucketOf`): a merkle proof on our
 /// active chain confirms at depth one, and no threshold of confirmations
 /// exists anywhere.
-class BalanceResponse extends CoordinatorEvent {
+class BalanceResponse extends CoordinatorReply {
   @override
   final String walletId;
-  final String queryId;
+  @override
+  final String? requestId;
 
   /// Payment UTXOs with a block height (greater than zero): mined, however
   /// few confirmations they have.
@@ -1747,7 +1721,7 @@ class BalanceResponse extends CoordinatorEvent {
 
   BalanceResponse({
     required this.walletId,
-    required this.queryId,
+    this.requestId,
     required this.confirmedBalance,
     required this.unconfirmedBalance,
     required this.totalBalance,
@@ -1758,46 +1732,50 @@ class BalanceResponse extends CoordinatorEvent {
         watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
         reservedBalance = reservedBalance ?? BigInt.zero;
 
+  /// Never: a failure to answer arrives as an [ErrorEvent].
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => null;
 }
 
 /// Transactions query response
-class TransactionsResponse extends CoordinatorEvent {
+class TransactionsResponse extends CoordinatorReply {
   @override
   final String walletId;
-  final String queryId;
+  @override
+  final String? requestId;
   final List<BitcoinTransaction> transactions;
 
   TransactionsResponse({
     required this.walletId,
-    required this.queryId,
+    this.requestId,
     required List<BitcoinTransaction> transactions,
   })  : transactions = frozenList(transactions);
 
+  /// Never: a failure to answer arrives as an [ErrorEvent].
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => null;
 }
 
 /// Transaction detail query response
-class TransactionDetailResponse extends CoordinatorEvent {
+class TransactionDetailResponse extends CoordinatorReply {
   @override
   final String walletId;
-  final String queryId;
+  @override
+  final String? requestId;
   final BitcoinTransaction? transaction;
   final bool found;
   final String? error;
 
   TransactionDetailResponse({
     required this.walletId,
-    required this.queryId,
+    this.requestId,
     this.transaction,
     this.found = true,
     this.error,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => error;
 }
 
 /// The wallet's balance changed: the read model applied an event that moved
@@ -1858,9 +1836,6 @@ class BalanceUpdatedEvent extends CoordinatorEvent {
   })  : pendingBalance = pendingBalance ?? BigInt.zero,
         watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
         reservedBalance = reservedBalance ?? BigInt.zero;
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// An outgoing transaction a [RecordOutgoingCommand] asked the wallet to
@@ -1880,9 +1855,11 @@ class BalanceUpdatedEvent extends CoordinatorEvent {
 /// satoshis, incoming. That event is gone; an incoming receive is reported
 /// by [SPVValidationResultEvent] and [TransactionImportedEvent], which
 /// carry the amount the wallet measured.
-class TransactionRecordedEvent extends CoordinatorEvent {
+class TransactionRecordedEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final String txid;
 
   /// What the recording says the transaction paid, read off the journaled
@@ -1906,10 +1883,11 @@ class TransactionRecordedEvent extends CoordinatorEvent {
     this.amountSatoshis,
     required this.success,
     this.error,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The transaction was not recorded';
 }
 
 /// A merkle proof put the transaction in the block at [blockHeight], whose
@@ -1931,9 +1909,6 @@ class TransactionConfirmedEvent extends CoordinatorEvent {
     required this.txid,
     required this.blockHeight,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// The chain no longer supports a confirmation this wallet announced.
@@ -1971,15 +1946,14 @@ class TransactionConfirmationRevertedEvent extends CoordinatorEvent {
     this.blockHeight,
     this.blockHash,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Invoice created successfully
-class InvoiceCreatedEvent extends CoordinatorEvent {
+class InvoiceCreatedEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final String invoiceId;
   final List<String> addresses;
   final BigInt amount;
@@ -2009,12 +1983,13 @@ class InvoiceCreatedEvent extends CoordinatorEvent {
     this.expiresAt,
     required this.success,
     this.error,
+    this.requestId,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         issuedAddresses = frozenList(issuedAddresses);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The invoice was not created';
 }
 
 /// Invoice paid
@@ -2031,15 +2006,14 @@ class InvoicePaidEvent extends CoordinatorEvent {
     required this.txid,
     required this.amountReceived,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// BEEF payment constructed and ready for transmission to counterparty
-class PaymentReadyEvent extends CoordinatorEvent {
+class PaymentReadyEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String invoiceId;
   final Uint8List beefBytes;
   final String txid;
@@ -2067,30 +2041,19 @@ class PaymentReadyEvent extends CoordinatorEvent {
     this.error,
     this.witnessTxid,
     this.witnessBeefBytes,
+    this.requestId,
   });
 
-  PaymentReadyEvent.error({
-    this.walletId,
-    required this.invoiceId,
-    required String errorMessage,
-  })  : beefBytes = Uint8List(0),
-        txid = '',
-        amountPaid = BigInt.zero,
-        changeAmount = BigInt.zero,
-        ancestorCount = 0,
-        success = false,
-        error = errorMessage,
-        witnessTxid = null,
-        witnessBeefBytes = null;
-
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The payment was not built';
 }
 
 /// Funding provisioning completed (earmarked UTXOs created).
-class ProvisioningCompleteEvent extends CoordinatorEvent {
+class ProvisioningCompleteEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final int transactionCount;
   final int earmarkCount;
   final bool success;
@@ -2102,18 +2065,11 @@ class ProvisioningCompleteEvent extends CoordinatorEvent {
     required this.earmarkCount,
     required this.success,
     this.error,
+    this.requestId,
   });
 
-  ProvisioningCompleteEvent.error({
-    this.walletId,
-    required String errorMessage,
-  })  : transactionCount = 0,
-        earmarkCount = 0,
-        success = false,
-        error = errorMessage;
-
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The funding was not provisioned';
 }
 
 /// The answer to a [ValidateBEEFCommand]: a counterparty's payment, checked,
@@ -2131,9 +2087,11 @@ class ProvisioningCompleteEvent extends CoordinatorEvent {
 /// A payment whose proofs name a block header we have not synced is not
 /// decided yet: [awaitingHeader], and a second event follows once the
 /// header arrives — after a restart too, since the receive is stored.
-class BEEFValidationResultEvent extends CoordinatorEvent {
+class BEEFValidationResultEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String? invoiceId;
   final String? txid;
   final bool valid;
@@ -2177,11 +2135,12 @@ class BEEFValidationResultEvent extends CoordinatorEvent {
     this.awaitingHeader = false,
     List<Map<String, dynamic>>? spendableUTXOs,
     List<Map<String, dynamic>> unreadableOutputs = const [],
+    this.requestId,
   })  : spendableUTXOs = frozenListOrNull(spendableUTXOs),
         unreadableOutputs = frozenMapList(unreadableOutputs);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => valid ? null : error ?? 'The payment did not validate';
 }
 
 /// SPV validation result for a received transaction
@@ -2209,9 +2168,6 @@ class SPVValidationResultEvent extends CoordinatorEvent {
   })  : spendableUTXOs = frozenMapList(spendableUTXOs),
         spentUTXOs = frozenMapList(spentUTXOs),
         unreadableOutputs = frozenMapList(unreadableOutputs);
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Broadcast to Arc failed (transaction queued for retry via duraq)
@@ -2228,9 +2184,6 @@ class BroadcastFailureEvent extends CoordinatorEvent {
     required this.error,
     this.willRetry = true,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Result of settling a BEEF via ARC.
@@ -2241,9 +2194,11 @@ class BroadcastFailureEvent extends CoordinatorEvent {
 /// rejected; their txids and per-tx error messages are in `failedTxids`
 /// and `failureErrors` (same length, same index). `error` is an
 /// aggregated summary for display.
-class BEEFSettledEvent extends CoordinatorEvent {
+class BEEFSettledEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String txid;
   final bool success;
   final String? error;
@@ -2263,17 +2218,20 @@ class BEEFSettledEvent extends CoordinatorEvent {
     this.failedCount = 0,
     List<String> failedTxids = const [],
     List<String> failureErrors = const [],
+    this.requestId,
   })  : failedTxids = frozenList(failedTxids),
         failureErrors = frozenList(failureErrors);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The BEEF was not settled';
 }
 
 /// Transaction imported into wallet
-class TransactionImportedEvent extends CoordinatorEvent {
+class TransactionImportedEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final String transactionId;
   final bool success;
   final int? utxosCreated;
@@ -2287,19 +2245,21 @@ class TransactionImportedEvent extends CoordinatorEvent {
     this.utxosCreated,
     this.totalValueReceived,
     this.error,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The transaction was not imported';
 }
 
 /// Answer to [ExportTransactionQuery]: the transaction with its proof and
 /// what proves its ancestry, as BEEF bytes, or why there is none.
-class TransactionExportedEvent extends CoordinatorEvent {
+class TransactionExportedEvent extends CoordinatorReply {
   @override
   final String walletId;
   final String txid;
-  final String queryId;
+  @override
+  final String? requestId;
   final bool success;
   final List<int>? beef;
 
@@ -2319,7 +2279,7 @@ class TransactionExportedEvent extends CoordinatorEvent {
   TransactionExportedEvent({
     required this.walletId,
     required this.txid,
-    required this.queryId,
+    this.requestId,
     required this.success,
     List<int>? beef,
     List<int> delegatedIndices = const [],
@@ -2330,39 +2290,41 @@ class TransactionExportedEvent extends CoordinatorEvent {
         type42Derivations = frozenList(type42Derivations);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The transaction was not exported';
 }
 
 /// Answer to [IssueAnchorKeyCommand]: the wallet's anchor public key for
 /// the context (compressed, hex), or why there is none (an xpub or WIF
 /// wallet has no anchor key; an empty context is refused).
-class AnchorPublicKeyEvent extends CoordinatorEvent {
+class AnchorPublicKeyEvent extends CoordinatorReply {
   @override
   final String walletId;
-  final String requestId;
+  @override
+  final String? requestId;
   final String? publicKey;
   final bool success;
   final String? error;
 
   AnchorPublicKeyEvent({
     required this.walletId,
-    required this.requestId,
+    this.requestId,
     this.publicKey,
     required this.success,
     this.error,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'No anchor key was issued';
 }
 
 /// Answer to [SignWithAnchorKeyCommand]: the DER signature (hex) of
 /// SHA-256 of the message by the anchor key [publicKey], or why there is
 /// none. The signature is deterministic (RFC 6979) with a low S.
-class AnchorSignedEvent extends CoordinatorEvent {
+class AnchorSignedEvent extends CoordinatorReply {
   @override
   final String walletId;
-  final String requestId;
+  @override
+  final String? requestId;
   final String? publicKey;
   final String? signatureDer;
   final bool success;
@@ -2370,7 +2332,7 @@ class AnchorSignedEvent extends CoordinatorEvent {
 
   AnchorSignedEvent({
     required this.walletId,
-    required this.requestId,
+    this.requestId,
     this.publicKey,
     this.signatureDer,
     required this.success,
@@ -2378,52 +2340,54 @@ class AnchorSignedEvent extends CoordinatorEvent {
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'Nothing was signed';
 }
 
 /// Answer to [Brc100KeyOperationCommand]: the operation's [result], or why
 /// there is none.
-class Brc100KeyOperationEvent extends CoordinatorEvent {
+class Brc100KeyOperationEvent extends CoordinatorReply {
   @override
   final String walletId;
-  final String requestId;
+  @override
+  final String? requestId;
   final Brc100KeyResult? result;
   final bool success;
   final String? error;
 
   Brc100KeyOperationEvent({
     required this.walletId,
-    required this.requestId,
+    this.requestId,
     this.result,
     required this.success,
     this.error,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The key operation failed';
 }
 
 /// Answer to [DeriveType42DestinationCommand]: the destination, or why
 /// there is none. [Type42Destination.address] is what the payer pays;
 /// [Type42Destination.derivation] is the hand-off.
-class Type42DestinationEvent extends CoordinatorEvent {
+class Type42DestinationEvent extends CoordinatorReply {
   @override
   final String walletId;
-  final String requestId;
+  @override
+  final String? requestId;
   final Type42Destination? destination;
   final bool success;
   final String? error;
 
   Type42DestinationEvent({
     required this.walletId,
-    required this.requestId,
+    this.requestId,
     this.destination,
     required this.success,
     this.error,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'No destination was derived';
 }
 
 /// Block headers were stored: how many, and the heights they span.
@@ -2439,9 +2403,11 @@ class Type42DestinationEvent extends CoordinatorEvent {
 /// A batch whose headers were all known already stores nothing and is not
 /// announced. [success] is false when a header of the batch was rejected;
 /// [error] says why the first one was.
-class BlockHeadersStoredEvent extends CoordinatorEvent {
+class BlockHeadersStoredEvent extends CoordinatorReply {
   @override
   String? get walletId => null;
+  @override
+  final String? requestId;
   final int headersStored;
 
   /// Height of the first and the last header stored; 0 when none was.
@@ -2464,10 +2430,11 @@ class BlockHeadersStoredEvent extends CoordinatorEvent {
     required this.success,
     this.error,
     this.source = peerSource,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'A header was rejected';
 }
 
 /// Where header sync stands: the chain's height, the height its peers
@@ -2521,32 +2488,27 @@ class HeaderSyncStatus {
 }
 
 /// Asks where header sync stands; answered with [HeaderSyncStatusResponse].
-class GetHeaderSyncStatusQuery implements Message {
-  final String queryId;
+class GetHeaderSyncStatusQuery extends CoordinatorRequest<HeaderSyncStatusResponse> {
 
-  GetHeaderSyncStatusQuery({required this.queryId});
+  GetHeaderSyncStatusQuery({super.requestId});
 
-  @override
-  String get correlationId => queryId;
   @override
   Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Answer to [GetHeaderSyncStatusQuery].
-class HeaderSyncStatusResponse extends CoordinatorEvent {
+class HeaderSyncStatusResponse extends CoordinatorReply {
   @override
   String? get walletId => null;
-  final String queryId;
+  @override
+  final String? requestId;
   final HeaderSyncStatus status;
 
-  HeaderSyncStatusResponse({required this.queryId, required this.status});
+  HeaderSyncStatusResponse({this.requestId, required this.status});
 
+  /// Never: a failure to answer arrives as an [ErrorEvent].
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => null;
 }
 
 /// Header sync caught up with its peers, or fell behind them: emitted when
@@ -2558,15 +2520,14 @@ class HeaderSyncStatusEvent extends CoordinatorEvent {
   final HeaderSyncStatus status;
 
   HeaderSyncStatusEvent({required this.status});
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Watch address registered
-class WatchAddressRegisteredEvent extends CoordinatorEvent {
+class WatchAddressRegisteredEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final String address;
   final bool success;
   final String? error;
@@ -2576,10 +2537,11 @@ class WatchAddressRegisteredEvent extends CoordinatorEvent {
     required this.address,
     required this.success,
     this.error,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The watch address was not registered';
 }
 
 
@@ -2644,10 +2606,11 @@ class DeferredPaymentDetail {
 }
 
 /// Answer to [GetDeferredPaymentsQuery].
-class DeferredPaymentsResponse extends CoordinatorEvent {
+class DeferredPaymentsResponse extends CoordinatorReply {
   @override
   final String walletId;
-  final String queryId;
+  @override
+  final String? requestId;
   final List<DeferredPaymentDetail> payments;
 
   /// Pass as [GetDeferredPaymentsQuery.cursor] for the next page; null on
@@ -2656,21 +2619,23 @@ class DeferredPaymentsResponse extends CoordinatorEvent {
 
   DeferredPaymentsResponse({
     required this.walletId,
-    required this.queryId,
+    this.requestId,
     required List<DeferredPaymentDetail> payments,
     this.nextCursor,
   })  : payments = frozenList(payments);
 
+  /// Never: a failure to answer arrives as an [ErrorEvent].
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => null;
 }
 
 /// Result of [BroadcastDeferredPaymentCommand].
-class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
+class DeferredPaymentBroadcastEvent extends CoordinatorReply {
   @override
   final String walletId;
   final String txid;
-  final String requestId;
+  @override
+  final String? requestId;
 
   /// The network holds the transaction (`SEEN_ON_NETWORK` or `MINED`), or
   /// already did. An answer ARC gave in flight (it stopped waiting for the
@@ -2700,7 +2665,7 @@ class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
   DeferredPaymentBroadcastEvent({
     required this.walletId,
     required this.txid,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.networkStatus,
     this.source,
@@ -2711,15 +2676,16 @@ class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
   })  : competingTxids = frozenList(competingTxids);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The network does not hold the payment';
 }
 
 /// Result of [CheckDeferredPaymentStatusCommand].
-class DeferredPaymentStatusEvent extends CoordinatorEvent {
+class DeferredPaymentStatusEvent extends CoordinatorReply {
   @override
   final String walletId;
   final String txid;
-  final String requestId;
+  @override
+  final String? requestId;
 
   /// A source answered ([networkStatus] set).
   final bool success;
@@ -2747,7 +2713,7 @@ class DeferredPaymentStatusEvent extends CoordinatorEvent {
   DeferredPaymentStatusEvent({
     required this.walletId,
     required this.txid,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.networkStatus,
     this.source,
@@ -2759,15 +2725,16 @@ class DeferredPaymentStatusEvent extends CoordinatorEvent {
   })  : competingTxids = frozenList(competingTxids);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'No source answered';
 }
 
 /// Result of [CancelDeferredPaymentCommand].
-class DeferredPaymentCancelledEvent extends CoordinatorEvent {
+class DeferredPaymentCancelledEvent extends CoordinatorReply {
   @override
   final String walletId;
   final String txid;
-  final String requestId;
+  @override
+  final String? requestId;
   final bool success;
 
   /// What the network check before the cancellation answered.
@@ -2780,7 +2747,7 @@ class DeferredPaymentCancelledEvent extends CoordinatorEvent {
   DeferredPaymentCancelledEvent({
     required this.walletId,
     required this.txid,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.networkStatus,
     List<String> releasedUtxoKeys = const [],
@@ -2788,7 +2755,7 @@ class DeferredPaymentCancelledEvent extends CoordinatorEvent {
   })  : releasedUtxoKeys = frozenList(releasedUtxoKeys);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The payment was not cancelled';
 }
 
 // --- Channel Events ---
@@ -2814,9 +2781,6 @@ class ChannelRequestReceivedEvent extends CoordinatorEvent {
     required this.lockTimeUnix,
     this.context,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Channel opened successfully
@@ -2833,21 +2797,8 @@ class ChannelOpenedEvent extends CoordinatorEvent {
     this.fundingTxId,
     required this.fundingAmountSats,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
-/// The outcome of a [RetryChannelFundingCommand] (bead libspiffy-1n3).
-///
-/// [success] means the funding transaction reached the network on this
-/// attempt and the channel is open on this side; the ordinary
-/// [ChannelOpenedEvent] follows, and `channel_open` goes to the server as it
-/// does on a first open.
-///
-/// A failure is reported here and nowhere else: the counterparty is told
-/// nothing, so a retry that fails again leaves the channel exactly as it
-/// was, its inputs still reserved for the same transaction, ready for
 /// The outcome of a [ClaimChannelRefundCommand] (bead libspiffy-cqc, the
 /// V-99 follow-up).
 ///
@@ -2875,11 +2826,18 @@ class ChannelRefundClaimedEvent extends CoordinatorEvent {
     required this.success,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
+/// The outcome of a [RetryChannelFundingCommand] (bead libspiffy-1n3).
+///
+/// [success] means the funding transaction reached the network on this
+/// attempt and the channel is open on this side; the ordinary
+/// [ChannelOpenedEvent] follows, and `channel_open` goes to the server as it
+/// does on a first open.
+///
+/// A failure is reported here and nowhere else: the counterparty is told
+/// nothing, so a retry that fails again leaves the channel exactly as it
+/// was, its inputs still reserved for the same transaction, ready for
 /// another retry.
 class ChannelFundingRetriedEvent extends CoordinatorEvent {
   @override
@@ -2900,9 +2858,6 @@ class ChannelFundingRetriedEvent extends CoordinatorEvent {
     required this.success,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// The outcome of a [ResendChannelOpenCommand] (bead libspiffy-1n3).
@@ -2938,9 +2893,6 @@ class ChannelOpenResentEvent extends CoordinatorEvent {
     required this.success,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Payment made or received on a channel
@@ -2961,9 +2913,6 @@ class ChannelPaymentEvent extends CoordinatorEvent {
     required this.clientBalance,
     required this.serverBalance,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Channel closed
@@ -2980,9 +2929,6 @@ class ChannelClosedEvent extends CoordinatorEvent {
     this.reason,
     this.settlementTxId,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// One channel that started opening and never finished (bead
@@ -3046,9 +2992,6 @@ class UnfinishedChannelsFoundEvent extends CoordinatorEvent {
     required this.walletId,
     required List<UnfinishedChannel> channels,
   })  : channels = frozenList(channels);
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// An outgoing peer-to-peer message the app must transmit to [toPeerId] on
@@ -3072,9 +3015,6 @@ class P2PMessageToSendEvent extends CoordinatorEvent {
     required this.messageType,
     required Map<String, dynamic> payload,
   })  : payload = frozenPlainMap(payload);
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Outgoing P2P message that the app must transmit to the peer
@@ -3094,7 +3034,7 @@ class ChannelP2PMessageToSendEvent extends P2PMessageToSendEvent {
 /// transaction is not stored, or its row carries no counterparty marker, in
 /// which case the output is unrecoverable by request and only the block
 /// returning to the active chain can restore it.
-class AncestorProofRequestedEvent extends CoordinatorEvent {
+class AncestorProofRequestedEvent extends CoordinatorReply {
   @override
   final String walletId;
 
@@ -3108,14 +3048,15 @@ class AncestorProofRequestedEvent extends CoordinatorEvent {
   /// The ancestors named in the request.
   final List<String> ancestorTxids;
 
-  final String requestId;
+  @override
+  final String? requestId;
   final bool success;
   final String? error;
 
   AncestorProofRequestedEvent({
     required this.walletId,
     required this.txid,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.toPeerId,
     List<String> ancestorTxids = const [],
@@ -3123,7 +3064,7 @@ class AncestorProofRequestedEvent extends CoordinatorEvent {
   })  : ancestorTxids = frozenList(ancestorTxids);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'Nobody could be asked';
 }
 
 /// What became of a `proof_response` a counterparty sent back
@@ -3158,9 +3099,6 @@ class AncestorProofResponseEvent extends CoordinatorEvent {
     this.requestId,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// A `proof_request` a peer sent us, and what we did about it
@@ -3189,9 +3127,6 @@ class AncestorProofRequestReceivedEvent extends CoordinatorEvent {
     this.requestId,
     this.reason,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 // --- Benford Split Events ---
@@ -3230,9 +3165,6 @@ class UTXOSplitStartedEvent extends CoordinatorEvent {
     required this.utxoCount,
     required this.targetOutputsPerUtxo,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Benford UTXO split completed.
@@ -3240,9 +3172,11 @@ class UTXOSplitStartedEvent extends CoordinatorEvent {
 /// [success] follows ARC's answer to every split transaction (bead
 /// libspiffy-wdch): a split ARC accepted or queued for a retry succeeds, one
 /// it rejected or reports contested does not; [splits] tells each apart.
-class UTXOSplitCompleteEvent extends CoordinatorEvent {
+class UTXOSplitCompleteEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
 
   /// Split transactions ARC accepted or queued: the length of [txids]. Not
   /// the number of outputs, which is [newUtxoCount] (bead libspiffy-q28i).
@@ -3275,11 +3209,12 @@ class UTXOSplitCompleteEvent extends CoordinatorEvent {
     this.error,
     List<String> txids = const [],
     List<SplitTransactionOutcome> splits = const [],
+    this.requestId,
   })  : txids = frozenList(txids),
         splits = frozenList(splits);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The split failed';
 }
 
 /// How one Benford split transaction ended (bead libspiffy-wdch). A split is
@@ -3371,9 +3306,11 @@ class SplitTransactionOutcome {
 // --- Archive Events ---
 
 /// Timestamp archive completed
-class TimestampCompleteEvent extends CoordinatorEvent {
+class TimestampCompleteEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String archiveId;
   final String? transactionId;
   final bool success;
@@ -3385,10 +3322,11 @@ class TimestampCompleteEvent extends CoordinatorEvent {
     this.transactionId,
     required this.success,
     this.error,
+    this.requestId,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The timestamp was not made';
 }
 
 // --- Status & Error Events ---
@@ -3405,12 +3343,12 @@ class WalletStatusEvent extends CoordinatorEvent {
     required this.status,
     required this.message,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Error from the coordinator
+/// Something failed that has no reply of its own to report it in.
+///
+/// When a request caused it, [requestId] names that request, and
+/// `WalletCoordinator.ask` fails with it; otherwise it is null.
 class ErrorEvent extends CoordinatorEvent {
   @override
   final String? walletId;
@@ -3418,15 +3356,17 @@ class ErrorEvent extends CoordinatorEvent {
   final String message;
   final String? stackTrace;
 
+  /// The [CoordinatorRequest.requestId] of the request that failed; null
+  /// when no request caused this.
+  final String? requestId;
+
   ErrorEvent({
     this.walletId,
     required this.source,
     required this.message,
     this.stackTrace,
+    this.requestId,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
 }
 
 // ==========================================================================
@@ -3463,7 +3403,7 @@ class ErrorEvent extends CoordinatorEvent {
 /// Nothing is deleted: the reclaimed payment keeps its row, its stored
 /// transaction and its raw hex, and both txids stay queryable
 /// ([GetDeferredPaymentsQuery] with `includeResolved`).
-class ReclaimDeferredPaymentCommand implements Message {
+class ReclaimDeferredPaymentCommand extends CoordinatorRequest<DeferredPaymentReclaimedEvent> {
   final String walletId;
 
   /// The outstanding deferred payment to reclaim.
@@ -3474,24 +3414,19 @@ class ReclaimDeferredPaymentCommand implements Message {
 
   /// Recorded as the reclaimed payment's resolution reason.
   final String? reason;
-  final String? requestId;
 
   ReclaimDeferredPaymentCommand({
     required this.walletId,
     required this.txid,
     this.via = DeferredPaymentNetworkSource.arc,
     this.reason,
-    this.requestId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => requestId ?? 'reclaim-deferred-$txid';
+  Duration get replyTimeout => CoordinatorRequest.reclaimTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Completes an outstanding deferred payment that the wallet signed only in
@@ -3507,7 +3442,7 @@ class ReclaimDeferredPaymentCommand implements Message {
 /// [DeferredPaymentState.completed]. Nothing is broadcast here: settle the
 /// completed transaction as any other deferred payment (or the counterparty
 /// broadcasts it). Replied with [DeferredPaymentCompletedEvent].
-class CompleteDeferredPaymentCommand implements Message {
+class CompleteDeferredPaymentCommand extends CoordinatorRequest<DeferredPaymentCompletedEvent> {
   final String walletId;
 
   /// The half-signed deferred payment.
@@ -3515,47 +3450,41 @@ class CompleteDeferredPaymentCommand implements Message {
 
   /// The completed transaction.
   final String rawHex;
-  final String? requestId;
 
   CompleteDeferredPaymentCommand({
     required this.walletId,
     required this.txid,
     required this.rawHex,
-    this.requestId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => requestId ?? 'complete-deferred-$txid';
-  @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Result of [CompleteDeferredPaymentCommand]: on [success] the completed
 /// transaction [completedTxid] is recorded and holds the half's inputs.
-class DeferredPaymentCompletedEvent extends CoordinatorEvent {
+class DeferredPaymentCompletedEvent extends CoordinatorReply {
   @override
   final String walletId;
   final String txid;
   final String? completedTxid;
-  final String requestId;
+  @override
+  final String? requestId;
   final bool success;
   final String? error;
 
   DeferredPaymentCompletedEvent({
     required this.walletId,
     required this.txid,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.completedTxid,
     this.error,
   });
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The payment was not completed';
 }
 
 /// Asks whether outputs the wallet holds were spent by someone else: by
@@ -3576,31 +3505,27 @@ class DeferredPaymentCompletedEvent extends CoordinatorEvent {
 /// output goes and the price arrives, both in the same check. Replied with
 /// [ForeignSpendsCheckedEvent] once the read model shows what was
 /// recorded, so a balance read on hearing it is current.
-class CheckForeignSpendsCommand implements Message {
+class CheckForeignSpendsCommand extends CoordinatorRequest<ForeignSpendsCheckedEvent> {
   final String walletId;
 
   /// `txid:vout` keys to check; null for every unspent plugin output.
   final List<String>? utxoKeys;
-  final String? requestId;
 
-  CheckForeignSpendsCommand({required this.walletId, List<String>? utxoKeys, this.requestId})
+  CheckForeignSpendsCommand({required this.walletId, List<String>? utxoKeys, super.requestId})
       : utxoKeys = frozenListOrNull(utxoKeys);
 
   @override
-  String get correlationId => requestId ?? 'check-foreign-spends-$walletId-${DateTime.now().microsecondsSinceEpoch}';
+  Duration get replyTimeout => CoordinatorRequest.foreignSpendsTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Result of [CheckForeignSpendsCommand].
-class ForeignSpendsCheckedEvent extends CoordinatorEvent {
+class ForeignSpendsCheckedEvent extends CoordinatorReply {
   @override
   final String walletId;
-  final String requestId;
+  @override
+  final String? requestId;
   final bool success;
 
   /// The outputs checked.
@@ -3616,7 +3541,7 @@ class ForeignSpendsCheckedEvent extends CoordinatorEvent {
 
   ForeignSpendsCheckedEvent({
     required this.walletId,
-    required this.requestId,
+    this.requestId,
     required this.success,
     List<String> checked = const [],
     List<ForeignSpend> spends = const [],
@@ -3627,7 +3552,7 @@ class ForeignSpendsCheckedEvent extends CoordinatorEvent {
         unchecked = frozenMap(unchecked);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The check failed';
 }
 
 /// Result of [ReclaimDeferredPaymentCommand].
@@ -3640,7 +3565,7 @@ class ForeignSpendsCheckedEvent extends CoordinatorEvent {
 /// reclaimed if the network reports the self-spend later (watch it with
 /// [GetDeferredPaymentsQuery] or [CheckDeferredPaymentStatusCommand] on
 /// [reclaimTxid]).
-class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
+class DeferredPaymentReclaimedEvent extends CoordinatorReply {
   @override
   final String walletId;
 
@@ -3649,7 +3574,8 @@ class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
 
   /// The wallet's self-spend of its held inputs, null when none was built.
   final String? reclaimTxid;
-  final String requestId;
+  @override
+  final String? requestId;
   final bool success;
 
   /// The inputs the self-spend spends.
@@ -3678,7 +3604,7 @@ class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
   DeferredPaymentReclaimedEvent({
     required this.walletId,
     required this.txid,
-    required this.requestId,
+    this.requestId,
     required this.success,
     this.reclaimTxid,
     List<String> reclaimedUtxoKeys = const [],
@@ -3693,5 +3619,5 @@ class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
         competingTxids = frozenList(competingTxids);
 
   @override
-  DateTime get eventTimestamp => DateTime.now();
+  String? get failure => success ? null : error ?? 'The payment was not reclaimed';
 }

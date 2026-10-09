@@ -228,7 +228,7 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
 
 /// Send a token operation through the coordinator and await the result
 Future<PaymentReadyEvent> tokenOp(
-  ActorRef coordinator,
+  WalletCoordinator coordinator,
   Stream<CoordinatorEvent> events,
   String walletId,
   String action,
@@ -263,7 +263,7 @@ Future<PaymentReadyEvent> tokenOp(
 void main() {
   // Bob's system
   late LibSpiffyActorSystem bobSystem;
-  late ActorRef bobCoordinator;
+  late WalletCoordinator bobCoordinator;
   late Stream<CoordinatorEvent> bobEvents;
   late Directory bobDir;
   late Isar bobIsar;
@@ -271,7 +271,7 @@ void main() {
 
   // Alice's system
   late LibSpiffyActorSystem aliceSystem;
-  late ActorRef aliceCoordinator;
+  late WalletCoordinator aliceCoordinator;
   late Stream<CoordinatorEvent> aliceEvents;
   late Directory aliceDir;
   late Isar aliceIsar;

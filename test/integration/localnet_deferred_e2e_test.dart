@@ -102,10 +102,10 @@ void main() {
 
   /// Alice's deferred payments, every state.
   Future<Map<String, DeferredPaymentDetail>> deferred() async {
-    final queryId = 'deferred-${requests++}';
-    final answer = alice.next<DeferredPaymentsResponse>((e) => e.queryId == queryId);
+    final requestId = 'deferred-${requests++}';
+    final answer = alice.next<DeferredPaymentsResponse>((e) => e.requestId == requestId);
     alice.coordinator.tell(GetDeferredPaymentsQuery(
-        walletId: aliceWallet, includeResolved: true, includeBeef: false, queryId: queryId));
+        walletId: aliceWallet, includeResolved: true, includeBeef: false, requestId: requestId));
     return {for (final p in (await answer).payments) p.txid: p};
   }
 
@@ -121,7 +121,7 @@ void main() {
   }
 
   Future<T> ask<T extends CoordinatorEvent>(
-      Message Function(String requestId) command, String Function(T) requestIdOf) {
+      Message Function(String requestId) command, String? Function(T) requestIdOf) {
     final requestId = 'request-${requests++}';
     final answer = alice.next<T>((e) => requestIdOf(e) == requestId);
     alice.coordinator.tell(command(requestId));

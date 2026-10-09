@@ -31,7 +31,7 @@ import '../utils/beef.dart';
 import 'aggregate_signing_client.dart';
 import 'channel_p2p_adapter.dart';
 import 'coordinator_messages.dart';
-import 'internal_messages.dart' show HeaderSyncReport, SetCoordinatorForHeadersMessage;
+import 'internal_messages.dart' show FailureResponse, HeaderSyncReport, SetCoordinatorForHeadersMessage;
 import 'spv_messages.dart' show BlockHeadersReceivedMessage;
 import 'projection_barrier.dart';
 import 'proof_p2p_adapter.dart';
@@ -53,12 +53,15 @@ typedef _Balances = ({
 
 /// The canonical public interface for third-party apps using LibSpiffy.
 ///
-/// Receives coordinator commands, delegates to internal actors, tracks
-/// correlations, and emits events on a broadcast stream.
+/// Receives coordinator commands, delegates to internal actors, and emits
+/// events on a broadcast stream. Every [CoordinatorRequest] is answered
+/// with its reply carrying the request's id, on every path.
 ///
-/// Apps interact with LibSpiffy exclusively through this actor:
-/// - Send commands via `coordinator.tell(CreateWalletCommand(...))`
-/// - Subscribe to events via `libspiffy.coordinatorEvents.listen(...)`
+/// Apps interact with LibSpiffy through this actor, by way of
+/// `WalletCoordinator` (`libspiffy.coordinator`):
+/// - `ask(CreateWalletCommand(...))` waits for the request's own reply
+/// - `tell(...)` sends and leaves the reply on the event stream
+/// - `on<E>()` and `libspiffy.coordinatorEvents` follow the events
 class WalletCoordinatorActor extends Actor {
   static final _log = Logger('WalletCoordinatorActor');
 
@@ -343,9 +346,9 @@ class WalletCoordinatorActor extends Actor {
 
   /// How long the invoice coordinator has to answer a payment's mark-paid.
   static const _invoiceMarkPaidTimeout = Duration(seconds: 30);
-  final Map<String, String> _paymentInvoiceCorrelation = {}; // invoiceId → walletId
-  final Map<String, String> _timestampCorrelation = {}; // invoiceId → archiveId
-  final Map<String, CreateWalletCommand> _pendingCreateWallet = {}; // walletId → original cmd
+
+  /// How long the wallet manager, or a wallet, has to answer a command.
+  static const _walletReplyTimeout = Duration(seconds: 30);
   final Map<String, StreamSubscription> _eventSubscriptions = {}; // walletId → subscription
 
   // BEEF settlement correlation — tracks in-flight SettleBEEFCommand operations
@@ -479,8 +482,47 @@ class WalletCoordinatorActor extends Actor {
   /// Get the coordinator's event stream
   Stream<CoordinatorEvent> get events => _eventStream.stream;
 
+  /// The replies `WalletCoordinator.ask` waits for, by request id.
+  final Map<String, Completer<CoordinatorEvent>> _awaitedReplies = {};
+
+  /// Set when this actor stops: nothing more is answered.
+  bool _stopped = false;
+
+  /// Completes with the reply to the request [requestId], or the
+  /// [ErrorEvent] it causes, once emitted; fails with a closed
+  /// [CoordinatorFailure] if this actor stops first. Register before the
+  /// request is sent: an answer emitted earlier is not seen.
+  Future<CoordinatorEvent> awaitReply(String requestId) {
+    if (_stopped) {
+      return Future.error(CoordinatorFailure(requestId, 'The coordinator has stopped'));
+    }
+    if (_awaitedReplies.containsKey(requestId)) {
+      return Future.error(StateError('A reply to request $requestId is already awaited; '
+          'each request needs its own requestId'));
+    }
+    return (_awaitedReplies[requestId] = Completer<CoordinatorEvent>()).future;
+  }
+
+  /// Stops waiting for the reply to [requestId].
+  void forgetReply(String requestId) => _awaitedReplies.remove(requestId);
+
+  /// Fails every reply still awaited: this actor will answer nothing more.
+  void _closeAwaitedReplies() {
+    _stopped = true;
+    final awaited = Map.of(_awaitedReplies);
+    _awaitedReplies.clear();
+    awaited.forEach((requestId, reply) =>
+        reply.completeError(CoordinatorFailure(requestId, 'The coordinator stopped before it answered')));
+  }
+
   void _emitEvent(CoordinatorEvent event) {
     if (_eventStream.isClosed) return;
+    final requestId = switch (event) {
+      CoordinatorReply(:final requestId) => requestId,
+      ErrorEvent(:final requestId) => requestId,
+      _ => null,
+    };
+    if (requestId != null) _awaitedReplies.remove(requestId)?.complete(event);
     final buffered = _beforeFirstListener;
     if (buffered != null) {
       if (buffered.length >= _maxBufferedStartupEvents) {
@@ -618,6 +660,7 @@ class WalletCoordinatorActor extends Actor {
     // this (bead libspiffy-7ye4). An announcement already reading is waited
     // for by [stopAnnouncements], which shutdown calls before it gets here.
     _announcementsStopped = true;
+    _closeAwaitedReplies();
     _deadlineSweep?.cancel();
     _deadlineSweep = null;
     for (final sub in _eventSubscriptions.values) {
@@ -641,10 +684,14 @@ class WalletCoordinatorActor extends Actor {
   Future<void> onMessage(dynamic message) async {
     try {
       // === COMMANDS FROM APP ===
+      // A request answered after a round trip to another actor is handled
+      // off the mailbox, with the request in hand for its reply. Its first
+      // message goes out before the handler's first await, so requests
+      // still reach the other actors in the order they arrived here.
       if (message is CreateWalletCommand) {
-        await _handleCreateWallet(message);
+        unawaited(_handleCreateWallet(message));
       } else if (message is DeleteWalletCommand) {
-        await _handleDeleteWallet(message);
+        unawaited(_handleDeleteWallet(message));
       } else if (message is ImportWalletCommand) {
         await _handleImportWallet(message);
       } else if (message is GetBalanceQuery) {
@@ -664,13 +711,13 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is DeriveType42DestinationCommand) {
         unawaited(_handleDeriveType42Destination(message)); // off the mailbox: a wallet round trip
       } else if (message is CreateInvoiceCommand) {
-        await _handleCreateInvoice(message);
+        unawaited(_handleCreateInvoice(message));
       } else if (message is PayInvoiceCommand) {
-        await _handlePayInvoice(message);
+        unawaited(_handlePayInvoice(message));
       } else if (message is ValidateBEEFCommand) {
         await _handleValidateBEEF(message);
       } else if (message is RecordOutgoingCommand) {
-        await _handleRecordOutgoing(message);
+        unawaited(_handleRecordOutgoing(message));
       } else if (message is ImportTransactionCommand) {
         await _handleImportTransaction(message);
       } else if (message is StoreHeadersCommand) {
@@ -684,17 +731,15 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is RegisterWatchAddressCommand) {
         unawaited(_handleRegisterWatchAddress(message)); // off the mailbox: wallet and projection round trips
       } else if (message is ReleaseUTXOsCommand) {
-        await _handleReleaseUTXOs(message);
+        unawaited(_handleReleaseUTXOs(message));
       } else if (message is SplitUTXOsCommand) {
-        await _handleSplitUTXOs(message);
+        unawaited(_handleSplitUTXOs(message));
       } else if (message is ProvisionFundingCommand) {
-        await _handleProvisionFunding(message);
+        unawaited(_handleProvisionFunding(message));
       } else if (message is TimestampCommand) {
-        await _handleTimestamp(message);
+        unawaited(_handleTimestamp(message));
       } else if (message is SettleBEEFCommand) {
         await _handleSettleBEEF(message);
-      } else if (message is RefreshWalletCommand) {
-        await _handleRefreshWallet(message);
       }
       // Deferred payments (bead libspiffy-7p2): answered off the mailbox
       // (storage reads, BEEF rebuilds, network round trips).
@@ -752,15 +797,7 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_proofAdapter.handleRequestProof(message));
       }
       // === RESPONSES FROM INTERNAL ACTORS ===
-      else if (message is wm.WalletCreatedMessage) {
-        _handleWalletCreatedResponse(message);
-      } else if (message is wm.WalletCreatedResponse) {
-        _handleWalletCreatedResponseAlt(message);
-      } else if (message is inv.InvoiceCreatedMessage) {
-        _handleInvoiceCreatedResponse(message);
-      } else if (message is pay.BEEFPaymentResponse) {
-        await _handleBEEFPaymentResponse(message);
-      } else if (message is wm.BEEFValidationResult) {
+      else if (message is wm.BEEFValidationResult) {
         await _handleBEEFValidationResult(message);
       } else if (message is wm.SPVValidationResult) {
         _handleSPVValidationResult(message);
@@ -770,13 +807,6 @@ class WalletCoordinatorActor extends Actor {
           utxoCount: message.utxoCount,
           targetOutputsPerUtxo: message.targetUtxoCount,
         ));
-      } else if (message is wm.SplitUTXOsResponse) {
-        _handleSplitUTXOsResponse(message);
-      } else if (message is wm.TransactionRecordedResponse) {
-        // Off the mailbox: the announcement waits for the projection.
-        unawaited(_handleTransactionRecorded(message));
-      } else if (message is pay.ProvisionFundingResponse) {
-        _handleProvisionFundingResponse(message);
       } else if (message is wm.FundingTransactionBuiltResponse) {
         _channelAdapter?.handleFundingTransactionBuilt(message);
       } else if (message is ch.RefundTransactionBuiltResponse) {
@@ -848,6 +878,7 @@ class WalletCoordinatorActor extends Actor {
         source: 'WalletCoordinatorActor',
         message: e.toString(),
         stackTrace: stackTrace.toString(),
+        requestId: message is CoordinatorRequest ? message.requestId : null,
       ));
     }
   }
@@ -858,36 +889,123 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleCreateWallet(CreateWalletCommand cmd) async {
     _log.info('Creating wallet ${cmd.walletId}');
-    _pendingCreateWallet[cmd.walletId] = cmd;
-
-    _walletManager.tell(
-      wm.CreateWalletMessage(
-        cmd.walletId,
-        cmd.name,
-        mnemonic: cmd.mnemonic,
-        wif: cmd.wif,
-        xpriv: cmd.xpriv,
-        xpub: cmd.xpub,
-        walletMetadata: cmd.walletMetadata,
-      ),
-      sender: context.self,
-    );
+    final created = await _createWallet(wm.CreateWalletMessage(
+      cmd.walletId,
+      cmd.name,
+      mnemonic: cmd.mnemonic,
+      wif: cmd.wif,
+      xpriv: cmd.xpriv,
+      xpub: cmd.xpub,
+      walletMetadata: cmd.walletMetadata,
+    ));
+    _emitEvent(WalletCreatedEvent(
+      walletId: cmd.walletId,
+      rootAddress: created.rootAddress,
+      success: created.error == null,
+      error: created.error,
+      requestId: cmd.requestId,
+    ));
   }
 
+  /// Has the wallet manager create the wallet [message] names, and waits
+  /// until the wallet read model holds it: callers act on the answer
+  /// straight away (import a transaction, which makes SPVActor look up the
+  /// root address in the read model), so it is given only once the
+  /// projection has written the wallet row and its root address
+  /// (libspiffy-p56). The root address, and why the wallet is not created
+  /// and held, or null.
+  Future<({String rootAddress, String? error})> _createWallet(wm.CreateWalletMessage message) async {
+    final walletId = message.walletId;
+    final wm.WalletCreatedMessage created;
+    try {
+      created = await _askWallet<wm.WalletCreatedMessage>(message, _walletReplyTimeout);
+    } catch (e) {
+      return (rootAddress: '', error: 'Creating wallet $walletId failed: $e');
+    }
+    _log.info('Wallet created: $walletId success=${created.success}');
+    if (!created.success) {
+      return (rootAddress: created.rootAddress, error: created.error ?? 'The wallet refused the creation');
+    }
+    _channelAdapter?.updateWalletId(walletId);
+    try {
+      final reason = await awaitProjectionApplied(
+        _walletProjection,
+        matches: (e) => e is domain_events.WalletCreatedEvent && e.walletId == walletId,
+        alreadyApplied: () async => await _storage.getWallet(walletId) != null,
+      );
+      if (reason == null) return (rootAddress: created.rootAddress, error: null);
+      final error = 'Wallet $walletId was created but the wallet read model failed to apply it: $reason';
+      _log.warning(error);
+      return (rootAddress: created.rootAddress, error: error);
+    } catch (e, stackTrace) {
+      final error = 'Unexpected error awaiting projection persistence for wallet $walletId: $e';
+      _log.warning(error, e, stackTrace);
+      return (rootAddress: created.rootAddress, error: error);
+    }
+  }
+
+  /// Deletes the wallet and answers once the read model no longer holds it.
   Future<void> _handleDeleteWallet(DeleteWalletCommand cmd) async {
     _log.info('Deleting wallet ${cmd.walletId}');
-    final deleteCommand = domain.DeleteWalletCommand(
-      walletId: cmd.walletId,
-      reason: cmd.reason,
-    );
-    _walletManager.tell(
-      wm.WalletCommandMessage(cmd.walletId, deleteCommand),
-      sender: context.self,
-    );
+    WalletDeletedEvent answer({String? error}) =>
+        WalletDeletedEvent(walletId: cmd.walletId, success: error == null, error: error, requestId: cmd.requestId);
+    try {
+      final applied = awaitProjectionApplied(
+        _walletProjection,
+        matches: (e) => e is domain_events.WalletDeletedEvent && e.walletId == cmd.walletId,
+        alreadyApplied: () async => await _storage.getWallet(cmd.walletId) == null,
+      );
+      final wm.WalletDeletedResponse response;
+      try {
+        response = await _askWallet<wm.WalletDeletedResponse>(
+          wm.WalletCommandMessage(cmd.walletId, domain.DeleteWalletCommand(walletId: cmd.walletId, reason: cmd.reason)),
+          _walletReplyTimeout,
+        );
+      } catch (e) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(answer(error: 'Deleting wallet ${cmd.walletId} failed: $e'));
+        return;
+      }
+      if (!response.success) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(answer(error: response.error ?? 'The wallet refused the deletion'));
+        return;
+      }
+      final notApplied = await applied;
+      _emitEvent(answer(
+          error: notApplied == null
+              ? null
+              : 'Deleted and journaled, but the read model has not applied it yet: $notApplied'));
+    } catch (e) {
+      _emitEvent(answer(error: 'Deleting wallet ${cmd.walletId} failed: $e'));
+    }
   }
 
+  /// Imports a wallet's history (ImportActor), answering with the
+  /// [ImportCompleteEvent] the import ends with; its progress is announced
+  /// on the way. A mnemonic wallet is created first and its import then
+  /// run as a resume, which derives its keys from the stored mnemonic.
   Future<void> _handleImportWallet(ImportWalletCommand cmd) async {
     _log.info('Importing wallet ${cmd.walletId}');
+    ImportCompleteEvent failed(String error) =>
+        ImportCompleteEvent(walletId: cmd.walletId, success: false, error: error, requestId: cmd.requestId);
+
+    if (!cmd.resume && cmd.xpriv == null && cmd.wif == null && cmd.mnemonic == null) {
+      _emitEvent(failed('No import key provided (xpriv, wif, or mnemonic required)'));
+      return;
+    }
+    // The import this command runs, and the progress it reports, come from
+    // the ImportActor, which exists only with a blockchain data source.
+    final importNotifications = _importNotifications;
+    final start = cmd.resume || (cmd.xpriv == null && cmd.wif == null)
+        ? _resumeWalletImport
+        : cmd.xpriv != null
+            ? _importWalletFromXpriv
+            : _importWalletFromWif;
+    if (importNotifications == null || start == null) {
+      _emitEvent(failed('Importing a wallet needs a blockchain data source, and none was configured'));
+      return;
+    }
 
     try {
       // Subscribe to import notifications for progress/completion forwarding.
@@ -895,103 +1013,82 @@ class WalletCoordinatorActor extends Actor {
       // import still runs, which the ImportActor ignores as a duplicate)
       // must not leave the first subscription behind, or every event would
       // be announced twice.
-      if (_importNotifications != null) {
-        await _eventSubscriptions.remove(cmd.walletId)?.cancel();
-        _eventSubscriptions[cmd.walletId] = _importNotifications
-            .where((e) => e.walletId == cmd.walletId)
-            .listen((event) {
-          if (event is domain_events.WalletImportProgressEvent) {
-            _emitEvent(ImportProgressEvent(
-              walletId: cmd.walletId,
-              phase: event.phase,
-              progress: event.progress,
-              message: event.message,
-              addressesFound: event.addressesFound,
-              totalAddresses: event.totalAddresses,
-              transactionsProcessed: event.transactionsProcessed,
-              totalTransactions: event.totalTransactions,
-            ));
-          } else if (event is domain_events.WalletImportCompletedEvent) {
-            _eventSubscriptions.remove(cmd.walletId)?.cancel();
-            _emitEvent(ImportCompleteEvent(
-              walletId: cmd.walletId,
-              success: true,
-              addressCount: event.totalAddresses,
-              transactionCount: event.totalTransactions,
-              transactionsSkipped: event.transactionsSkipped,
-              transactionsFailed: event.transactionsFailed,
-            ));
-          } else if (event is domain_events.WalletImportFailedEvent) {
-            _eventSubscriptions.remove(cmd.walletId)?.cancel();
-            _emitEvent(ImportCompleteEvent(
-              walletId: cmd.walletId,
-              success: false,
-              error: event.error,
-            ));
-          } else if (event is domain_events.WalletImportUTXOConfirmedEvent) {
-            _emitEvent(ImportUTXOConfirmedEvent(
-              walletId: cmd.walletId,
-              txid: event.txid,
-              vout: event.vout,
-              success: event.success,
-              error: event.error,
-            ));
-          } else if (event is domain_events.WalletImportTransactionConfirmedEvent) {
-            _emitEvent(ImportTransactionConfirmedEvent(
-              walletId: cmd.walletId,
-              txid: event.txid,
-              success: event.success,
-              error: event.error,
-            ));
-          }
-        });
-      }
+      await _eventSubscriptions.remove(cmd.walletId)?.cancel();
+      _eventSubscriptions[cmd.walletId] = importNotifications
+          .where((e) => e.walletId == cmd.walletId)
+          .listen((event) {
+        if (event is domain_events.WalletImportProgressEvent) {
+          _emitEvent(ImportProgressEvent(
+            walletId: cmd.walletId,
+            phase: event.phase,
+            progress: event.progress,
+            message: event.message,
+            addressesFound: event.addressesFound,
+            totalAddresses: event.totalAddresses,
+            transactionsProcessed: event.transactionsProcessed,
+            totalTransactions: event.totalTransactions,
+          ));
+        } else if (event is domain_events.WalletImportCompletedEvent) {
+          _eventSubscriptions.remove(cmd.walletId)?.cancel();
+          _emitEvent(ImportCompleteEvent(
+            walletId: cmd.walletId,
+            success: true,
+            addressCount: event.totalAddresses,
+            transactionCount: event.totalTransactions,
+            transactionsSkipped: event.transactionsSkipped,
+            transactionsFailed: event.transactionsFailed,
+            requestId: cmd.requestId,
+          ));
+        } else if (event is domain_events.WalletImportFailedEvent) {
+          _eventSubscriptions.remove(cmd.walletId)?.cancel();
+          _emitEvent(failed(event.error));
+        } else if (event is domain_events.WalletImportUTXOConfirmedEvent) {
+          _emitEvent(ImportUTXOConfirmedEvent(
+            walletId: cmd.walletId,
+            txid: event.txid,
+            vout: event.vout,
+            success: event.success,
+            error: event.error,
+          ));
+        } else if (event is domain_events.WalletImportTransactionConfirmedEvent) {
+          _emitEvent(ImportTransactionConfirmedEvent(
+            walletId: cmd.walletId,
+            txid: event.txid,
+            success: event.success,
+            error: event.error,
+          ));
+        }
+      });
 
-      if (cmd.resume && _resumeWalletImport != null) {
-        _resumeWalletImport(
-          walletId: cmd.walletId,
-          walletName: cmd.walletName,
-          networkType: cmd.networkType,
-          addressGapLimit: cmd.gapLimit,
-        );
-      } else if (cmd.xpriv != null && _importWalletFromXpriv != null) {
-        _importWalletFromXpriv(
+      if (cmd.resume) {
+        _resumeWalletImport!(
+            walletId: cmd.walletId, walletName: cmd.walletName, networkType: cmd.networkType, addressGapLimit: cmd.gapLimit);
+      } else if (cmd.xpriv != null) {
+        _importWalletFromXpriv!(
           walletId: cmd.walletId,
           xpriv: cmd.xpriv!,
           walletName: cmd.walletName,
           networkType: cmd.networkType,
           addressGapLimit: cmd.gapLimit,
         );
-      } else if (cmd.wif != null && _importWalletFromWif != null) {
-        _importWalletFromWif(
-          walletId: cmd.walletId,
-          wif: cmd.wif!,
-          walletName: cmd.walletName,
-          networkType: cmd.networkType,
-        );
-      } else if (cmd.mnemonic != null) {
-        // For mnemonic import, create wallet with mnemonic
-        _walletManager.tell(
-          wm.CreateWalletMessage(
-            cmd.walletId,
-            cmd.walletName,
-            mnemonic: cmd.mnemonic,
-          ),
-          sender: context.self,
-        );
+      } else if (cmd.wif != null) {
+        _importWalletFromWif!(walletId: cmd.walletId, wif: cmd.wif!, walletName: cmd.walletName, networkType: cmd.networkType);
       } else {
-        _emitEvent(ErrorEvent(
-          walletId: cmd.walletId,
-          source: 'import',
-          message: 'No import key provided (xpriv, wif, or mnemonic required)',
-        ));
+        // The import of a mnemonic wallet is a resume of a wallet created
+        // from it: the resume reads the mnemonic back and derives the keys
+        // it scans with. Creating the wallet alone imported nothing.
+        final created = await _createWallet(wm.CreateWalletMessage(cmd.walletId, cmd.walletName, mnemonic: cmd.mnemonic));
+        if (created.error != null) {
+          await _eventSubscriptions.remove(cmd.walletId)?.cancel();
+          _emitEvent(failed(created.error!));
+          return;
+        }
+        _resumeWalletImport!(
+            walletId: cmd.walletId, walletName: cmd.walletName, networkType: cmd.networkType, addressGapLimit: cmd.gapLimit);
       }
     } catch (e) {
-      _emitEvent(ImportCompleteEvent(
-        walletId: cmd.walletId,
-        success: false,
-        error: e.toString(),
-      ));
+      await _eventSubscriptions.remove(cmd.walletId)?.cancel();
+      _emitEvent(failed(e.toString()));
     }
   }
 
@@ -1077,7 +1174,7 @@ class WalletCoordinatorActor extends Actor {
       final balances = await _balancesOf(query.walletId);
       _emitEvent(BalanceResponse(
         walletId: query.walletId,
-        queryId: query.correlationId,
+        requestId: query.requestId,
         confirmedBalance: balances.confirmed,
         unconfirmedBalance: balances.unconfirmed,
         totalBalance: balances.confirmed + balances.unconfirmed,
@@ -1090,6 +1187,7 @@ class WalletCoordinatorActor extends Actor {
         walletId: query.walletId,
         source: 'getBalance',
         message: e.toString(),
+        requestId: query.requestId,
       ));
     }
   }
@@ -1104,7 +1202,7 @@ class WalletCoordinatorActor extends Actor {
 
       _emitEvent(TransactionsResponse(
         walletId: query.walletId,
-        queryId: query.correlationId,
+        requestId: query.requestId,
         transactions: transactions,
       ));
     } catch (e) {
@@ -1112,6 +1210,7 @@ class WalletCoordinatorActor extends Actor {
         walletId: query.walletId,
         source: 'getTransactions',
         message: e.toString(),
+        requestId: query.requestId,
       ));
     }
   }
@@ -1122,7 +1221,7 @@ class WalletCoordinatorActor extends Actor {
 
       _emitEvent(TransactionDetailResponse(
         walletId: query.walletId,
-        queryId: query.correlationId,
+        requestId: query.requestId,
         transaction: tx,
         found: tx != null,
       ));
@@ -1131,34 +1230,60 @@ class WalletCoordinatorActor extends Actor {
         walletId: query.walletId,
         source: 'getTransactionDetail',
         message: e.toString(),
+        requestId: query.requestId,
       ));
     }
   }
 
   Future<void> _handleCreateInvoice(CreateInvoiceCommand cmd) async {
     _log.info('Creating invoice for wallet ${cmd.walletId}');
-
-    _invoiceCoordinator.tell(
-      inv.CreateInvoiceMessage(
+    InvoiceCreatedEvent failed(String error) => InvoiceCreatedEvent(
         walletId: cmd.walletId,
-        amount: cmd.amount,
-        outputs: cmd.outputs,
-        description: cmd.description,
-        expiresIn: cmd.effectiveExpiresIn,
-        invoiceMetadata: cmd.invoiceMetadata,
-        numberOfAddresses: cmd.numberOfAddresses,
-      ),
-      sender: context.self,
-    );
+        invoiceId: '',
+        addresses: const [],
+        amount: cmd.amount ?? BigInt.zero,
+        success: false,
+        error: error,
+        requestId: cmd.requestId);
+    try {
+      final response = await _ask<inv.InvoiceCreatedMessage>(
+        _invoiceCoordinator,
+        inv.CreateInvoiceMessage(
+          walletId: cmd.walletId,
+          amount: cmd.amount,
+          outputs: cmd.outputs,
+          description: cmd.description,
+          expiresIn: cmd.effectiveExpiresIn,
+          invoiceMetadata: cmd.invoiceMetadata,
+          numberOfAddresses: cmd.numberOfAddresses,
+        ),
+        cmd.replyTimeout,
+      );
+      _log.info('Invoice created: ${response.invoiceId} success=${response.success}');
+      _emitEvent(InvoiceCreatedEvent(
+        walletId: response.walletId,
+        invoiceId: response.invoiceId,
+        addresses: response.addresses,
+        amount: response.amount,
+        outputs: response.outputs,
+        issuedAddresses: response.issuedAddresses,
+        description: response.description,
+        expiresAt: response.expiresAt,
+        success: response.success,
+        error: response.error,
+        requestId: cmd.requestId,
+      ));
+    } catch (e) {
+      _emitEvent(failed('Creating an invoice for wallet ${cmd.walletId} failed: $e'));
+    }
   }
 
   Future<void> _handlePayInvoice(PayInvoiceCommand cmd) async {
     _log.info('Paying invoice ${cmd.invoiceId} from wallet ${cmd.walletId}');
-
-    // Track correlation
-    _paymentInvoiceCorrelation[cmd.invoiceId] = cmd.walletId;
-
-    _paymentCoordinator.tell(
+    final pay.BEEFPaymentResponse response;
+    try {
+      response = await _ask<pay.BEEFPaymentResponse>(
+      _paymentCoordinator,
       pay.PayInvoiceMessage(
         walletId: cmd.walletId,
         invoiceId: cmd.invoiceId,
@@ -1175,8 +1300,38 @@ class WalletCoordinatorActor extends Actor {
         deadline: cmd.deadline,
         privacy: cmd.privacy,
       ),
-      sender: context.self,
+      cmd.replyTimeout,
     );
+    } catch (e) {
+      _emitEvent(PaymentReadyEvent(
+        walletId: cmd.walletId,
+        invoiceId: cmd.invoiceId,
+        beefBytes: Uint8List(0),
+        txid: '',
+        amountPaid: BigInt.zero,
+        changeAmount: BigInt.zero,
+        ancestorCount: 0,
+        success: false,
+        error: 'Paying invoice ${cmd.invoiceId} failed: $e',
+        requestId: cmd.requestId,
+      ));
+      return;
+    }
+    _log.info('BEEF payment response: ${response.invoiceId} success=${response.success}');
+    _emitEvent(PaymentReadyEvent(
+      walletId: cmd.walletId,
+      invoiceId: response.invoiceId,
+      beefBytes: response.beefBytes,
+      txid: response.txid,
+      amountPaid: response.amountPaid,
+      changeAmount: response.changeAmount,
+      ancestorCount: response.ancestorCount,
+      success: response.success,
+      error: response.error,
+      witnessTxid: response.witnessTxid,
+      witnessBeefBytes: response.witnessBeefBytes,
+      requestId: cmd.requestId,
+    ));
   }
 
   Future<void> _handleValidateBEEF(ValidateBEEFCommand cmd) async {
@@ -1210,6 +1365,7 @@ class WalletCoordinatorActor extends Actor {
       txid: txid,
       valid: false,
       error: error,
+      requestId: cmd.requestId,
     ));
   }
 
@@ -1217,61 +1373,89 @@ class WalletCoordinatorActor extends Actor {
     _log.info('Validating BEEF for wallet ${cmd.walletId}');
 
     // Track this request under its own id for the multi-step validation flow.
-    final requestId = 'beef-validation-${++_beefRequestSeq}';
-    _beefValidations[requestId] = _PendingBeefValidation(
+    final validationId = 'beef-validation-${++_beefRequestSeq}';
+    _beefValidations[validationId] = _PendingBeefValidation(
       walletId: cmd.walletId,
       beefHex: cmd.beefHex,
       invoiceId: cmd.invoiceId,
       fromCounterparty: cmd.fromCounterparty,
       memo: cmd.memo,
+      requestId: cmd.requestId,
     );
 
     _spvActor.tell(
       wm.ValidateBEEFMessage(
         cmd.beefHex,
         targetWalletId: cmd.walletId,
-        requestId: requestId,
+        requestId: validationId,
       ),
       sender: context.self,
     );
   }
 
-  /// Records an outgoing transaction in the wallet.
+  /// Records an outgoing transaction in the wallet, and answers once the
+  /// read model holds it.
   ///
-  /// Sent with this actor as the sender so a refusal comes back here
-  /// (libspiffy-kl4i): without one the wallet had nobody to answer, and a
-  /// recording the aggregate refused was invisible to the app. A successful
-  /// recording is still not announced: the handler that would have done so
-  /// was dead (nothing ever reached it) and published a manufactured
-  /// `amountSatoshis: BigInt.zero`, so it was removed rather than made live
-  /// with that number in it (bead libspiffy-5ml6).
+  /// "Recorded" means queryable, the promise WalletCreatedEvent (bead
+  /// libspiffy-p56) and TransactionImportedEvent already make: an app told
+  /// its payment is recorded asks for it next (bead libspiffy-5ml6). The
+  /// amount is the one the wallet journaled, absent when it journaled
+  /// nothing because it held the transaction already (bead libspiffy-viy).
+  /// A recording the wallet refuses is answered with its reason (bead
+  /// libspiffy-kl4i).
   Future<void> _handleRecordOutgoing(RecordOutgoingCommand cmd) async {
-    _walletManager.tell(
-      wm.WalletCommandMessage(
-        cmd.walletId,
-        domain.RecordOutgoingTransactionCommand(
-          walletId: cmd.walletId,
-          txid: cmd.txid,
-          rawHex: cmd.rawHex,
-          totalInputSats: cmd.totalInputSats,
-          totalOutputSats: cmd.totalOutputSats,
-          fee: cmd.fee,
-          numInputs: cmd.numInputs,
-          numOutputs: cmd.numOutputs,
-          txVersion: cmd.txVersion,
-          txLockTime: cmd.txLockTime,
-          spentUtxoKeys: cmd.spentUtxoKeys,
-          recipientAddresses: cmd.recipientAddresses,
-          paymentAmount: BigInt.from(cmd.paymentAmount),
-          changeAddress: cmd.changeAddress,
-          changeAmount: cmd.changeAmount != null ? BigInt.from(cmd.changeAmount!) : null,
-          // Who we paid, as the app names them (bead libspiffy-cq16).
-          counterpartyMarker: cmd.counterpartyMarker,
-          memo: cmd.memo,
+    TransactionRecordedEvent answer({BigInt? amount, String? error}) => TransactionRecordedEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        amountSatoshis: amount,
+        success: error == null,
+        error: error,
+        requestId: cmd.requestId);
+    final wm.TransactionRecordedResponse response;
+    try {
+      response = await _askWallet<wm.TransactionRecordedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.RecordOutgoingTransactionCommand(
+            walletId: cmd.walletId,
+            txid: cmd.txid,
+            rawHex: cmd.rawHex,
+            totalInputSats: cmd.totalInputSats,
+            totalOutputSats: cmd.totalOutputSats,
+            fee: cmd.fee,
+            numInputs: cmd.numInputs,
+            numOutputs: cmd.numOutputs,
+            txVersion: cmd.txVersion,
+            txLockTime: cmd.txLockTime,
+            spentUtxoKeys: cmd.spentUtxoKeys,
+            recipientAddresses: cmd.recipientAddresses,
+            paymentAmount: BigInt.from(cmd.paymentAmount),
+            changeAddress: cmd.changeAddress,
+            changeAmount: cmd.changeAmount != null ? BigInt.from(cmd.changeAmount!) : null,
+            // Who we paid, as the app names them (bead libspiffy-cq16).
+            counterpartyMarker: cmd.counterpartyMarker,
+            memo: cmd.memo,
+          ),
         ),
-      ),
-      sender: context.self,
+        _walletReplyTimeout,
+      );
+    } catch (e) {
+      _emitEvent(answer(error: 'Recording ${cmd.txid} failed: $e'));
+      return;
+    }
+    if (!response.success) {
+      _emitEvent(answer(error: response.error ?? 'The wallet refused the recording'));
+      return;
+    }
+    final notApplied = await awaitProjectionApplied(
+      _walletProjection,
+      matches: (e) => e is domain_events.TransactionRecordedEvent && e.walletId == cmd.walletId && e.txid == cmd.txid,
+      alreadyApplied: () async => await _storage.getTransaction(cmd.txid, walletId: cmd.walletId) != null,
     );
+    _emitEvent(answer(
+      amount: response.paymentAmount,
+      error: notApplied == null ? null : 'Recorded and journaled, but the read model has not applied it yet: $notApplied',
+    ));
   }
 
   /// Imports a transaction the wallet knows to be mined (bead
@@ -1293,6 +1477,7 @@ class WalletCoordinatorActor extends Actor {
         transactionId: '',
         success: false,
         error: 'Failed to parse BEEF: $e',
+        requestId: cmd.requestId,
       ));
       return;
     }
@@ -1303,6 +1488,7 @@ class WalletCoordinatorActor extends Actor {
         success: false,
         error: 'An import must carry the merkle proof of the transaction it imports, and $txid has none. '
             'A payment from a counterparty is received with ValidateBEEFCommand.',
+        requestId: cmd.requestId,
       ));
       return;
     }
@@ -1320,7 +1506,8 @@ class WalletCoordinatorActor extends Actor {
     final error = await _recordHandedAddresses(cmd.walletId,
         delegatedIndices: cmd.delegatedIndices, type42Derivations: cmd.type42Derivations);
     if (error != null) {
-      _emitEvent(TransactionImportedEvent(walletId: cmd.walletId, transactionId: txid, success: false, error: error));
+      _emitEvent(TransactionImportedEvent(
+          walletId: cmd.walletId, transactionId: txid, success: false, error: error, requestId: cmd.requestId));
       return;
     }
     _receiveImport(cmd, beef, txid);
@@ -1382,8 +1569,8 @@ class WalletCoordinatorActor extends Actor {
 
   void _receiveImport(ImportTransactionCommand cmd, BEEF beef, String txid) {
     _log.info('Importing transaction $txid for wallet ${cmd.walletId}');
-    final requestId = 'receive-${++_receiveSeq}';
-    _receives[requestId] = _Receive(walletId: cmd.walletId, payment: false);
+    final receiveId = 'receive-${++_receiveSeq}';
+    _receives[receiveId] = _Receive(walletId: cmd.walletId, payment: false, requestId: cmd.requestId);
     _spvActor.tell(
       wm.ReceiveTransactionMessage(
         transactionId: txid,
@@ -1393,7 +1580,7 @@ class WalletCoordinatorActor extends Actor {
         fromCounterparty: cmd.fromCounterparty ?? '',
         targetWalletId: cmd.walletId,
         receivedAt: DateTime.now(),
-        requestId: requestId,
+        requestId: receiveId,
         // The payer's note, journaled with the import.
         memo: cmd.memo,
       ),
@@ -1415,7 +1602,7 @@ class WalletCoordinatorActor extends Actor {
   /// nothing else, since a proven transaction needs no ancestry.
   Future<void> _handleExportTransaction(ExportTransactionQuery query) async {
     TransactionExportedEvent refuse(String error) => TransactionExportedEvent(
-        walletId: query.walletId, txid: query.txid, queryId: query.correlationId, success: false, error: error);
+        walletId: query.walletId, txid: query.txid, requestId: query.requestId, success: false, error: error);
     try {
       final tx = await _storage.getTransaction(query.txid, walletId: query.walletId);
       if (tx == null) {
@@ -1447,7 +1634,7 @@ class WalletCoordinatorActor extends Actor {
       _emitEvent(TransactionExportedEvent(
         walletId: query.walletId,
         txid: query.txid,
-        queryId: query.correlationId,
+        requestId: query.requestId,
         success: true,
         beef: beef,
         delegatedIndices: [
@@ -1462,7 +1649,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleIssueAnchorKey(IssueAnchorKeyCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     try {
       final response = await _askWallet<wm.AnchorKeyResponse>(
         wm.WalletCommandMessage(
@@ -1482,7 +1669,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleSignWithAnchorKey(SignWithAnchorKeyCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     try {
       final response = await _askWallet<wm.AnchorKeyResponse>(
         wm.WalletCommandMessage(
@@ -1506,7 +1693,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleBrc100KeyOperation(Brc100KeyOperationCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     try {
       final response = await _askWallet<wm.Brc100KeyOperationResponse>(
         wm.WalletCommandMessage(
@@ -1529,7 +1716,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleDeriveType42Destination(DeriveType42DestinationCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     try {
       final response = await _askWallet<wm.Type42DestinationDerivedResponse>(
         wm.WalletCommandMessage(
@@ -1580,6 +1767,7 @@ class WalletCoordinatorActor extends Actor {
         success: false,
         error: 'malformed header: $e',
         source: cmd.source,
+        requestId: cmd.requestId,
       ));
       return;
     }
@@ -1588,6 +1776,7 @@ class WalletCoordinatorActor extends Actor {
       headers: headers,
       startHeight: cmd.headers.isEmpty ? 0 : cmd.headers.first['height'] as int? ?? 0,
       answersGetHeaders: false,
+      requestId: cmd.requestId,
     ));
   }
 
@@ -1612,6 +1801,7 @@ class WalletCoordinatorActor extends Actor {
         success: batch.rejected == 0,
         error: batch.firstRejection,
         source: batch.fromPeer ? BlockHeadersStoredEvent.peerSource : batch.source,
+        requestId: batch.requestId,
       ));
     }
     final previous = _headerSyncStatus;
@@ -1619,9 +1809,9 @@ class WalletCoordinatorActor extends Actor {
     if (previous != null && previous.synced != status.synced) {
       _emitEvent(HeaderSyncStatusEvent(status: status));
     }
-    final queryId = report.queryId;
-    if (queryId != null) {
-      _emitEvent(HeaderSyncStatusResponse(queryId: queryId, status: status));
+    final requestId = report.requestId;
+    if (requestId != null) {
+      _emitEvent(HeaderSyncStatusResponse(requestId: requestId, status: status));
     }
   }
 
@@ -1633,7 +1823,7 @@ class WalletCoordinatorActor extends Actor {
   /// outputs by the read model's address rows, so an address announced
   /// before its row exists could be paid and the payment not credited.
   Future<void> _handleGenerateAddress(GenerateAddressCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     AddressGeneratedEvent failure(String error) =>
         AddressGeneratedEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: error);
     try {
@@ -1721,79 +1911,161 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
-  /// Releases a reservation's UTXOs.
-  ///
-  /// Sent with this actor as the sender so a refusal comes back here
-  /// (libspiffy-kl4i): without one the wallet had nobody to answer, and a
-  /// release the aggregate refused was invisible to the app.
+  /// Releases a reservation's UTXOs, and answers once the read model shows
+  /// them available again.
   Future<void> _handleReleaseUTXOs(ReleaseUTXOsCommand cmd) async {
-    _walletManager.tell(
-      wm.WalletCommandMessage(
-        cmd.walletId,
-        domain.ReleaseUTXOsCommand(
-          walletId: cmd.walletId,
-          reservationId: cmd.reservationId,
+    UTXOsReleasedEvent answer({List<String> released = const [], String? error}) => UTXOsReleasedEvent(
+        walletId: cmd.walletId,
+        reservationId: cmd.reservationId,
+        releasedUtxoKeys: released,
+        success: error == null,
+        error: error,
+        requestId: cmd.requestId);
+    try {
+      final response = await _askWallet<wm.UTXOsReleasedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.ReleaseUTXOsCommand(walletId: cmd.walletId, reservationId: cmd.reservationId),
         ),
-      ),
-      sender: context.self,
-    );
+        _walletReplyTimeout,
+      );
+      if (!response.success) {
+        _emitEvent(answer(error: response.error ?? 'The wallet refused the release'));
+        return;
+      }
+      final released = response.releasedUtxoKeys;
+      String? notApplied;
+      if (released.isNotEmpty) {
+        // The wallet journals the releases in order, so the last applied
+        // means all are.
+        final last = released.last;
+        final (txid, vout) = (last.substring(0, last.lastIndexOf(':')), int.parse(last.split(':').last));
+        notApplied = await awaitProjectionApplied(
+          _walletProjection,
+          matches: (e) =>
+              e is domain_events.UTXOReleasedEvent && e.walletId == cmd.walletId && e.txid == txid && e.vout == vout,
+          alreadyApplied: () async => (await _storage.getUTXO(cmd.walletId, txid, vout))?.status != UTXOStatus.reserved,
+        );
+      }
+      _emitEvent(answer(
+        released: released,
+        error: notApplied == null ? null : 'Released and journaled, but the read model has not applied it yet: $notApplied',
+      ));
+    } catch (e) {
+      _emitEvent(answer(error: 'Releasing reservation ${cmd.reservationId} failed: $e'));
+    }
   }
 
+  /// Splits the wallet's UTXOs (BenfordCoordinatorActor, by way of the
+  /// wallet manager). Each number of the answer is read from what the split
+  /// reports, not inferred (bead libspiffy-q28i): `splitCount` is a UTXO
+  /// count, so it answers newUtxoCount and not transactionCount, and the
+  /// fee is summed from the splits that succeeded rather than stated as a
+  /// zero nobody measured.
   Future<void> _handleSplitUTXOs(SplitUTXOsCommand cmd) async {
     _log.info('Splitting UTXOs for wallet ${cmd.walletId}');
-
-    _walletManager.tell(
-      wm.WalletCommandMessage(
-        cmd.walletId,
-        domain.SplitUTXOsToBenfordCommand(
-          walletId: cmd.walletId,
-          targetUtxoCount: cmd.targetUtxoCount ?? 5,
-          maxUtxosToSplit: cmd.maxUtxosToSplit,
-          utxoKeys: cmd.utxoKeys,
-          partSats: cmd.partSats,
-          minPartSats: cmd.minPartSats,
+    final wm.SplitUTXOsResponse response;
+    try {
+      response = await _askWallet<wm.SplitUTXOsResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.SplitUTXOsToBenfordCommand(
+            walletId: cmd.walletId,
+            targetUtxoCount: cmd.targetUtxoCount ?? 5,
+            maxUtxosToSplit: cmd.maxUtxosToSplit,
+            utxoKeys: cmd.utxoKeys,
+            partSats: cmd.partSats,
+            minPartSats: cmd.minPartSats,
+          ),
         ),
-      ),
-      sender: context.self,
-    );
+        cmd.replyTimeout,
+      );
+    } catch (e) {
+      _emitEvent(UTXOSplitCompleteEvent(
+        walletId: cmd.walletId,
+        transactionCount: 0,
+        newUtxoCount: 0,
+        totalFeePaid: BigInt.zero,
+        success: false,
+        error: 'Splitting the UTXOs of wallet ${cmd.walletId} failed: $e',
+        requestId: cmd.requestId,
+      ));
+      return;
+    }
+    final txids = response.txids ?? const <String>[];
+    var totalFeePaid = BigInt.zero;
+    for (final split in response.splits) {
+      if (split.isSuccess && split.feePaid != null) {
+        totalFeePaid += split.feePaid!;
+      }
+    }
+    _emitEvent(UTXOSplitCompleteEvent(
+      walletId: cmd.walletId,
+      transactionCount: txids.length,
+      newUtxoCount: response.splitCount ?? 0,
+      totalFeePaid: totalFeePaid,
+      success: response.success,
+      error: response.error,
+      txids: txids,
+      splits: response.splits,
+      requestId: cmd.requestId,
+    ));
   }
 
+  /// Records file hashes on chain: pays an ephemeral invoice of OP_RETURN
+  /// outputs, one per hash, and hands the payment to ARC.
   Future<void> _handleTimestamp(TimestampCommand cmd) async {
     _log.info('Creating timestamp archive ${cmd.archiveId} for wallet ${cmd.walletId}');
-
-    // Build OP_RETURN outputs from file hashes
-    final outputs = <InvoiceOutputSpec>[];
-    for (final hash in cmd.fileHashes) {
-      outputs.add(OPReturnOutputSpec(
-        dataChunks: [hash.codeUnits],
-        label: cmd.archiveTitle,
-      ));
-    }
-
-    // Create an ephemeral invoice for the timestamp
-    final invoiceId = 'timestamp-${cmd.archiveId}-${DateTime.now().millisecondsSinceEpoch}';
-    _timestampCorrelation[invoiceId] = cmd.archiveId;
-    _paymentInvoiceCorrelation[invoiceId] = cmd.walletId;
-
-    // Pay the timestamp invoice directly
-    _paymentCoordinator.tell(
-      pay.PayInvoiceMessage(
+    TimestampCompleteEvent answer({String? txid, String? error}) => TimestampCompleteEvent(
         walletId: cmd.walletId,
-        invoiceId: invoiceId,
-        addresses: [],
-        amount: BigInt.zero,
-        outputs: outputs,
-      ),
-      sender: context.self,
-    );
-  }
+        archiveId: cmd.archiveId,
+        transactionId: txid,
+        success: error == null,
+        error: error,
+        requestId: cmd.requestId);
 
-  Future<void> _handleRefreshWallet(RefreshWalletCommand cmd) async {
-    _emitEvent(WalletStatusEvent(
-      walletId: cmd.walletId,
-      status: 'refreshed',
-      message: 'Wallet ${cmd.walletId} refreshed',
-    ));
+    final outputs = [
+      for (final hash in cmd.fileHashes) OPReturnOutputSpec(dataChunks: [hash.codeUnits], label: cmd.archiveTitle),
+    ];
+    final invoiceId = 'timestamp-${cmd.archiveId}-${DateTime.now().millisecondsSinceEpoch}';
+    final pay.BEEFPaymentResponse response;
+    try {
+      response = await _ask<pay.BEEFPaymentResponse>(
+        _paymentCoordinator,
+        pay.PayInvoiceMessage(
+          walletId: cmd.walletId,
+          invoiceId: invoiceId,
+          addresses: [],
+          amount: BigInt.zero,
+          outputs: outputs,
+        ),
+        cmd.replyTimeout,
+      );
+    } catch (e) {
+      _emitEvent(answer(error: 'The timestamp transaction was not built: $e'));
+      return;
+    }
+    if (!response.success) {
+      _emitEvent(answer(error: response.error ?? 'The timestamp transaction was not built'));
+      return;
+    }
+    // Answered with ARC's answer, not when the broadcast is handed over:
+    // a timestamp ARC refused records nothing.
+    final Object? reply;
+    try {
+      reply = await _arcActor.ask<dynamic>(
+          wm.BroadcastBEEFMessage(cmd.walletId, hex.encode(response.beefBytes), response.txid), _paymentSubmitTimeout);
+    } catch (e) {
+      _emitEvent(answer(txid: response.txid, error: 'ARC did not answer the broadcast of ${response.txid}: $e'));
+      return;
+    }
+    _emitEvent(switch (reply) {
+      wm.BroadcastSuccessMessage() => answer(txid: response.txid),
+      wm.BroadcastFailedMessage(:final error, :final willRetry) => answer(
+          txid: response.txid,
+          error: 'The broadcast of ${response.txid} failed: $error${willRetry ? ' (queued for a retry)' : ''}'),
+      _ => answer(txid: response.txid, error: 'ARC answered the broadcast with ${reply.runtimeType}'),
+    });
   }
 
   Future<void> _handleShutdown() async {
@@ -1813,14 +2085,12 @@ class WalletCoordinatorActor extends Actor {
     // Clear correlation maps
     _beefValidations.clear();
     _receives.clear();
-    _paymentInvoiceCorrelation.clear();
-    _timestampCorrelation.clear();
-    _pendingCreateWallet.clear();
 
     _emitEvent(WalletStatusEvent(
       status: 'shutdown',
       message: 'Coordinator shut down',
     ));
+    _closeAwaitedReplies();
 
     await _eventStream.close();
   }
@@ -1880,7 +2150,7 @@ class WalletCoordinatorActor extends Actor {
       }
       _emitEvent(DeferredPaymentsResponse(
         walletId: query.walletId,
-        queryId: query.correlationId,
+        requestId: query.requestId,
         payments: details,
         nextCursor: page.nextCursor,
       ));
@@ -1889,6 +2159,7 @@ class WalletCoordinatorActor extends Actor {
         walletId: query.walletId,
         source: 'getDeferredPayments',
         message: e.toString(),
+        requestId: query.requestId,
       ));
     }
   }
@@ -1914,7 +2185,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleBroadcastDeferredPayment(BroadcastDeferredPaymentCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     DeferredPaymentBroadcastEvent failure(String error) => DeferredPaymentBroadcastEvent(
         walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, error: error);
     try {
@@ -1972,7 +2243,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleCheckDeferredPaymentStatus(CheckDeferredPaymentStatusCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     try {
       final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
       if (payment == null) {
@@ -2035,7 +2306,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleCancelDeferredPayment(CancelDeferredPaymentCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     String? networkStatus;
     DeferredPaymentCancelledEvent refused(String error) => DeferredPaymentCancelledEvent(
           walletId: cmd.walletId,
@@ -2197,7 +2468,7 @@ class WalletCoordinatorActor extends Actor {
   /// bought by a stranger: the token output goes and the price arrives,
   /// both before the event (bead libspiffy-zyfr).
   Future<void> _handleCheckForeignSpends(CheckForeignSpendsCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     try {
       final keys = cmd.utxoKeys ??
           [
@@ -2290,7 +2561,7 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleCompleteDeferredPayment(CompleteDeferredPaymentCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     DeferredPaymentCompletedEvent failure(String error, {String? completedTxid}) => DeferredPaymentCompletedEvent(
         walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, completedTxid: completedTxid, error: error);
     try {
@@ -2408,7 +2679,7 @@ class WalletCoordinatorActor extends Actor {
   /// [DeferredPaymentState.reclaimed] when the network reports the
   /// self-spend, which is also when its outputs become spendable.
   Future<void> _handleReclaimDeferredPayment(ReclaimDeferredPaymentCommand cmd) async {
-    final requestId = cmd.correlationId;
+    final requestId = cmd.requestId;
     DeferredPaymentReclaimedEvent failure(String error, {String? reclaimTxid}) =>
         DeferredPaymentReclaimedEvent(
           walletId: cmd.walletId,
@@ -2625,15 +2896,18 @@ class WalletCoordinatorActor extends Actor {
   }
 
   /// Asks the wallet manager for a [T].
+  Future<T> _askWallet<T>(Message message, Duration timeout) => _ask<T>(_walletManager, message, timeout);
+
+  /// Asks [actor] for a [T].
   ///
-  /// The manager answers a request it can't serve (an unknown wallet, say)
-  /// with a [wm.FailureResponse] instead of [T]; that is thrown as a
+  /// An actor answers a request it can't serve (an unknown wallet, say)
+  /// with a [FailureResponse] instead of [T]; that is thrown as a
   /// [StateError] carrying its reason, not reported as a type mismatch.
-  Future<T> _askWallet<T>(Message message, Duration timeout) async {
-    final reply = await _walletManager.ask<Object>(message, timeout);
+  Future<T> _ask<T>(ActorRef actor, Message message, Duration timeout) async {
+    final reply = await actor.ask<Object>(message, timeout);
     if (reply is T) return reply as T;
-    if (reply is wm.FailureResponse) throw StateError(reply.error);
-    throw StateError('Expected $T from the wallet manager, received ${reply.runtimeType}');
+    if (reply is FailureResponse) throw StateError(reply.error);
+    throw StateError('Expected $T, received ${reply.runtimeType}');
   }
 
   // ==========================================================================
@@ -2663,156 +2937,11 @@ class WalletCoordinatorActor extends Actor {
     _log.warning('$source gave up on ${failure.request}'
         '${walletId != null ? ' for wallet $walletId' : ''}: ${failure.error}');
 
-    if (walletId != null && _pendingCreateWallet.remove(walletId) != null) {
-      _emitEvent(WalletCreatedEvent(
-        walletId: walletId,
-        rootAddress: '',
-        success: false,
-        error: failure.error,
-      ));
-      return;
-    }
-
     _emitEvent(ErrorEvent(
       walletId: walletId,
       source: source,
       message: '${failure.request}: ${failure.error}',
     ));
-  }
-
-  void _handleWalletCreatedResponse(wm.WalletCreatedMessage response) {
-    _log.info('Wallet created: ${response.walletId} success=${response.success}');
-
-    if (response.success) {
-      _channelAdapter?.updateWalletId(response.walletId);
-    }
-
-    _pendingCreateWallet.remove(response.walletId);
-
-    if (!response.success) {
-      _emitEvent(WalletCreatedEvent(
-        walletId: response.walletId,
-        rootAddress: response.rootAddress,
-        success: false,
-        error: response.error,
-      ));
-      return;
-    }
-
-    // Callers act on this event straight away (import a transaction, which
-    // makes SPVActor look up the root address in the read model), so it is
-    // emitted only once the projection has written the wallet row and its
-    // root address (libspiffy-p56). The wait runs off the mailbox (A-M2).
-    unawaited(_emitWalletCreated(response));
-  }
-
-  /// Waits (off the mailbox) until the wallet read model holds the wallet
-  /// created by [response], then emits the coordinator-level
-  /// WalletCreatedEvent. If the projection does not apply the creation, the
-  /// event reports failure with the reason, as imports do.
-  Future<void> _emitWalletCreated(wm.WalletCreatedMessage response) async {
-    final walletId = response.walletId;
-    String? awaitError;
-    try {
-      final reason = await awaitProjectionApplied(
-        _walletProjection,
-        matches: (e) =>
-            e is domain_events.WalletCreatedEvent && e.walletId == walletId,
-        alreadyApplied: () async => await _storage.getWallet(walletId) != null,
-      );
-      if (reason != null) {
-        awaitError = 'Wallet $walletId was created but the wallet read model '
-            'failed to apply it: $reason';
-        _log.warning(awaitError);
-      }
-    } catch (e, stackTrace) {
-      awaitError =
-          'Unexpected error awaiting projection persistence for wallet '
-          '$walletId: $e';
-      _log.warning(awaitError, e, stackTrace);
-    }
-
-    _emitEvent(WalletCreatedEvent(
-      walletId: walletId,
-      rootAddress: response.rootAddress,
-      success: awaitError == null,
-      error: awaitError,
-    ));
-  }
-
-  void _handleWalletCreatedResponseAlt(wm.WalletCreatedResponse response) {
-    _handleWalletCreatedResponse(wm.WalletCreatedMessage(
-      response.walletId,
-      response.rootAddress,
-      response.success,
-      error: response.error,
-    ));
-  }
-
-  void _handleInvoiceCreatedResponse(inv.InvoiceCreatedMessage response) {
-    _log.info('Invoice created: ${response.invoiceId} success=${response.success}');
-
-    _emitEvent(InvoiceCreatedEvent(
-      walletId: response.walletId,
-      invoiceId: response.invoiceId,
-      addresses: response.addresses,
-      amount: response.amount,
-      outputs: response.outputs,
-      issuedAddresses: response.issuedAddresses,
-      description: response.description,
-      expiresAt: response.expiresAt,
-      success: response.success,
-      error: response.error,
-    ));
-  }
-
-  Future<void> _handleBEEFPaymentResponse(pay.BEEFPaymentResponse response) async {
-    _log.info('BEEF payment response: ${response.invoiceId} success=${response.success}');
-
-    final walletId = _paymentInvoiceCorrelation.remove(response.invoiceId);
-    final archiveId = _timestampCorrelation.remove(response.invoiceId);
-
-    if (archiveId != null) {
-      // This is a timestamp archive payment
-      if (response.success) {
-        // Broadcast the BEEF
-        // ARCActor hex-decodes beefHex (see _handleBroadcastBEEF); the
-        // SPV path at _handleBEEFValidated encodes the same way.
-        _arcActor.tell(wm.BroadcastBEEFMessage(
-          walletId ?? '',
-          hex.encode(response.beefBytes),
-          response.txid,
-        ));
-
-        _emitEvent(TimestampCompleteEvent(
-          walletId: walletId,
-          archiveId: archiveId,
-          transactionId: response.txid,
-          success: true,
-        ));
-      } else {
-        _emitEvent(TimestampCompleteEvent(
-          walletId: walletId,
-          archiveId: archiveId,
-          success: false,
-          error: response.error,
-        ));
-      }
-    } else {
-      _emitEvent(PaymentReadyEvent(
-        walletId: walletId,
-        invoiceId: response.invoiceId,
-        beefBytes: response.beefBytes,
-        txid: response.txid,
-        amountPaid: response.amountPaid,
-        changeAmount: response.changeAmount,
-        ancestorCount: response.ancestorCount,
-        success: response.success,
-        error: response.error,
-        witnessTxid: response.witnessTxid,
-        witnessBeefBytes: response.witnessBeefBytes,
-      ));
-    }
   }
 
   /// Settle a BEEF by broadcasting all unsettled TXs (hasMerkle=false) to ARC
@@ -2835,6 +2964,7 @@ class WalletCoordinatorActor extends Actor {
         txid: cmd.txid,
         success: false,
         error: 'Settlement already in progress for txid ${cmd.txid}',
+        requestId: cmd.requestId,
       ));
       return;
     }
@@ -2850,6 +2980,7 @@ class WalletCoordinatorActor extends Actor {
         txid: cmd.txid,
         success: false,
         error: 'BEEF parse failed: $e',
+        requestId: cmd.requestId,
       ));
       return;
     }
@@ -2884,6 +3015,7 @@ class WalletCoordinatorActor extends Actor {
         success: true,
         submittedCount: 0,
         skippedCount: skipped,
+        requestId: cmd.requestId,
       ));
       return;
     }
@@ -2892,6 +3024,7 @@ class WalletCoordinatorActor extends Actor {
     final entry = _PendingSettlement(
       parentTxid: cmd.txid,
       walletId: cmd.walletId,
+      requestId: cmd.requestId,
       pending: pending.keys.toSet(),
       skippedCount: skipped,
     );
@@ -3013,6 +3146,7 @@ class WalletCoordinatorActor extends Actor {
       failedCount: entry.failures.length,
       failedTxids: failedTxids,
       failureErrors: failureErrors,
+      requestId: entry.requestId,
     ));
 
     // Clean up routing tables
@@ -3046,6 +3180,7 @@ class WalletCoordinatorActor extends Actor {
         invoiceId: pending.invoiceId,
         valid: false,
         error: result.error ?? 'BEEF structural validation failed',
+        requestId: pending.requestId,
       ));
       return;
     }
@@ -3061,7 +3196,8 @@ class WalletCoordinatorActor extends Actor {
         final txid = beef.txs.isNotEmpty ? hex.encode(beef.calculateTxid(beef.txs.last)) : 'unknown';
 
         final receiveId = 'receive-${++_receiveSeq}';
-        _receives[receiveId] = _Receive(walletId: walletId, payment: true, invoiceId: invoiceId);
+        _receives[receiveId] =
+            _Receive(walletId: walletId, payment: true, invoiceId: invoiceId, requestId: pending.requestId);
 
         _spvActor.tell(
           wm.ReceiveTransactionMessage(
@@ -3086,6 +3222,7 @@ class WalletCoordinatorActor extends Actor {
           invoiceId: invoiceId,
           valid: false,
           error: 'Failed to parse BEEF for SPV validation: $e',
+          requestId: pending.requestId,
         ));
       }
     }
@@ -3117,7 +3254,7 @@ class WalletCoordinatorActor extends Actor {
     if (payment) {
       if (walletId == null) return;
       // Off the mailbox: it waits for the read model and for ARC.
-      unawaited(_answerPayment(result, walletId, request?.invoiceId ?? result.invoiceId));
+      unawaited(_answerPayment(result, walletId, request?.invoiceId ?? result.invoiceId, request?.requestId));
       return;
     }
 
@@ -3150,7 +3287,7 @@ class WalletCoordinatorActor extends Actor {
     // The wait runs off the mailbox (A-M2): awaiting it inside onMessage
     // blocked every other public command for up to 32 s.
     if (result.targetWalletId != null) {
-      unawaited(_emitTransactionImported(result));
+      unawaited(_emitTransactionImported(result, request?.requestId));
     }
   }
 
@@ -3169,7 +3306,11 @@ class WalletCoordinatorActor extends Actor {
   /// answered and with no ARC at all — and a payment parked for a header,
   /// whose first reply is not a verdict, was never submitted: its verdict
   /// arrived with nobody correlated to it.
-  Future<void> _answerPayment(wm.SPVValidationResult result, String walletId, String? invoiceId) async {
+  ///
+  /// [requestId] is the [ValidateBEEFCommand]'s, null for a receive replayed
+  /// when its header arrived, which nobody is waiting on.
+  Future<void> _answerPayment(
+      wm.SPVValidationResult result, String walletId, String? invoiceId, String? requestId) async {
     BEEFValidationResultEvent answer({
       required bool valid,
       String? error,
@@ -3189,6 +3330,7 @@ class WalletCoordinatorActor extends Actor {
           awaitingHeader: result.awaitingHeader,
           spendableUTXOs: valid ? result.spendableUTXOs : null,
           unreadableOutputs: result.unreadableOutputs,
+          requestId: requestId,
         );
 
     if (!result.isValid) {
@@ -3328,7 +3470,9 @@ class WalletCoordinatorActor extends Actor {
 
   /// Waits (off the mailbox) until the wallet read model holds [result]'s
   /// transaction, then emits the coordinator-level TransactionImportedEvent.
-  Future<void> _emitTransactionImported(wm.SPVValidationResult result) async {
+  /// [requestId] is the [ImportTransactionCommand]'s, null for a receive
+  /// nobody requested.
+  Future<void> _emitTransactionImported(wm.SPVValidationResult result, String? requestId) async {
     BigInt totalReceived = BigInt.zero;
     for (final utxo in result.spendableUTXOs) {
       final sat = utxo['satoshis'];
@@ -3360,6 +3504,7 @@ class WalletCoordinatorActor extends Actor {
       utxosCreated: result.spendableUTXOs.length,
       totalValueReceived: totalReceived.toString(),
       error: awaitError ?? result.validationError,
+      requestId: requestId,
     ));
   }
 
@@ -3381,107 +3526,34 @@ class WalletCoordinatorActor extends Actor {
         alreadyApplied: () async => await _storage.getTransaction(txid, walletId: walletId) != null,
       );
 
-  void _handleSplitUTXOsResponse(wm.SplitUTXOsResponse response) {
-    // Each number is read from what the split actually reports, not inferred
-    // (bead libspiffy-q28i). `splitCount` is a UTXO count, so it answers
-    // newUtxoCount and NOT transactionCount, which used to be inflated by
-    // targetUtxoCount; and the fee is summed from the splits that succeeded
-    // rather than stated as a zero nobody measured.
-    final txids = response.txids ?? const <String>[];
-    var totalFeePaid = BigInt.zero;
-    for (final split in response.splits) {
-      if (split.isSuccess && split.feePaid != null) {
-        totalFeePaid += split.feePaid!;
-      }
-    }
-    _emitEvent(UTXOSplitCompleteEvent(
-      walletId: response.walletId,
-      transactionCount: txids.length,
-      newUtxoCount: response.splitCount ?? 0,
-      totalFeePaid: totalFeePaid,
-      success: response.success,
-      error: response.error,
-      txids: txids,
-      splits: response.splits,
-    ));
-  }
-
   Future<void> _handleProvisionFunding(ProvisionFundingCommand cmd) async {
     _log.info('Provisioning funding for wallet ${cmd.walletId} via plugin ${cmd.pluginId}');
-
-    _paymentCoordinator.tell(
-      pay.ProvisionFundingMessage(
-        walletId: cmd.walletId,
-        pluginId: cmd.pluginId,
-        pluginParams: cmd.pluginParams,
-      ),
-      sender: context.self,
-    );
-  }
-
-  void _handleProvisionFundingResponse(pay.ProvisionFundingResponse response) {
-    _log.info('Provisioning response: wallet=${response.walletId} '
-        'success=${response.success} txs=${response.transactionCount} '
-        'earmarks=${response.earmarkCount}');
-
-    _emitEvent(ProvisioningCompleteEvent(
-      walletId: response.walletId,
-      transactionCount: response.transactionCount,
-      earmarkCount: response.earmarkCount,
-      success: response.success,
-      error: response.error,
-    ));
-  }
-
-  /// Reports an outgoing recording to the app once the read model holds it
-  /// (bead libspiffy-5ml6).
-  ///
-  /// A successful recording used to be announced nowhere. The arm that would
-  /// have announced it was dead — [_handleRecordOutgoing] told the wallet
-  /// manager with no sender — and bead libspiffy-kl4i deleted it rather than
-  /// let it go live, because it published a manufactured `BigInt.zero` for
-  /// an amount it did not hold. Supplying that sender, which is what made a
-  /// refused recording reach the app at all, turned on a different arm: the
-  /// aggregate answers a recording with one `UTXOReceivedResponse` per
-  /// change output of the transaction (`_addWalletOutputs` credits the
-  /// wallet's own outputs), and the coordinator announced each of those as a
-  /// `TransactionReceivedEvent` of zero satoshis, **incoming** — an app's own
-  /// payment reported back to it as money arriving. That event is gone: an
-  /// incoming receive is reported by `SPVValidationResultEvent` and
-  /// `TransactionImportedEvent`, which carry the amount the wallet measured,
-  /// and change is part of the payment this event announces.
-  ///
-  /// A refusal does not come this way: the aggregate has no reply of its own
-  /// for a failed recording and answers `WalletCommandFailed`, which
-  /// [_handleWalletFailure] turns into an `ErrorEvent` (bead libspiffy-kl4i).
-  Future<void> _handleTransactionRecorded(wm.TransactionRecordedResponse response) async {
-    if (!response.success) {
-      _emitEvent(TransactionRecordedEvent(
-        walletId: response.walletId,
-        txid: response.txid,
-        success: false,
-        error: response.error ?? 'The wallet refused the recording',
+    ProvisioningCompleteEvent answer({int transactions = 0, int earmarks = 0, String? error}) =>
+        ProvisioningCompleteEvent(
+          walletId: cmd.walletId,
+          transactionCount: transactions,
+          earmarkCount: earmarks,
+          success: error == null,
+          error: error,
+          requestId: cmd.requestId,
+        );
+    try {
+      final response = await _ask<pay.ProvisionFundingResponse>(
+        _paymentCoordinator,
+        pay.ProvisionFundingMessage(walletId: cmd.walletId, pluginId: cmd.pluginId, pluginParams: cmd.pluginParams),
+        cmd.replyTimeout,
+      );
+      _log.info('Provisioning response: wallet=${response.walletId} '
+          'success=${response.success} txs=${response.transactionCount} '
+          'earmarks=${response.earmarkCount}');
+      _emitEvent(answer(
+        transactions: response.transactionCount,
+        earmarks: response.earmarkCount,
+        error: response.success ? null : response.error ?? 'The funding was not provisioned',
       ));
-      return;
+    } catch (e) {
+      _emitEvent(answer(error: 'Provisioning funding for wallet ${cmd.walletId} failed: $e'));
     }
-    // "Recorded" means queryable, the promise WalletCreatedEvent (bead
-    // libspiffy-p56) and TransactionImportedEvent already make: an app told
-    // its payment is recorded asks for it next.
-    final notApplied = await awaitProjectionApplied(
-        _walletProjection,
-      matches: (e) =>
-          e is domain_events.TransactionRecordedEvent && e.walletId == response.walletId && e.txid == response.txid,
-      alreadyApplied: () async => await _storage.getTransaction(response.txid, walletId: response.walletId) != null,
-    );
-    _emitEvent(TransactionRecordedEvent(
-      walletId: response.walletId,
-      txid: response.txid,
-      amountSatoshis: response.paymentAmount,
-      success: notApplied == null,
-      error: notApplied == null
-          ? null
-          : 'Recorded and journaled, but the read model has not applied it yet: $notApplied',
-    ));
   }
 }
 
@@ -3493,11 +3565,14 @@ class _Receive {
   final bool payment;
   final String? invoiceId;
 
+  /// The app's request this receive answers, if one asked for it.
+  final String? requestId;
+
   /// Completed with SPVActor's answer when the coordinator itself waits for
   /// it (a proven foreign spender it receives into the wallet).
   final Completer<wm.SPVValidationResult>? verdict;
 
-  _Receive({required this.walletId, required this.payment, this.invoiceId, this.verdict});
+  _Receive({required this.walletId, required this.payment, this.invoiceId, this.requestId, this.verdict});
 }
 
 class _PendingBeefValidation {
@@ -3512,10 +3587,14 @@ class _PendingBeefValidation {
   /// The payer's note the command carried, if any.
   final String? memo;
 
+  /// The [ValidateBEEFCommand] this validation answers.
+  final String requestId;
+
   _PendingBeefValidation({
     required this.walletId,
     required this.beefHex,
     required this.invoiceId,
+    required this.requestId,
     this.fromCounterparty,
     this.memo,
   });
@@ -3530,6 +3609,9 @@ class _PendingBeefValidation {
 class _PendingSettlement {
   final String parentTxid;
   final String walletId;
+
+  /// The [SettleBEEFCommand] this settlement answers.
+  final String requestId;
   final Set<String> pending; // child txids still awaiting a response
   final Set<String> initialPending; // snapshot at registration time (for cleanup)
   final int initialPendingCount;
@@ -3540,6 +3622,7 @@ class _PendingSettlement {
   _PendingSettlement({
     required this.parentTxid,
     required this.walletId,
+    required this.requestId,
     required Set<String> pending,
     required this.skippedCount,
   })  : pending = pending,

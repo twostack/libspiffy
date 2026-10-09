@@ -19,7 +19,7 @@ import '../mocks/network_arc.dart';
 /// the receive chain keeps no gaps for address discovery to stop at.
 void main() {
   late LibSpiffyActorSystem system;
-  late ActorRef coordinator;
+  late WalletCoordinator coordinator;
   late Stream<CoordinatorEvent> events;
   late Directory dir;
   late LocalActorSystem actorSystem;

@@ -773,8 +773,18 @@ void main() {
       final system = LocalActorSystem();
       addTearDown(system.shutdown);
       final noop = await system.spawn('noop', () => _Noop());
+      // The wallet manager answers the split with the Benford coordinator's
+      // reply.
+      final walletManager = await system.spawn(
+          'wallet-manager',
+          () => _Answering((_) => wm.SplitUTXOsResponse(
+                walletId: _walletId,
+                success: true,
+                splitCount: 2,
+                txids: ['bb' * 32, 'aa' * 32],
+              )));
       final coordinator = WalletCoordinatorActor(
-        walletManager: noop,
+        walletManager: walletManager,
         invoiceCoordinator: noop,
         paymentCoordinator: noop,
         spvActor: noop,
@@ -797,12 +807,7 @@ void main() {
       addTearDown(subB.cancel);
       final ref = await system.spawn('coordinator', () => coordinator);
 
-      ref.tell(wm.SplitUTXOsResponse(
-        walletId: _walletId,
-        success: true,
-        splitCount: 2,
-        txids: ['bb' * 32, 'aa' * 32],
-      ));
+      ref.tell(coord.SplitUTXOsCommand(walletId: _walletId));
       final deadline = DateTime.now().add(const Duration(seconds: 5));
       while (seenByA.isEmpty || seenByB.isEmpty) {
         if (DateTime.now().isAfter(deadline)) fail('no UTXOSplitCompleteEvent within 5s');
@@ -885,6 +890,16 @@ void main() {
       });
     });
   });
+}
+
+/// Answers every message with what [reply] makes of it.
+class _Answering extends Actor {
+  final Message Function(Object message) reply;
+
+  _Answering(this.reply);
+
+  @override
+  Future<void> onMessage(dynamic message) async => context.sender?.tell(reply(message as Object));
 }
 
 class _Noop extends Actor {

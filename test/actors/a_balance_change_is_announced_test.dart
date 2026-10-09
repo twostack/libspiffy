@@ -142,13 +142,13 @@ void main() {
 
   /// What [GetBalanceQuery] answers right now.
   Future<BalanceResponse> queried() async {
-    final queryId = 'q${queries++}';
-    coordinatorRef.tell(GetBalanceQuery(walletId: _walletId, queryId: queryId));
+    final requestId = 'q${queries++}';
+    coordinatorRef.tell(GetBalanceQuery(walletId: _walletId, requestId: requestId));
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (DateTime.now().isBefore(deadline)) {
       final answered = announced
           .whereType<BalanceResponse>()
-          .where((e) => e.queryId == queryId);
+          .where((e) => e.requestId == requestId);
       if (answered.isNotEmpty) return answered.first;
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }

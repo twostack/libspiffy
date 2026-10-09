@@ -90,8 +90,10 @@ const _sources = <String, String?>{
 /// split names (5hnt: `.utxoKeys` of `SplitUTXOsToBenfordCommand` and
 /// `SplitUTXOsCommand`), 178 with a settled BEEF's ancestry (yiba:
 /// `RecordTransactionAncestorsCommand.ancestors`,
-/// `TransactionAncestorsRecordedEvent.ancestors`).
-const _expectedFields = 178;
+/// `TransactionAncestorsRecordedEvent.ancestors`), 180 with the UTXOs a
+/// release names (xc78.1: `UTXOsReleasedEvent.releasedUtxoKeys`,
+/// `UTXOsReleasedResponse.releasedUtxoKeys`).
+const _expectedFields = 180;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

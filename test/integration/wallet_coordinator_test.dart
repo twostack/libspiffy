@@ -24,7 +24,7 @@ void main() {
   late LocalActorSystem actorSystem;
   late Isar isar;
   late Directory testDir;
-  late ActorRef coordinator;
+  late WalletCoordinator coordinator;
   late Stream<CoordinatorEvent> events;
   late DartSVCryptoService crypto;
   late String mnemonic;
@@ -151,15 +151,15 @@ void main() {
         await created;
 
         // Query balance
-        final queryId = 'balance-query-${DateTime.now().microsecondsSinceEpoch}';
+        final requestId = 'balance-query-${DateTime.now().microsecondsSinceEpoch}';
         final balanceFuture = ofType<BalanceResponse>(events)
-            .where((e) => e.queryId == queryId)
+            .where((e) => e.requestId == requestId)
             .first
             .timeout(const Duration(seconds: 10));
 
         coordinator.tell(GetBalanceQuery(
           walletId: walletId,
-          queryId: queryId,
+          requestId: requestId,
         ));
 
         final balance = await balanceFuture;
@@ -187,15 +187,15 @@ void main() {
         await created;
 
         // Query transactions
-        final queryId = 'tx-query-${DateTime.now().microsecondsSinceEpoch}';
+        final requestId = 'tx-query-${DateTime.now().microsecondsSinceEpoch}';
         final txFuture = ofType<TransactionsResponse>(events)
-            .where((e) => e.queryId == queryId)
+            .where((e) => e.requestId == requestId)
             .first
             .timeout(const Duration(seconds: 10));
 
         coordinator.tell(GetTransactionsQuery(
           walletId: walletId,
-          queryId: queryId,
+          requestId: requestId,
         ));
 
         final txResponse = await txFuture;
@@ -250,20 +250,20 @@ void main() {
 
     group('error handling', () {
       test('emits error for balance query on non-existent wallet', () async {
-        final queryId = 'err-query-${DateTime.now().microsecondsSinceEpoch}';
+        final requestId = 'err-query-${DateTime.now().microsecondsSinceEpoch}';
 
         // Query balance for a wallet that doesn't exist
         // Should get either a BalanceResponse with zeros or an ErrorEvent
         final responseFuture = events
             .where((e) =>
-                (e is BalanceResponse && e.queryId == queryId) ||
+                (e is BalanceResponse && e.requestId == requestId) ||
                 (e is ErrorEvent))
             .first
             .timeout(const Duration(seconds: 10));
 
         coordinator.tell(GetBalanceQuery(
           walletId: 'nonexistent-wallet',
-          queryId: queryId,
+          requestId: requestId,
         ));
 
         final response = await responseFuture;

@@ -112,12 +112,12 @@ void main() {
   var queries = 0;
 
   Future<coord.BalanceResponse> balance() async {
-    final queryId = 'q${queries++}';
-    ref.tell(coord.GetBalanceQuery(walletId: _w, queryId: queryId));
+    final requestId = 'q${queries++}';
+    ref.tell(coord.GetBalanceQuery(walletId: _w, requestId: requestId));
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (DateTime.now().isBefore(deadline)) {
       final answered =
-          events.whereType<coord.BalanceResponse>().where((e) => e.queryId == queryId);
+          events.whereType<coord.BalanceResponse>().where((e) => e.requestId == requestId);
       if (answered.isNotEmpty) return answered.first;
       final failed = events.whereType<coord.ErrorEvent>();
       if (failed.isNotEmpty) fail('the balance query failed: ${failed.first.message}');

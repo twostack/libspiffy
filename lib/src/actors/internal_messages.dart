@@ -22,6 +22,8 @@ library;
 
 import 'package:dactor/dactor.dart';
 
+import '../utils/unique_id.dart';
+
 // ==========================================================================
 // REPLIES
 // ==========================================================================
@@ -253,7 +255,7 @@ class SetCoordinatorForHeadersMessage implements Message {
 
 /// What `HeaderSyncActor` tells the coordinator: where sync stands, and,
 /// after a batch, what the batch stored. Sent after every batch, and in
-/// answer to a `GetHeaderSyncStatusQuery` (then with its [queryId]).
+/// answer to a `GetHeaderSyncStatusQuery` (then with its [requestId]).
 class HeaderSyncReport implements Message {
   final int height;
   final int networkHeight;
@@ -264,7 +266,7 @@ class HeaderSyncReport implements Message {
   final HeaderBatchOutcome? batch;
 
   /// The `GetHeaderSyncStatusQuery` this report answers, if any.
-  final String? queryId;
+  final String? requestId;
 
   HeaderSyncReport({
     required this.height,
@@ -272,17 +274,17 @@ class HeaderSyncReport implements Message {
     required this.synced,
     required this.peerCount,
     this.batch,
-    this.queryId,
+    this.requestId,
   });
 
   @override
-  String get correlationId => queryId ?? 'header-sync-report-${DateTime.now().microsecondsSinceEpoch}';
+  late final String correlationId = requestId ?? uniqueId('header-sync-report');
   @override
   Map<String, dynamic> get metadata => {};
   @override
   ActorRef? get replyTo => null;
   @override
-  DateTime get timestamp => DateTime.now();
+  final DateTime timestamp = DateTime.now();
 }
 
 /// What one batch of headers did to the chain.
@@ -301,6 +303,9 @@ class HeaderBatchOutcome {
   /// Why the first rejected header was rejected.
   final String? firstRejection;
 
+  /// The `StoreHeadersCommand` the batch came from; null for a peer's.
+  final String? requestId;
+
   const HeaderBatchOutcome({
     required this.fromPeer,
     required this.source,
@@ -309,6 +314,7 @@ class HeaderBatchOutcome {
     required this.lastHeight,
     required this.rejected,
     this.firstRejection,
+    this.requestId,
   });
 }
 

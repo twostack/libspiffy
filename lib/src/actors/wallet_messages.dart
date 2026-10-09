@@ -1066,6 +1066,40 @@ class TransactionAncestorsRecordedResponse extends ActorResponse {
   }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
 }
 
+/// Answer to [DeleteWalletCommand]: the deletion is journaled.
+class WalletDeletedResponse extends ActorResponse {
+  final String walletId;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  WalletDeletedResponse({required this.walletId, required this.success, this.error})
+      : super(metadata: {'walletId': walletId, 'success': success});
+}
+
+/// Answer to [ReleaseUTXOsCommand]: the UTXOs the reservation held, now
+/// released; empty when it held none (released already, expired, or a
+/// deferred payment's hold, which only its settlement releases).
+class UTXOsReleasedResponse extends ActorResponse {
+  final String walletId;
+  final String reservationId;
+  final List<String> releasedUtxoKeys;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  UTXOsReleasedResponse({
+    required this.walletId,
+    required this.reservationId,
+    required List<String> releasedUtxoKeys,
+    required this.success,
+    this.error,
+  })  : releasedUtxoKeys = frozenList(releasedUtxoKeys),
+        super(metadata: {'walletId': walletId, 'reservationId': reservationId, 'success': success});
+}
+
 /// Reply of the wallet aggregate to AddWatchAddressCommand (bead
 /// libspiffy-p4kv).
 class WatchAddressAddedResponse extends ActorResponse {

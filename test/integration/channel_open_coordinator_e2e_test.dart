@@ -102,7 +102,7 @@ class _Node {
 
   _Node(this.peerId, this.dir, this.isar, this.secureStorage);
 
-  ActorRef get coordinator => system.coordinator;
+  WalletCoordinator get coordinator => system.coordinator;
 
   /// False while this node's system is shut down (between [_halt] and
   /// [_boot], and after [stop]).

@@ -168,7 +168,7 @@ class ProofP2PAdapter {
   /// App-triggered, one request per call: nothing here retries or polls, so a
   /// peer is never pestered by the library.
   Future<void> handleRequestProof(RequestAncestorProofCommand cmd) async {
-    final requestId = cmd.requestId ?? uniqueId('proof-req');
+    final requestId = cmd.requestId;
     try {
       final tx = await _storage.getTransaction(cmd.txid, walletId: cmd.walletId);
       if (tx == null) {

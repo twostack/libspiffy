@@ -92,6 +92,10 @@ export 'src/spv/cdn_manifest.dart';
 export 'src/spv/block_header_chain.dart'
     show BlockHeaderChain, BlockHeaderAnchor, HeaderAcceptResult, HeaderRejectReason;
 export 'src/spv/network_params.dart' show NetworkParams;
+// A merkle proof checked against the header chain: whether a BUMP's root is
+// the merkle root of the active header at its height
+export 'src/spv/merkle_proof_header_check.dart'
+    show checkBumpAgainstHeaders, checkBumpHexAgainstHeaders, ProofHeaderCheck, ProofHeaderStatus;
 
 // 🚀 SPV VALIDATION - BEEF/BUMP utilities for SPV transaction validation
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation

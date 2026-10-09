@@ -66,7 +66,7 @@ void main() {
   /// submits it, as the payee does. Returns the payment.
   Future<PaymentReadyEvent> alicePaysBob(int amount) async {
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
 
     final created = bob.next<InvoiceCreatedEvent>((e) => e.walletId == bobWallet);
     bob.coordinator.tell(CreateInvoiceCommand(
@@ -174,7 +174,7 @@ void main() {
     // that: it takes the confirmation back, and it puts it back.
     await arcProves(payment.txid, replacement!, mineWhileWaiting: true);
     await Future.wait(reproven);
-    await bob.headersAt(await rpc('getblockcount') as int,
+    await bob.headersAt(await tipHeight(),
         timeout: const Duration(minutes: 2));
 
     final after = (await proofOf(bob, payment.txid))!;
@@ -221,7 +221,7 @@ void main() {
     for (final confirmed in await Future.wait(reproven)) {
       expect(confirmed.blockHeight, moved);
     }
-    await bob.headersAt(await rpc('getblockcount') as int,
+    await bob.headersAt(await tipHeight(),
         timeout: const Duration(minutes: 2));
 
     expect((await proofOf(bob, payment.txid))!.blockHeight, moved);

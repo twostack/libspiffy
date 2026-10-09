@@ -118,7 +118,7 @@ void main() {
       'with its proof and index, imports it and spends it', () async {
     if (unavailable != null) return;
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await service.headersAt(await rpc('getblockcount') as int);
+    await service.headersAt(await tipHeight());
 
     // The service answers the invoice request for Carol, on m/2/i: the
     // invoice says so.

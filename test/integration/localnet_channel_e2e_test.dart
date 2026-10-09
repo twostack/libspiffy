@@ -89,7 +89,7 @@ void main() {
     await bob.createWallet(bobWallet, mnemonic: bobMnemonic);
 
     await alice.receiveMined(aliceWallet, kTestRootAddress, bsv: bsv);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
     return (aliceWallet, bobWallet);
   }
 
@@ -138,7 +138,7 @@ void main() {
   test('alice syncs regtest headers and imports a mined payment with its proof',
       () async {
     if (unavailable != null) return;
-    final tip = await rpc('getblockcount') as int;
+    final tip = await tipHeight();
     await alice.headersAt(tip);
     await fundedWallets();
   }, timeout: const Timeout(Duration(minutes: 5)));
@@ -175,18 +175,17 @@ void main() {
 
     // The node has the settlement Bob broadcast: it spends the funding
     // output and pays Bob 17,500 and Alice what is left after the fee.
-    final settlement = (await onNode(settlementTxId))!;
-    final input = (settlement['vin'] as List).single as Map;
-    expect(input['txid'], fundingTxId);
+    final settlement = (await nodeTransaction(settlementTxId))!;
+    expect(settlement.inputs.single.prevTxnId, fundingTxId);
     final bobRow = (await bob.system.walletStorage.getPaymentChannel(channelId))!;
     final paid = <String, int>{
-      for (final o in (settlement['vout'] as List).cast<Map>())
-        ((o['scriptPubKey'] as Map)['addresses'] as List).single as String:
-            ((o['value'] as num) * 1e8).round(),
+      for (final o in settlement.outputs) o.script.toHex(): o.satoshis.toInt(),
     };
-    expect(paid[bobRow.serverAddressB58], 17500, reason: '$paid');
-    expect(paid[aliceRow.clientAddressB58], lessThan(funding - 17500));
-    expect(paid[aliceRow.clientAddressB58], greaterThan(funding - 17500 - 1000));
+    String lockTo(String address) =>
+        dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey().toHex();
+    expect(paid[lockTo(bobRow.serverAddressB58!)], 17500, reason: '$paid');
+    expect(paid[lockTo(aliceRow.clientAddressB58!)], lessThan(funding - 17500));
+    expect(paid[lockTo(aliceRow.clientAddressB58!)], greaterThan(funding - 17500 - 1000));
 
     final height = await mine();
     expect((await onNode(fundingTxId))!['confirmations'], greaterThan(0));
@@ -232,8 +231,8 @@ void main() {
         reason: 'settled ${lockTime - settledAt} s before the lock time');
     expect(a.settlementTxId, b.settlementTxId);
 
-    final settlement = (await onNode(b.settlementTxId!))!;
-    expect(settlement['locktime'], 0);
+    final settlement = (await nodeTransaction(b.settlementTxId!))!;
+    expect(settlement.nLockTime, 0);
     await mine();
     expect((await onNode(b.settlementTxId!))!['confirmations'], greaterThan(0));
     expect(bob.events.whereType<ErrorEvent>(), isEmpty, reason: bob.trace());
@@ -276,7 +275,7 @@ void main() {
     expect((await onNode(refundTxId))!['confirmations'], greaterThan(0));
   }, timeout: const Timeout(Duration(minutes: 6)));
 
-  test('a refund claimed after Bob\'s settlement was mined is refused as the orphan the network holds it as, and nothing is recorded as claimed',
+  test('a refund claimed after Bob\'s settlement was mined is refused, its input spent, and nothing is recorded as claimed',
       () async {
     if (unavailable != null) return;
     final (aliceWallet, bobWallet) = await fundedWallets();
@@ -296,8 +295,8 @@ void main() {
     final claimed = await claimRefund(channelId);
     expect(claimed.success, isFalse,
         reason: 'the settlement ${bobClosed.settlementTxId} spent the funding '
-            'output in a block; the node cannot connect the refund');
-    expect(claimed.error, contains('orphan'));
+            'output in a block; the network refuses the refund');
+    expect(claimed.error, contains('already spent by tx ${bobClosed.settlementTxId}'));
     final row = (await alice.system.walletStorage.getPaymentChannel(channelId))!;
     expect(row.state, isNot(PaymentChannelState.closed));
     final journal = await alice.system.eventStore
@@ -306,7 +305,7 @@ void main() {
     expect(await onNode(refundTxId), isNull);
   }, timeout: const Timeout(Duration(minutes: 6)));
 
-  test('Bob, back only after Alice claimed her refund, finds his settlement contested and records no close',
+  test('Bob, back only after Alice claimed her refund, finds his settlement refused and records no close',
       () async {
     if (unavailable != null) return;
     final (aliceWallet, bobWallet) = await fundedWallets();
@@ -325,22 +324,21 @@ void main() {
     expect(claimed.success, isTrue, reason: claimed.error);
 
     // Bob comes back: his startup settles the channel he still holds open,
-    // and his app closes it too, at once. The refund was first. ARC answers
-    // the first submission of his settlement DOUBLE_SPEND_ATTEMPTED, and the
-    // second, which arrives while it is still deciding, with an in-flight
-    // status that Bob follows to the same verdict (bead libspiffy-m715).
-    // Neither is a settlement the network holds, and Bob records no close
-    // (bead libspiffy-jh6a; he used to close on the second answer).
+    // and his app closes it too, at once. The refund was first: Arcade
+    // refuses both submissions of his settlement, its input already spent
+    // by the refund, each answered RECEIVED and followed to that verdict
+    // (bead libspiffy-m715). Neither is a settlement the network holds, and
+    // Bob records no close (bead libspiffy-jh6a).
     await bob.restart();
     bob.coordinator.tell(CloseChannelCommand(channelId: channelId));
-    Iterable<ErrorEvent> contested() => bob.events
+    Iterable<ErrorEvent> refused() => bob.events
         .whereType<ErrorEvent>()
-        .where((e) => e.message.contains('contested'));
+        .where((e) => e.message.contains('already spent by tx $refundTxId'));
     final deadline = DateTime.now().add(const Duration(seconds: 60));
-    while (contested().length < 2 && DateTime.now().isBefore(deadline)) {
+    while (refused().length < 2 && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    expect(contested(), hasLength(2), reason: 'Bob:\n  ${bob.trace()}');
+    expect(refused(), hasLength(2), reason: 'Bob:\n  ${bob.trace()}');
     expect(bob.events.whereType<ChannelClosedEvent>(), isEmpty,
         reason: 'Bob:\n  ${bob.trace()}');
     expect(bob.events.whereType<ErrorEvent>(), hasLength(2),

@@ -1,5 +1,5 @@
 /// Deferred payments and double spends run end to end on the real BSV
-/// regtest network, against a real ARC (see localnet_harness.dart).
+/// regtest Teranode, against Arcade (see localnet_harness.dart).
 ///
 /// A payment Alice hands Bob is deferred: her inputs stay held for it, and
 /// her change is not hers to spend, until the network has it. Bob may
@@ -55,7 +55,7 @@ void main() {
     await alice.createWallet(aliceWallet, xpriv: kTestXpriv);
     await bob.createWallet(bobWallet, mnemonic: bobMnemonic);
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
   });
 
   tearDown(() async {
@@ -251,13 +251,12 @@ void main() {
     final resolved = await deferredIn(payment.txid, DeferredPaymentState.reclaimed);
     expect(resolved.resolutionReason, contains(reclaimTxid));
 
-    // Bob submits his copy now: the network already saw its input spent.
-    // ARC keeps it, contested, in case it is mined after all; Bob holds it
-    // as pending, not as money, and his invoice is not paid (bead
-    // libspiffy-yyby).
+    // Bob submits his copy now: the network already saw its input spent,
+    // and Arcade refuses it (first seen wins). Bob does not count it, and
+    // his invoice is not paid (bead libspiffy-yyby).
     final received = await bobReceives(invoiceId, payment);
     expect(received.valid, isTrue, reason: received.error);
-    expect(received.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+    expect(received.networkStatus, DeferredNetworkStatus.rejected);
     final bobBalance = await bob.balance(bobWallet);
     expect(bobBalance.totalBalance, BigInt.zero, reason: 'Bob counted a payment the network refused');
     expect(bob.events.whereType<InvoicePaidEvent>(), isEmpty,
@@ -283,12 +282,20 @@ void main() {
 
     final reclaimed = await reclaim(payment.txid);
     expect(reclaimed.success, isFalse, reason: 'the reclaim spends inputs the network saw spent');
-    expect(reclaimed.networkStatus,
-        isIn([DeferredNetworkStatus.doubleSpendAttempted, DeferredNetworkStatus.rejected]));
-    expect(reclaimed.competingTxids, contains(payment.txid));
+    final reclaimTxid = reclaimed.reclaimTxid;
+    if (reclaimTxid == null) {
+      // Alice's own status scan heard of Bob's copy first: the payment is
+      // no longer outstanding, and no reclaim is built or submitted.
+      expect(reclaimed.error, contains('not outstanding'));
+    } else {
+      // Submitted, and refused: the network saw the input spent by Bob's
+      // copy first.
+      expect(reclaimed.networkStatus,
+          isIn([DeferredNetworkStatus.doubleSpendAttempted, DeferredNetworkStatus.rejected]));
+      expect(reclaimed.competingTxids, contains(payment.txid));
+    }
 
-    // ARC now flags Bob's copy too: two spends of one input are both
-    // contested until a block settles it (the first seen is the one mined).
+    // Bob's copy is the spend the network holds.
     final checked = await check(payment.txid);
     expect(checked.networkStatus,
         isIn([DeferredNetworkStatus.seenOnNetwork, DeferredNetworkStatus.doubleSpendAttempted]));
@@ -297,7 +304,7 @@ void main() {
 
     // The block: Bob's copy is mined, and each wallet records it.
     await mineAndConfirm({alice: [payment.txid], bob: [payment.txid]});
-    expect(await onNode(reclaimed.reclaimTxid!), isNull);
+    if (reclaimTxid != null) expect(await onNode(reclaimTxid), isNull);
     await deferredIn(payment.txid, DeferredPaymentState.mined);
     final aliceAfter = await alice.balance(aliceWallet);
     expect(aliceAfter.confirmedBalance, payment.changeAmount);
@@ -316,7 +323,7 @@ void main() {
     await mineAndConfirm({alice: [reclaimed.reclaimTxid!]});
 
     final received = await bobReceives(invoiceId, payment);
-    expect(received.networkStatus, DeferredNetworkStatus.seenInOrphanMempool);
+    expect(received.networkStatus, DeferredNetworkStatus.rejected);
     expect((await bob.balance(bobWallet)).totalBalance, BigInt.zero);
     expect(bob.events.whereType<InvoicePaidEvent>(), isEmpty,
         reason: 'Bob\'s invoice was paid by a payment spending an output already spent in a block');
@@ -324,7 +331,7 @@ void main() {
     final checked = await check(payment.txid);
     expect(checked.success, isTrue, reason: checked.error);
     expect((await deferred())[payment.txid]!.state, DeferredPaymentState.reclaimed,
-        reason: 'what ARC says of the losing copy does not take the reclaim back');
+        reason: 'what Arcade says of the losing copy does not take the reclaim back');
     final after = await alice.balance(aliceWallet);
     expect(after.confirmedBalance, funded - reclaimed.fee!);
     expect(after.reservedBalance, BigInt.zero);

@@ -2,6 +2,7 @@
 
 - **A channel's settlement and refund reach Arcade.** `PaymentChannelManagerActor` submitted the settlement (server) and the refund claim (client) without the funding transaction they spend. The funding output is no wallet UTXO, so the Extended Format fell back to raw; ARC looked the parent up itself, Arcade answered 460 and every channel close and refund failed. Both now go with a BEEF of the funding transaction and the spend (bead libspiffy-uqa4).
 - **The default P2P user agent passes Teranode.** Teranode's wire-protocol service accepts a peer only if its user agent contains `BSV` or `Bitcoin SV`, and bans any other's IP for 24 hours; `/LibSpiffy:1.0/` did not pass, and one refused connection locked every client behind the same address out. The default is `LibSpiffyActorSystem.defaultUserAgent`, `/LibSpiffy-BSV:1.0/` (bead libspiffy-c04p). The P2P network line is a log record, not a `print`.
+- **The localnet tests run on Teranode.** `test/integration/localnet_harness.dart` targets `../localnet-teranode` (Teranode, Merkle Service, Arcade): coins from its faucet through Arcade, BEEFs from Arcade's merkle paths, the tip and a transaction's block from the DataHub, headers over the wire protocol on :18444. The SV Node + ARC stack in `../localnet` is retired; the `NodeRpcDataSource` tests that need an SV Node's RPC are tagged `svnode` (`dart test -P svnode`). Arcade refuses a later double spend outright (REJECTED) where ARC held it as DOUBLE_SPEND_ATTEMPTED, and a spend of an output spent in a block likewise (bead libspiffy-kynm).
 
 ## 4.6.1
 

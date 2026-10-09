@@ -1556,22 +1556,26 @@ dart test test/core_models/             # Domain model tests
 # test/storage/postgres/postgres_integration_test.dart)
 POSTGRES_DATABASE=libspiffy_test dart test --tags=postgres test/storage/postgres/
 
-# Against a real regtest network and ARC (needs the localnet stack: node
-# RPC :18332, node P2P :18333, ARC :9090). Skipped unless asked for; they
-# mine blocks on the stack's shared chain. LOCALNET_LOG=1 prints the
-# library's logs, tagged by node.
+# Against a real regtest Teranode and Arcade (needs ../localnet-teranode:
+# Arcade :23011, RPC :19292, DataHub :18090, wire protocol :18444; coins
+# come from its faucet; LOCALNET_TERANODE names another checkout). Skipped
+# unless asked for; they mine blocks on the stack's shared chain.
+# LOCALNET_LOG=1 prints the library's logs, tagged by node.
 dart test -P localnet test/integration/localnet_node_e2e_test.dart      # header sync, restarts
 dart test -P localnet test/integration/localnet_payment_e2e_test.dart   # invoices and payments
 dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # payment channels
 dart test -P localnet test/integration/localnet_deferred_e2e_test.dart  # deferred payments, double spends
 dart test -P localnet test/integration/localnet_reorg_e2e_test.dart     # chain reorganizations
-dart test -P localnet test/integration/node_rpc_data_source_test.dart  # node RPC data source
-dart test -P localnet test/integration/node_rpc_wif_import_test.dart   # WIF import from the node
+
+# NodeRpcDataSource against an SV Node's RPC (:18332, the retired
+# ../localnet stack; Teranode serves no gettxoutproof).
+dart test -P svnode test/integration/node_rpc_data_source_test.dart     # node RPC data source
+dart test -P svnode test/integration/node_rpc_wif_import_test.dart      # WIF import from the node
 ```
 
 ### What the suite covers
 
-- **Integration tests**: end-to-end flows including the coordinator API, P2P payments and payment channels (also against a real regtest node and ARC), SPV validation, token lifecycle, invoice persistence, wallet import, header sync
+- **Integration tests**: end-to-end flows including the coordinator API, P2P payments and payment channels (also against a real regtest Teranode and Arcade), SPV validation, token lifecycle, invoice persistence, wallet import, header sync
 - **Unit tests**: plugin registry, output specs, encryption, CDN sync, script builders
 - **Service tests**: ARC service, payment channels, address discovery, node RPC merkle proofs, WhatsOnChain TSC proofs
 - **Core model tests**: UTXO, transaction, wallet state, commands, events

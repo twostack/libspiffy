@@ -1,14 +1,16 @@
-/// The pieces every localnet test shares: the regtest node's RPC, ARC's
+/// The pieces every localnet test shares: the regtest Teranode, Arcade's
 /// view of a transaction, and [LocalnetNode], a complete
-/// LibSpiffyActorSystem that syncs headers from the regtest node over P2P
-/// and broadcasts through the real ARC.
+/// LibSpiffyActorSystem that syncs headers from Teranode over P2P and
+/// broadcasts through Arcade.
 ///
-/// The localnet stack lives in `../localnet` (node RPC :18332, node P2P
-/// :18333, ARC :9090). Tests that use it are tagged `localnet`, skipped by
+/// The stack is `../localnet-teranode` (its CONSUMING.md): Arcade :23011
+/// (the ARC API, no `/v1`), Teranode's RPC :19292, its DataHub :18090 and
+/// its wire protocol :18444; coins come from its faucet, sent through
+/// Arcade so that Arcade has their proofs. `LOCALNET_TERANODE` names
+/// another checkout. Tests that use it are tagged `localnet`, skipped by
 /// default (dart_test.yaml), and run with
 ///   dart test -P localnet test/integration/localnet_<flow>_e2e_test.dart
-/// They mine blocks on the shared regtest chain, as `../localnet/scripts`
-/// do.
+/// They mine blocks on the shared regtest chain, as its scripts do.
 library;
 
 import 'dart:async';
@@ -17,6 +19,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dactor/dactor.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:http/http.dart' as http;
 import 'package:isar_community/isar.dart';
 import 'package:logging/logging.dart' as logging;
@@ -25,29 +28,43 @@ import 'package:test/test.dart';
 import 'package:libspiffy/coordinator.dart';
 import 'package:libspiffy/libspiffy.dart';
 
-/// ARC's address, found by [localnetProblem]: Docker publishes ARC on every
-/// loopback address, but another program may hold `127.0.0.1:9090`, so
-/// the first address that answers as ARC is used.
-var arcUrl = _arcUrls.first;
-const _arcUrls = ['http://127.0.0.1:9090/v1', 'http://[::1]:9090/v1'];
-const _rpcUrl = 'http://localhost:18332';
-const _nodePeer = '127.0.0.1:18333';
+const arcUrl = 'http://127.0.0.1:23011';
+const _arcHealthUrl = 'http://127.0.0.1:23012/health';
+const _rpcUrl = 'http://127.0.0.1:19292';
+const _dataHub = 'http://127.0.0.1:18090/api/v1';
+const _nodePeer = '127.0.0.1:18444';
+
+/// The localnet-teranode checkout: its `.env` holds the RPC credentials and
+/// the faucet's address, and its faucet sends coins.
+final _stackDir = Platform.environment['LOCALNET_TERANODE'] ?? '../localnet-teranode';
 
 /// A fixed mnemonic, so a test's second wallet is deterministic.
 const bobMnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
 
 // ---------------------------------------------------------------------------
-// The regtest node and ARC
+// Teranode and Arcade
 // ---------------------------------------------------------------------------
 
-final _rpcAuth = 'Basic ${base64Encode(utf8.encode('bitcoin:bitcoin'))}';
+/// `KEY=value` lines of the stack's [name] file.
+Map<String, String> _envFile(String name) {
+  final file = File('$_stackDir/$name');
+  if (!file.existsSync()) return const {};
+  return {
+    for (final line in file.readAsLinesSync())
+      if (RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(line))
+        line.substring(0, line.indexOf('=')): line.substring(line.indexOf('=') + 1),
+  };
+}
 
-/// Calls the regtest node's JSON-RPC [method].
+late final Map<String, String> _env = {..._envFile('.env'), ..._envFile('miner.env')};
+
+/// Calls Teranode's JSON-RPC [method].
 Future<dynamic> rpc(String method, [List<dynamic> params = const []]) async {
+  final auth = base64Encode(utf8.encode('${_env['rpc_user']}:${_env['rpc_pass']}'));
   final response = await http.post(
     Uri.parse(_rpcUrl),
-    headers: {'Content-Type': 'application/json', 'Authorization': _rpcAuth},
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Basic $auth'},
     body: jsonEncode({'jsonrpc': '1.0', 'id': 1, 'method': method, 'params': params}),
   );
   final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -55,13 +72,29 @@ Future<dynamic> rpc(String method, [List<dynamic> params = const []]) async {
   return body['result'];
 }
 
-/// Mines [count] blocks and returns the height of the last one mined.
+/// A DataHub JSON answer, or null on 404.
+Future<Map<String, dynamic>?> _dataHubJson(String path) async {
+  final response = await http.get(Uri.parse('$_dataHub/$path'));
+  if (response.statusCode == 404) return null;
+  if (response.statusCode != 200) {
+    throw StateError('DataHub $path: ${response.statusCode} ${response.body}');
+  }
+  return jsonDecode(response.body) as Map<String, dynamic>;
+}
+
+/// The chain's tip height. From the DataHub, which has a block as soon as it
+/// is mined (Teranode's `getblockchaininfo` trails it by a few seconds, and
+/// its `getblockcount` is not implemented).
+Future<int> tipHeight() async =>
+    (await _dataHubJson('bestblockheader/json'))!['height'] as int;
+
+/// Mines [count] blocks, paying the faucet, and returns the height of the
+/// last one mined.
 ///
 /// Not the tip: the chain is shared, and anything else on it can mine
 /// between the block this asks for and the answer.
 Future<int> mine([int count = 1]) async {
-  final address = await rpc('getnewaddress') as String;
-  final mined = await rpc('generatetoaddress', [count, address]) as List;
+  final mined = await rpc('generatetoaddress', [count, _env['MINER_ADDRESS']]) as List;
   return heightOf(mined.last as String);
 }
 
@@ -73,61 +106,57 @@ Future<int> heightOf(String hash) async =>
 /// Why the localnet stack cannot run a test, or null when it can.
 Future<String?> localnetProblem() async {
   try {
-    final answers = <String>[];
-    String? found;
-    for (final url in _arcUrls) {
-      final health = await _arcHealth(url);
-      if (health == null) {
-        found = url;
-        break;
-      }
-      answers.add('$url: $health');
+    if (_env['rpc_user'] == null || _env['MINER_ADDRESS'] == null) {
+      return 'no RPC credentials or faucet address in $_stackDir/.env and miner.env';
     }
-    if (found == null) return 'ARC is not healthy (${answers.join('; ')})';
-    arcUrl = found;
+    final health = await http.get(Uri.parse(_arcHealthUrl)).timeout(const Duration(seconds: 3));
+    if (health.statusCode != 200) return 'Arcade is not healthy: ${health.body.trim()}';
     final chain = await rpc('getblockchaininfo') as Map<String, dynamic>;
     if (chain['chain'] != 'regtest') return 'the node runs ${chain['chain']}';
     return null;
   } catch (e) {
-    return 'localnet is not reachable: $e';
+    return 'localnet-teranode is not reachable: $e';
   }
 }
 
-/// What is wrong with the ARC at [url], or null when it is healthy.
-Future<String?> _arcHealth(String url) async {
-  try {
-    final health = await http
-        .get(Uri.parse('$url/health'))
-        .timeout(const Duration(seconds: 3));
-    if (health.statusCode == 200 &&
-        (jsonDecode(health.body) as Map)['healthy'] == true) {
-      return null;
+/// Sends [satoshis] from the stack's faucet to [address] through Arcade, so
+/// that Arcade follows it to its proof. Returns its txid and raw hex.
+Future<({String txid, String rawHex})> faucetSend(String address, int satoshis) async {
+  final result = await Process.run('go', ['run', '.', 'send', address, '$satoshis', '--arcade'],
+      workingDirectory: '$_stackDir/faucet');
+  final out = '${result.stdout}';
+  final txid = RegExp(r'^txid ([0-9a-f]{64})$', multiLine: true).firstMatch(out)?.group(1);
+  final rawHex = RegExp(r'^hex\s+([0-9a-f]+)$', multiLine: true).firstMatch(out)?.group(1);
+  if (result.exitCode != 0 || txid == null || rawHex == null) {
+    throw StateError('faucet send failed (${result.exitCode}): $out ${result.stderr}');
+  }
+  return (txid: txid, rawHex: rawHex);
+}
+
+/// A mined transaction as a BEEF carrying the merkle proof Arcade built for
+/// it. Arcade has proofs only of transactions submitted to it.
+Future<List<int>> minedBeef(String txid, String rawHex,
+    {Duration timeout = const Duration(seconds: 30)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (true) {
+    final response = await http.get(Uri.parse('$arcUrl/tx/$txid'));
+    if (response.statusCode == 200) {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final path = body['merklePath'] as String?;
+      if (body['txStatus'] == 'MINED' && path != null && path.isNotEmpty) {
+        return BEEF.create(
+          bumps: [BUMP.fromHex(path)],
+          txs: [_bytes(rawHex)],
+          hasMerkle: [true],
+          bumpIndex: [0],
+        ).serialize();
+      }
     }
-    return health.body.trim();
-  } catch (e) {
-    return '$e';
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Arcade has no merkle path for $txid: ${response.body}');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 500));
   }
-}
-
-/// A mined transaction of the regtest chain as a BEEF carrying its merkle
-/// proof, taken from the node.
-Future<List<int>> minedBeef(String txid) async {
-  final source = NodeRpcDataSource(
-      rpcUrl: _rpcUrl, rpcUser: 'bitcoin', rpcPassword: 'bitcoin');
-  final proof = await source.getMerkleProof(txid);
-  final raw = await source.getRawTransaction(txid);
-  final bump = BUMP.fromTscProof(
-    blockHeight: proof.blockHeight,
-    txid: txid,
-    index: proof.index,
-    nodes: proof.nodes,
-  );
-  return BEEF.create(
-    bumps: [bump],
-    txs: [_bytes(raw)],
-    hasMerkle: [true],
-    bumpIndex: [0],
-  ).serialize();
 }
 
 Uint8List _bytes(String hex) => Uint8List.fromList([
@@ -135,58 +164,54 @@ Uint8List _bytes(String hex) => Uint8List.fromList([
         int.parse(hex.substring(i, i + 2), radix: 16)
     ]);
 
-/// ARC's status of [txid], or null when ARC has never seen it.
+/// Arcade's status of [txid], or null when Arcade has never been given it.
 Future<String?> arcStatus(String txid) async {
   final response = await http.get(Uri.parse('$arcUrl/tx/$txid'));
   if (response.statusCode == 404) return null;
   return (jsonDecode(response.body) as Map)['txStatus'] as String?;
 }
 
-/// Waits until ARC reports [txid] as [status]. ARC's status query reads
-/// its store, which trails the status that answered a submission by a
-/// moment.
+/// Waits until Arcade reports [txid] as [status].
 Future<void> arcReports(String txid, String status,
-    {Duration timeout = const Duration(seconds: 10)}) async {
+    {Duration timeout = const Duration(seconds: 20)}) async {
   final deadline = DateTime.now().add(timeout);
   var last = await arcStatus(txid);
   while (last != status && DateTime.now().isBefore(deadline)) {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     last = await arcStatus(txid);
   }
-  expect(last, status, reason: 'ARC\'s status of $txid');
+  expect(last, status, reason: 'Arcade\'s status of $txid');
 }
 
-/// Waits until ARC reports the network holding [txid]: `SEEN_ON_NETWORK`,
-/// or `MINED` when the stack's autominer (a block every ten minutes) got to
-/// it first.
+/// Waits until Arcade reports the network holding [txid]: `SEEN_ON_NETWORK`
+/// (a miner put it in a subtree), or anything after it.
 Future<void> arcHolds(String txid,
-    {Duration timeout = const Duration(seconds: 10)}) async {
-  const held = {'SEEN_ON_NETWORK', 'MINED'};
+    {Duration timeout = const Duration(seconds: 20)}) async {
+  const held = {'SEEN_ON_NETWORK', 'SEEN_MULTIPLE_NODES', 'MINED', 'IMMUTABLE'};
   final deadline = DateTime.now().add(timeout);
   var last = await arcStatus(txid);
   while (!held.contains(last) && DateTime.now().isBefore(deadline)) {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     last = await arcStatus(txid);
   }
-  expect(last, isIn(held), reason: 'ARC\'s status of $txid');
+  expect(last, isIn(held), reason: 'Arcade\'s status of $txid');
 }
 
-/// The hash of the block ARC says [txid] is in; null when ARC does not have
-/// it in a block, or has never heard of it.
+/// The hash of the block Arcade says [txid] is in; null when Arcade does
+/// not have it in a block, or has never been given it.
 Future<String?> arcBlock(String txid) async {
   final response = await http.get(Uri.parse('$arcUrl/tx/$txid'));
   if (response.statusCode == 404) return null;
-  return (jsonDecode(response.body) as Map)['blockHash'] as String?;
+  final hash = (jsonDecode(response.body) as Map)['blockHash'] as String?;
+  return hash == null || hash.isEmpty ? null : hash;
 }
 
-/// Waits until ARC answers for [txid] with [blockHash].
+/// Waits until Arcade answers for [txid] with [blockHash].
 ///
-/// After a reorganization ARC goes on naming the block that left the chain
-/// until its own block processing catches up, which it does as further
-/// blocks arrive. No wallet can re-prove the transaction before that, so
-/// waiting for it on its own keeps a slow ARC from reading as a wallet
-/// defect. With [mineWhileWaiting] the chain is kept moving meanwhile, as a
-/// live one would be.
+/// After a reorganization Arcade moves the transaction back to
+/// SEEN_ON_NETWORK and proves it again once Merkle Service sees it in a
+/// block of the new branch. With [mineWhileWaiting] the chain is kept
+/// moving meanwhile, as a live one would be.
 Future<void> arcProves(String txid, String blockHash,
     {Duration timeout = const Duration(minutes: 4),
     bool mineWhileWaiting = false}) async {
@@ -203,21 +228,40 @@ Future<void> arcProves(String txid, String blockHash,
     last = await arcBlock(txid);
   }
   expect(last, blockHash,
-      reason: 'ARC has not caught up with the chain for $txid');
+      reason: 'Arcade has not caught up with the chain for $txid');
 }
 
-/// The regtest node's view of [txid]: verbose, with `confirmations` once
-/// mined; null when the node has never seen it.
+/// Teranode's view of [txid]: its raw transaction (`hex`), and `blockhash`
+/// and `confirmations` of the active-chain block holding it (absent while
+/// it is unmined); null when Teranode has never seen it. From the DataHub's transaction metadata,
+/// which lists every block the transaction is in, of any branch.
 Future<Map<String, dynamic>?> onNode(String txid) async {
-  try {
-    return await rpc('getrawtransaction', [txid, 1]) as Map<String, dynamic>;
-  } on StateError {
-    return null;
+  final meta = await _dataHubJson('txmeta/$txid/json');
+  if (meta == null) return null;
+  final hashes = (meta['blockHashes'] as List?)?.cast<String>() ?? const [];
+  final heights = (meta['blockHeights'] as List?)?.cast<int>() ?? const [];
+  for (var i = 0; i < hashes.length && i < heights.length; i++) {
+    final active = await rpc('getblockhash', [heights[i]]) as String;
+    if (active == hashes[i]) {
+      return {
+        'txid': txid,
+        'hex': (meta['tx'] as Map)['hex'],
+        'blockhash': hashes[i],
+        'confirmations': await tipHeight() - heights[i] + 1,
+      };
+    }
   }
+  return {'txid': txid, 'hex': (meta['tx'] as Map)['hex']};
 }
 
-/// The height of the block the node holds [txid] in; null when the node
-/// does not have it in a block. The chain's own answer, which is what a
+/// [txid] as Teranode holds it; null when it has never seen it.
+Future<dartsv.Transaction?> nodeTransaction(String txid) async {
+  final rawHex = (await onNode(txid))?['hex'] as String?;
+  return rawHex == null ? null : dartsv.Transaction.fromHex(rawHex);
+}
+
+/// The height of the block Teranode holds [txid] in on the active chain;
+/// null when it is not in one. The chain's own answer, which is what a
 /// wallet's recorded height has to agree with however the block was mined.
 Future<int?> minedAt(String txid) async {
   final hash = (await onNode(txid))?['blockhash'] as String?;
@@ -225,11 +269,11 @@ Future<int?> minedAt(String txid) async {
 }
 
 /// Mines blocks until the chain's median time past (what the network holds
-/// a time lock to) is at or after [unix].
+/// a time lock to) is at or after [unix]; returns the tip height.
 Future<int> mineUntilMedianTime(int unix) async {
   while (true) {
     final info = await rpc('getblockchaininfo') as Map<String, dynamic>;
-    if ((info['mediantime'] as int) >= unix) return info['blocks'] as int;
+    if ((info['mediantime'] as int) >= unix) return tipHeight();
     await mine();
     await Future<void>.delayed(const Duration(milliseconds: 1100));
   }
@@ -390,17 +434,21 @@ class LocalnetNode {
     return (await answer).transaction;
   }
 
-  /// Sends [bsv] from the node's wallet to [address], mines it, and imports
-  /// it into [walletId] with its merkle proof once this node holds the
-  /// block's header. Returns the txid.
+  /// Sends [bsv] from the faucet to [address], mines it, and imports it
+  /// into [walletId] with its merkle proof once this node holds the block's
+  /// header. Returns the txid.
   Future<String> receiveMined(String walletId, String address,
       {double bsv = 0.01}) async {
-    final txid = await rpc('sendtoaddress', [address, bsv]) as String;
+    final sent = await faucetSend(address, (bsv * 100000000).round());
+    final txid = sent.txid;
+    // Mined only once a miner holds it: a block mined before it reaches a
+    // subtree goes without it.
+    await arcHolds(txid);
     await headersAt(await mine());
+    final beef = await minedBeef(txid, sent.rawHex);
     final imported =
         next<TransactionImportedEvent>((e) => e.walletId == walletId);
-    coordinator.tell(
-        ImportTransactionCommand(walletId: walletId, beef: await minedBeef(txid)));
+    coordinator.tell(ImportTransactionCommand(walletId: walletId, beef: beef));
     final event = await imported;
     expect(event.success, isTrue, reason: event.error);
     expect(event.transactionId, txid);

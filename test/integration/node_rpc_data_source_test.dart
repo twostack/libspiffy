@@ -1,7 +1,8 @@
-/// Runs against the localnet regtest node (../localnet): tagged
-/// `localnet`, skipped by default (dart_test.yaml), run with
-///   dart test -P localnet test/integration/node_rpc_data_source_test.dart
-@Tags(['localnet'])
+/// Runs against an SV Node's regtest RPC (the retired ../localnet stack;
+/// Teranode serves no gettxoutproof): tagged `svnode`, skipped by default
+/// (dart_test.yaml), run with
+///   dart test -P svnode test/integration/node_rpc_data_source_test.dart
+@Tags(['svnode'])
 library;
 
 import 'dart:convert';

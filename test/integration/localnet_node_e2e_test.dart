@@ -39,7 +39,7 @@ void main() {
     final node = await LocalnetNode.start('follower', timing);
     addTearDown(node.stop);
 
-    await node.headersAt(await rpc('getblockcount') as int);
+    await node.headersAt(await tipHeight());
     await node.headersAt(await mine(), timeout: const Duration(seconds: 20));
 
     await node.restart();

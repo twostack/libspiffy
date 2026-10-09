@@ -77,7 +77,7 @@ void main() {
   Future<LocalnetNode> carolOnline() async {
     final carol = carolNode = await LocalnetNode.start('carol-peer', timing);
     await carol.createWallet(carolWallet, mnemonic: bobMnemonic);
-    await carol.headersAt(await rpc('getblockcount') as int);
+    await carol.headersAt(await tipHeight());
     return carol;
   }
 

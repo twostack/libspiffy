@@ -105,7 +105,7 @@ void main() {
       () async {
     if (unavailable != null) return;
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
     final aliceBefore = await alice.balance(aliceWallet);
     expect(aliceBefore.confirmedBalance, BigInt.from(1000000));
 
@@ -172,7 +172,7 @@ void main() {
       () async {
     if (unavailable != null) return;
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
 
     final (bobInvoice, bobAddress) = await invoice(bob, bobWallet, 60000);
     final first = await pay(alice, aliceWallet, bobInvoice, bobAddress, 60000);
@@ -213,7 +213,7 @@ void main() {
   test('a payment handed over twice is received once', () async {
     if (unavailable != null) return;
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
 
     final (invoiceId, address) = await invoice(bob, bobWallet, 30000);
     final payment = await pay(alice, aliceWallet, invoiceId, address, 30000);
@@ -231,7 +231,7 @@ void main() {
       () async {
     if (unavailable != null) return;
     await alice.receiveMined(aliceWallet, kTestRootAddress);
-    await bob.headersAt(await rpc('getblockcount') as int);
+    await bob.headersAt(await tipHeight());
 
     final (invoiceId, address) = await invoice(bob, bobWallet, 40000);
     final payment = await pay(alice, aliceWallet, invoiceId, address, 40000);
@@ -244,6 +244,7 @@ void main() {
 
     final confirmed = bob.next<TransactionConfirmedEvent>(
         (e) => e.txid == payment.txid, timeout: const Duration(minutes: 2));
+    await arcHolds(payment.txid);
     final height = await mine();
     await bob.headersAt(height, timeout: const Duration(seconds: 30));
     expect((await confirmed).blockHeight, await minedAt(payment.txid));

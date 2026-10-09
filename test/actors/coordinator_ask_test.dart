@@ -8,6 +8,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:convert/convert.dart';
+
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart' show GetProjectionInfo;
 import 'package:test/test.dart';
@@ -17,6 +19,8 @@ import 'package:libspiffy/src/actors/payment_messages.dart' as pay;
 import 'package:libspiffy/src/actors/wallet_messages.dart' as wm;
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import 'package:libspiffy/src/utils/beef.dart';
+import 'package:libspiffy/src/utils/bump.dart';
 
 const _wallet = 'wallet-1';
 
@@ -69,6 +73,7 @@ void main() {
     ({Message reply, Duration delay})? Function(Object message)? paymentCoordinator,
     ({Message reply, Duration delay})? Function(Object message)? arc,
     ({Message reply, Duration delay})? Function(Object message)? walletProjection,
+    ({Message reply, Duration delay})? Function(Object message)? spv,
     InMemoryWalletStorage? storage,
   }) async {
     final silent = await system.spawn('silent', () => _ScriptedActor((_) => null));
@@ -78,7 +83,7 @@ void main() {
       walletManager: await scripted('wallet-manager', walletManager),
       invoiceCoordinator: silent,
       paymentCoordinator: await scripted('payment-coordinator', paymentCoordinator),
-      spvActor: silent,
+      spvActor: await scripted('spv', spv),
       arcActor: await scripted('arc', arc),
       headerSyncActor: silent,
       benfordCoordinator: silent,
@@ -293,4 +298,121 @@ void main() {
     final released = await coordinator.ask(ReleaseUTXOsCommand(walletId: _wallet, reservationId: 'r1'), timeout: _wait);
     expect(released.releasedUtxoKeys, ['${'aa' * 32}:0']);
   });
+
+  test('a payment waiting for its block header is answered, not failed, and its verdict names the request', () async {
+    // A real testnet transaction, unproven, in a BEEF.
+    const txHex =
+        '02000000013706d29b641d2061b0b7b22c81ec6a5670104826bee4472a7513619f4fc298df000000006a473044022021fb2500cfd69bf3d7eee8f16d2e1d6d49528dbe23e9105744202bd9e5b5789102204ff801667c156b97e92209c19dce9bbdd955ee35cea7b815cf9e3b0c1b6727174121022036646b3fd79dee41351f727f0a6e10d0e7f98585961bc14e7aadaf5f4b66ab0100000002a0443b00000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac96000000000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac00000000';
+    final beefHex = hex.encode(BEEF
+        .create(
+            bumps: const [],
+            txs: [Uint8List.fromList(hex.decode(txHex))],
+            hasMerkle: const [false],
+            bumpIndex: const [])
+        .serialize());
+    wm.ReceiveTransactionMessage? parked;
+    final coordinator = await coordinatorWith(
+      spv: (m) => switch (m) {
+        wm.ValidateBEEFMessage() => (
+            reply: wm.BEEFValidationResult(isValid: true, targetWalletId: _wallet, requestId: m.requestId),
+            delay: Duration.zero
+          ),
+        wm.ReceiveTransactionMessage() => (
+            reply: wm.SPVValidationResult(
+                txid: (parked = m).transactionId,
+                isValid: false,
+                validationError: 'Block header(s) at height(s) 900 are not synced yet',
+                targetWalletId: _wallet,
+                awaitingHeader: true,
+                requestId: m.requestId),
+            delay: Duration.zero
+          ),
+        _ => null,
+      },
+    );
+    final request = ValidateBEEFCommand(walletId: _wallet, beefHex: beefHex);
+
+    final waiting = await coordinator.ask(request, timeout: _wait);
+    expect(waiting.awaitingHeader, isTrue);
+    expect(waiting.valid, isFalse);
+    expect(waiting.failure, isNull, reason: 'not decided is not refused');
+
+    // The header arrives and the receive is replayed with its id: here the
+    // proof does not match it.
+    final verdict = coordinator
+        .on<BEEFValidationResultEvent>()
+        .firstWhere((e) => !e.awaitingHeader)
+        .timeout(_wait);
+    ref.tell(wm.SPVValidationResult(
+        txid: parked!.transactionId,
+        isValid: false,
+        validationError: 'the merkle root does not match the header',
+        targetWalletId: _wallet,
+        requestId: parked!.requestId));
+    final decided = await verdict;
+    expect(decided.requestId, request.requestId);
+    expect(decided.failure, contains('merkle root'));
+  });
+
+  test('a failed broadcast nobody waits on says whether ARC queued a retry', () async {
+    await coordinatorWith();
+    ref.tell(wm.BroadcastFailedMessage('aa' * 32, 'ARC unreachable', willRetry: false));
+    ref.tell(wm.BroadcastFailedMessage('bb' * 32, 'ARC unreachable', willRetry: true));
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    expect(events.whereType<BroadcastFailureEvent>().map((e) => (e.txid, e.willRetry)),
+        [('aa' * 32, false), ('bb' * 32, true)]);
+  });
+
+  test('an import whose proof waits for a block header is answered by the verdict the header brings', () async {
+    const txHex =
+        '02000000013706d29b641d2061b0b7b22c81ec6a5670104826bee4472a7513619f4fc298df000000006a473044022021fb2500cfd69bf3d7eee8f16d2e1d6d49528dbe23e9105744202bd9e5b5789102204ff801667c156b97e92209c19dce9bbdd955ee35cea7b815cf9e3b0c1b6727174121022036646b3fd79dee41351f727f0a6e10d0e7f98585961bc14e7aadaf5f4b66ab0100000002a0443b00000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac96000000000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac00000000';
+    const txid = 'dd6e7547df0fe893a9a19f66f0377eca72fdcd18fd9f6185fde9c91461a8e8a9';
+    // The transaction with its proof: alone in its block, so the proof has
+    // no siblings.
+    final beef = BEEF.create(
+        bumps: [BUMP.fromTscProof(blockHeight: 900, txid: txid, index: 0, nodes: const [])],
+        txs: [Uint8List.fromList(hex.decode(txHex))],
+        hasMerkle: const [true],
+        bumpIndex: const [0]);
+    wm.ReceiveTransactionMessage? parked;
+    final coordinator = await coordinatorWith(
+      spv: (m) => m is wm.ReceiveTransactionMessage
+          ? (
+              reply: wm.SPVValidationResult(
+                  txid: (parked = m).transactionId,
+                  isValid: false,
+                  validationError: 'Block header(s) at height(s) 900 are not synced yet',
+                  targetWalletId: _wallet,
+                  awaitingHeader: true,
+                  subjectCarriesProof: true,
+                  requestId: m.requestId),
+              delay: Duration.zero
+            )
+          : null,
+    );
+    final request = ImportTransactionCommand(walletId: _wallet, beef: beef.serialize());
+    final answer = coordinator
+        .ask(request, timeout: _wait)
+        .then<Object>((_) => 'answered', onError: (Object e) => e);
+
+    // Nothing answers while the header is missing; then it arrives, and the
+    // proof does not match it.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(parked, isNotNull);
+    ref.tell(wm.SPVValidationResult(
+        txid: txid,
+        isValid: false,
+        validationError: 'the merkle root does not match the header',
+        targetWalletId: _wallet,
+        subjectCarriesProof: true,
+        requestId: parked!.requestId));
+
+    final failure = await answer;
+    expect(failure, isA<CoordinatorFailure>());
+    failure as CoordinatorFailure;
+    expect(failure.event, isA<TransactionImportedEvent>().having((e) => e.requestId, 'requestId', request.requestId));
+    expect(failure.message, contains('merkle root'));
+  });
 }
+

@@ -20,7 +20,7 @@ import 'package:libspiffy/libspiffy.dart';
 
 The coordinator import gives you command classes (what you send), event classes (what you receive), and `WalletCoordinator`, which you send them with. The names are clean: `CreateWalletCommand`, `WalletCreatedEvent`, `PayInvoiceCommand`, `PaymentReadyEvent`.
 
-The internal import gives you everything else: storage interfaces, crypto services, the actor system class, domain models. There is no naming collision between the two imports because the coordinator uses `Command`/`Event` suffixes while the internals use `Message`/`Response` suffixes.
+The internal import gives you everything else: storage interfaces, crypto services, the actor system class, domain models. The two import together without a name clash. `package:libspiffy/internals.dart`, which exports the aggregates' own commands and events, does clash with `coordinator.dart` (`CreateWalletCommand`, `WalletCreatedEvent` and others exist in both): import it with a prefix if you need it.
 
 ## The Programming Model
 
@@ -140,8 +140,9 @@ await libspiffy.initialize(
   ...
 );
 
-// Testing — in-memory, no persistence
-await libspiffy.initialize(storageBackend: StorageBackend.inMemory, ...);
+// Testing — read models in memory; the event journal is still an Isar store
+// in dataDirectory, and the projections rebuild from it on start
+await libspiffy.initialize(storageBackend: StorageBackend.inMemory, dataDirectory: tempDir, ...);
 ```
 
 ### Shared Isar Instance
@@ -229,11 +230,12 @@ The coordinator generates a fresh address from the wallet and creates the invoic
 When the payer sends you a BEEF package, validate it:
 
 ```dart
-final verdict = await coordinator.ask(ValidateBEEFCommand(
+final request = ValidateBEEFCommand(
   walletId: 'primary',
   beefHex: receivedBeefHexString,
   invoiceId: 'inv-123',            // Optional: correlate with invoice
-));
+);
+final verdict = await coordinator.ask(request);
 ```
 
 This triggers a multi-step process that the coordinator manages internally:
@@ -242,15 +244,20 @@ This triggers a multi-step process that the coordinator manages internally:
 3. If valid, broadcast to the network via ARC
 4. Update wallet UTXOs with received funds
 
-The reply is one `BEEFValidationResultEvent`; an invalid payment throws `CoordinatorFailure` instead:
+The reply is one `BEEFValidationResultEvent`; an invalid payment throws `CoordinatorFailure` instead. A payment whose block header has not arrived yet is not decided: the reply says `awaitingHeader`, and the verdict follows as a second `BEEFValidationResultEvent` with the same `requestId` once the header arrives:
 
 ```dart
-print('Payment valid! TX: ${verdict.txid}, broadcasted: ${verdict.broadcasted}');
 if (verdict.awaitingHeader) {
-  // Its block header has not arrived yet. The payment is decided when it
-  // does, announced as a BEEFValidationResultEvent with no request id.
+  final decided = await coordinator
+      .on<BEEFValidationResultEvent>()
+      .firstWhere((e) => e.requestId == request.requestId && !e.awaitingHeader);
+  // decided.valid, or decided.failure says why not
+} else {
+  print('Payment valid! TX: ${verdict.txid}, broadcasted: ${verdict.broadcasted}');
 }
 ```
+
+A restart while it waits replays the payment from storage when the header arrives; that verdict carries no `requestId`.
 
 The coordinator tracks the correlation between BEEF data, wallet ID, invoice ID, and SPV validation internally. You never need to manage these intermediate states.
 

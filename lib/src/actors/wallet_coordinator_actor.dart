@@ -866,7 +866,9 @@ class WalletCoordinatorActor extends Actor {
         _emitEvent(BroadcastFailureEvent(
           txid: message.txid,
           error: message.error,
-          willRetry: true,
+          // ARCActor says whether it queued a retry: it does not on a backend
+          // without the retry queue, or for a definitive refusal.
+          willRetry: message.willRetry,
         ));
       }
       // === THE WALLET COULD NOT ANSWER ===
@@ -3252,7 +3254,14 @@ class WalletCoordinatorActor extends Actor {
     // carries its subject's proof (ckr4), so one without it, or one naming an
     // invoice, is a payment.
     final requestId = result.requestId;
-    final request = requestId == null ? null : _receives.remove(requestId);
+    // A receive parked for a header is not decided: its request stays, so
+    // the verdict the header brings (this process replays it with the same
+    // id) carries the app's request id too.
+    final request = requestId == null
+        ? null
+        : result.awaitingHeader
+            ? _receives[requestId]
+            : _receives.remove(requestId);
     // A receive this coordinator itself is waiting on (a proven foreign
     // spender) gets its verdict; the import events below are emitted for
     // it too, as for any other import.

@@ -1326,7 +1326,7 @@ class LibSpiffyActorSystem {
   ///
   /// ```dart
   /// final created = await libspiffy.coordinator
-  ///     .ask(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet'));
+  ///     .ask(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet', mnemonic: mnemonic));
   /// libspiffy.coordinator.tell(StoreHeadersCommand(headers: headers));
   /// libspiffy.coordinator.on<BalanceUpdatedEvent>(walletId: 'my-wallet').listen(render);
   /// ```

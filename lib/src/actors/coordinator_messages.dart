@@ -2032,8 +2032,11 @@ class ProvisioningCompleteEvent extends CoordinatorReply {
 /// handed to ARC's mailbox — before ARC answered, and with no ARC at all.
 ///
 /// A payment whose proofs name a block header we have not synced is not
-/// decided yet: [awaitingHeader], and a second event follows once the
-/// header arrives — after a restart too, since the receive is stored.
+/// decided yet: [awaitingHeader], with [valid] false, and this is not a
+/// failure (`ask` returns it). A second event, the verdict, follows once the
+/// header arrives, carrying the same [requestId] while this process runs;
+/// after a restart the receive is replayed from storage and its verdict
+/// carries none.
 class BEEFValidationResultEvent extends CoordinatorReply {
   @override
   final String? walletId;
@@ -2087,7 +2090,7 @@ class BEEFValidationResultEvent extends CoordinatorReply {
         unreadableOutputs = frozenMapList(unreadableOutputs);
 
   @override
-  String? get failure => valid ? null : error ?? 'The payment did not validate';
+  String? get failure => valid || awaitingHeader ? null : error ?? 'The payment did not validate';
 }
 
 /// SPV validation result for a received transaction
@@ -2117,19 +2120,23 @@ class SPVValidationResultEvent extends CoordinatorEvent {
         unreadableOutputs = frozenMapList(unreadableOutputs);
 }
 
-/// Broadcast to Arc failed (transaction queued for retry via duraq)
+/// A broadcast to ARC failed that no request is waiting on (a durable
+/// retry, or a broadcast another actor started).
 class BroadcastFailureEvent extends CoordinatorEvent {
   @override
   final String? walletId;
   final String txid;
   final String error;
+
+  /// ARCActor queued the broadcast for a durable retry. False for a
+  /// definitive refusal, and on a backend without the retry queue.
   final bool willRetry;
 
   BroadcastFailureEvent({
     this.walletId,
     required this.txid,
     required this.error,
-    this.willRetry = true,
+    required this.willRetry,
   });
 }
 

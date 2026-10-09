@@ -1463,9 +1463,11 @@ await libspiffy.initialize(
   ),
 );
 
-// Development — In-memory
+// Development — read models in memory; the event journal is still an Isar
+// store in dataDirectory ('./data' when none is given)
 await libspiffy.initialize(
   storageBackend: StorageBackend.inMemory,
+  dataDirectory: tempDir,
 );
 ```
 

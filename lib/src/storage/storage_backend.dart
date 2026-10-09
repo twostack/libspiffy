@@ -18,7 +18,7 @@ import 'postgres/postgres_event_store.dart';
 ///
 /// - [isar]: Embedded database for mobile/desktop applications (default)
 /// - [postgres]: PostgreSQL for server-side deployments
-/// - [inMemory]: In-memory storage for testing only
+/// - [inMemory]: Read models in memory, for testing only
 enum StorageBackend {
   /// Isar embedded database - suitable for mobile and desktop apps.
   /// This is the default backend.
@@ -28,8 +28,10 @@ enum StorageBackend {
   /// Requires a PostgreSQL server and connection configuration.
   postgres,
 
-  /// In-memory storage - for testing purposes only.
-  /// Data is lost when the application terminates.
+  /// Read models in memory, for testing only: they are lost when the
+  /// application terminates. The event journal is still an Isar store, in
+  /// the `dataDirectory` given to `LibSpiffyActorSystem.initialize` (or
+  /// `./data`), and the projections rebuild the read models from it.
   inMemory,
 }
 

@@ -20,7 +20,7 @@ Common use cases include:
 The `InvoiceOutputSpec` is a sealed class hierarchy that defines output specifications:
 
 ```dart
-import 'package:libspiffy/src/models/invoice_output_spec.dart';
+import 'package:libspiffy/libspiffy.dart';
 
 // Base sealed class
 sealed class InvoiceOutputSpec {
@@ -41,6 +41,8 @@ class P2MSOutputSpec extends InvoiceOutputSpec {
   int get totalKeys;              // Total keys (n in m-of-n)
   bool get isValid;               // Validates threshold and key format
 }
+
+// Also: OPReturnOutputSpec (data carrier) and PluginOutputSpec (see the Script Plugin API Guide)
 ```
 
 ## Creating Multi-Output Invoices
@@ -50,10 +52,10 @@ class P2MSOutputSpec extends InvoiceOutputSpec {
 Split a payment across multiple addresses:
 
 ```dart
-import 'package:libspiffy/src/actors/invoice_messages.dart';
-import 'package:libspiffy/src/models/invoice_output_spec.dart';
+import 'package:libspiffy/coordinator.dart';
+import 'package:libspiffy/libspiffy.dart';
 
-final message = CreateInvoiceMessage(
+final invoice = await coordinator.ask(CreateInvoiceCommand(
   walletId: 'merchant-wallet',
   outputs: [
     P2PKHOutputSpec(
@@ -73,9 +75,7 @@ final message = CreateInvoiceMessage(
     ),
   ],
   description: 'Order #12345 - Split payment',
-);
-
-invoiceCoordinator.tell(message, sender: responseReceiver);
+));
 ```
 
 ### P2MS (Multisig) Output
@@ -84,7 +84,7 @@ Create an invoice requiring multiple signatures:
 
 ```dart
 // 2-of-3 multisig escrow
-final message = CreateInvoiceMessage(
+final invoice = await coordinator.ask(CreateInvoiceCommand(
   walletId: 'escrow-wallet',
   outputs: [
     P2MSOutputSpec(
@@ -99,7 +99,7 @@ final message = CreateInvoiceMessage(
     ),
   ],
   description: 'Escrow for transaction #789',
-);
+));
 ```
 
 ### Mixed P2PKH and P2MS Outputs
@@ -108,7 +108,7 @@ Combine standard payments with escrow:
 
 ```dart
 // Marketplace order: merchant payment + platform fee + escrow
-final message = CreateInvoiceMessage(
+final invoice = await coordinator.ask(CreateInvoiceCommand(
   walletId: 'marketplace-wallet',
   outputs: [
     // Immediate payment to merchant
@@ -132,7 +132,7 @@ final message = CreateInvoiceMessage(
     ),
   ],
   description: 'Marketplace order with escrow',
-);
+));
 ```
 
 ## P2MS Validation Rules
@@ -160,30 +160,30 @@ if (!output.isValid) {
 
 ## Handling Invoice Responses
 
-The `InvoiceCreatedMessage` response includes:
+The reply, `InvoiceCreatedEvent`, includes:
 
 ```dart
-// Handle response
-if (response is InvoiceCreatedMessage) {
-  if (response.success) {
-    print('Invoice created: ${response.invoiceId}');
-    print('Total amount: ${response.effectiveAmount} satoshis');
+try {
+  final invoice = await coordinator.ask(CreateInvoiceCommand(walletId: 'marketplace', outputs: outputs));
+  print('Invoice created: ${invoice.invoiceId}');
+  print('Total amount: ${invoice.amount} satoshis'); // the sum of the outputs
 
-    // Access outputs
-    for (final output in response.outputs ?? []) {
-      switch (output) {
-        case P2PKHOutputSpec p2pkh:
-          print('P2PKH: ${p2pkh.address} - ${p2pkh.amount} sats');
-        case P2MSOutputSpec p2ms:
-          print('P2MS: ${p2ms.threshold}-of-${p2ms.totalKeys} - ${p2ms.amount} sats');
-      }
+  // Access outputs
+  for (final output in invoice.outputs ?? <InvoiceOutputSpec>[]) {
+    switch (output) {
+      case P2PKHOutputSpec p2pkh:
+        print('P2PKH: ${p2pkh.address} - ${p2pkh.amount} sats');
+      case P2MSOutputSpec p2ms:
+        print('P2MS: ${p2ms.threshold}-of-${p2ms.totalKeys} - ${p2ms.amount} sats');
+      case OPReturnOutputSpec() || PluginOutputSpec():
+        break;
     }
-
-    // Legacy addresses (P2PKH only, for backward compatibility)
-    print('Addresses: ${response.addresses}');
-  } else {
-    print('Error: ${response.error}');
   }
+
+  // Legacy addresses (P2PKH only, for backward compatibility)
+  print('Addresses: ${invoice.addresses}');
+} on CoordinatorFailure catch (failure) {
+  print('Error: ${failure.message}');
 }
 ```
 
@@ -193,7 +193,7 @@ When a payment is received, the SPVActor validates:
 
 1. **P2PKH outputs**: Matches addresses against invoice
 2. **P2MS outputs**: Compares public key sets and threshold
-3. **Total amount**: Verifies payment meets `effectiveAmount`
+3. **Total amount**: Verifies the payment meets the invoice total (the sum of its outputs, or its amount)
 
 The validation uses set comparison for P2MS (order-independent):
 
@@ -213,21 +213,21 @@ Multi-output invoices are fully backward compatible:
 
 ```dart
 // Old style still works
-final legacyMessage = CreateInvoiceMessage(
+final legacyInvoice = await coordinator.ask(CreateInvoiceCommand(
   walletId: 'wallet-123',
   amount: BigInt.from(50000),  // Single amount
   numberOfAddresses: 1,        // Single address
-);
+));
 ```
 
 ### Computed Properties
 
-Both legacy and multi-output invoices support:
+Both legacy and multi-output invoices give:
 
 ```dart
 // Works for both legacy and multi-output invoices
-final totalAmount = invoice.effectiveAmount;  // Total from outputs or amount field
-final addresses = invoice.addresses;           // P2PKH addresses only
+final totalAmount = invoice.amount;   // Total from outputs, or the amount field
+final addresses = invoice.addresses;  // P2PKH addresses only
 ```
 
 ## Serialization
@@ -261,27 +261,18 @@ The `InvoiceProjection` automatically populates both fields from `InvoiceCreated
 ## Example: Complete Flow
 
 ```dart
-import 'dart:async';
-import 'package:libspiffy/src/actors/invoice_messages.dart';
-import 'package:libspiffy/src/models/invoice_output_spec.dart';
+import 'package:libspiffy/coordinator.dart';
+import 'package:libspiffy/libspiffy.dart';
 
 Future<void> createMarketplaceInvoice(
-  ActorRef invoiceCoordinator,
+  WalletCoordinator coordinator,
   String merchantAddress,
   String platformFeeAddress,
   List<String> escrowPubKeys,
 ) async {
-  final completer = Completer<InvoiceCreatedMessage>();
-
-  // Create receiver for response
-  final receiver = await actorSystem.spawn(
-    'invoice-receiver',
-    () => ResponseReceiver(completer),
-  );
-
-  // Create multi-output invoice
-  invoiceCoordinator.tell(
-    CreateInvoiceMessage(
+  // Create multi-output invoice; a failure throws CoordinatorFailure
+  final invoice = await coordinator.ask(
+    CreateInvoiceCommand(
       walletId: 'marketplace',
       outputs: [
         P2PKHOutputSpec(
@@ -304,17 +295,11 @@ Future<void> createMarketplaceInvoice(
       description: 'Marketplace order',
       expiresIn: Duration(hours: 24),
     ),
-    sender: receiver,
   );
 
-  // Wait for response
-  final response = await completer.future.timeout(Duration(seconds: 10));
-
-  if (response.success) {
-    print('Invoice ${response.invoiceId} created');
-    print('Total: ${response.effectiveAmount} satoshis');
-    print('Outputs: ${response.outputs?.length ?? 0}');
-  }
+  print('Invoice ${invoice.invoiceId} created');
+  print('Total: ${invoice.amount} satoshis');
+  print('Outputs: ${invoice.outputs?.length ?? 0}');
 }
 ```
 
@@ -329,7 +314,7 @@ Future<void> createMarketplaceInvoice(
 ## Related Files
 
 - `lib/src/models/invoice_output_spec.dart` - Output spec model
-- `lib/src/actors/invoice_messages.dart` - Invoice messages
+- `lib/src/actors/coordinator_messages.dart` - `CreateInvoiceCommand` and `InvoiceCreatedEvent`
 - `lib/src/actors/invoice_coordinator_actor.dart` - Invoice creation
 - `lib/src/actors/payment_coordinator_actor.dart` - Payment building
 - `lib/src/actors/spv_actor.dart` - Payment validation

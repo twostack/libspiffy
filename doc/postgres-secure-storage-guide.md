@@ -18,8 +18,14 @@ This guide covers secure management of the master encryption key for `PostgresSe
 # Using OpenSSL (recommended)
 openssl rand -base64 32
 
-# Or using Dart
-dart run -e "import 'package:libspiffy/libspiffy.dart'; void main() async { print(await EncryptionService.generateMasterKeyBase64()); }"
+```
+
+Or from Dart:
+
+```dart
+import 'package:libspiffy/libspiffy.dart';
+
+void main() async => print(await EncryptionService.generateMasterKeyBase64());
 ```
 
 Example output:
@@ -256,6 +262,7 @@ services:
 ```dart
 import 'dart:io';
 import 'package:libspiffy/libspiffy.dart';
+import 'package:postgres/postgres.dart';
 
 Future<PostgresSecureStorage> createSecureStorage(Pool pool) async {
   // Get master key from environment
@@ -274,7 +281,8 @@ Future<PostgresSecureStorage> createSecureStorage(Pool pool) async {
       pool: pool,
       masterKeyBase64: masterKey,
     );
-  } on ArgumentError catch (e) {
+  } catch (e) {
+    if (e is! ArgumentError && e is! FormatException) rethrow;
     throw StateError(
       'Invalid LIBSPIFFY_MASTER_KEY: $e. '
       'Key must be 32 bytes, base64-encoded.',
@@ -312,37 +320,30 @@ Future<String> getMasterKey() async {
 
 When rotating the master key:
 
+Every row records the key version it was encrypted under, and reads use the key that version names.
+
 ### Step 1: Add new key version
 
 ```dart
-// Create storage with new key version
-final newStorage = await PostgresSecureStorage.create(
+// Create storage with the new key version, keeping the old key for reading
+final storage = await PostgresSecureStorage.create(
   pool: pool,
   masterKeyBase64: newMasterKey,
   keyVersion: 2,  // Increment version
+  previousMasterKeysBase64: {1: oldMasterKey},
 );
 ```
+
+New writes use version 2. Rows under version 1 stay readable.
 
 ### Step 2: Re-encrypt existing secrets
 
 ```dart
-Future<void> rotateSecrets(
-  PostgresSecureStorage oldStorage,
-  PostgresSecureStorage newStorage,
-) async {
-  // Get all wallet IDs from your read model
-  final walletIds = await getXPubWalletIds();
-
-  for (final walletId in walletIds) {
-    // Read with old key
-    final xpub = await oldStorage.getXPub(walletId);
-    if (xpub != null) {
-      // Write with new key
-      await newStorage.setXPub(walletId, xpub);
-    }
-  }
-}
+// Re-encrypts every row not under the current key version, in one transaction
+final changed = await storage.reencryptToCurrentKey();
 ```
+
+It throws `SecureStorageException` and changes nothing if any row cannot be decrypted. Once it returns, the old key is no longer needed.
 
 ### Step 3: Update environment and restart
 
@@ -409,7 +410,7 @@ sudo systemctl restart your-wallet-service
 journalctl -u your-wallet-service -f
 ```
 
-### "Invalid master key: must be 32 bytes"
+### "Master key must be exactly 32 bytes (256 bits)"
 
 The key must decode to exactly 32 bytes:
 
@@ -422,8 +423,12 @@ echo -n "your-key-here" | base64 -d | wc -c
 ### "Decryption failed: authentication error"
 
 - Key mismatch between encryption and decryption
-- Data was encrypted with a different key version
+- The key given for the row's key version is not the key it was encrypted with
 - Database corruption or tampering
+
+### "encrypted under key version N, but no key for that version is configured"
+
+The row was written under a key version this storage has no key for. Pass that version's key in `previousMasterKeysBase64` (or `previousKeys`), or finish the rotation with `reencryptToCurrentKey()` while the old key is still configured.
 
 Check key_version in database:
 ```sql

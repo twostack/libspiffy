@@ -1,4 +1,4 @@
-# LibSpiffy Coordinator Developer Guide
+# LibSpiffy Developer Guide
 
 ## Who This Guide Is For
 
@@ -31,7 +31,7 @@ The internal import gives you everything else: storage interfaces, crypto servic
 3. **`on<E>()`** follows one kind of event: what happens without a request, such as a balance change, an invoice paid, or a channel request from a peer.
 
 ```dart
-final created = await coordinator.ask(CreateWalletCommand(walletId: 'w1', name: 'My Wallet'));
+final created = await coordinator.ask(CreateWalletCommand(walletId: 'w1', name: 'My Wallet', mnemonic: mnemonic));
 print('Created wallet ${created.walletId}, root address: ${created.rootAddress}');
 
 coordinator.on<BalanceUpdatedEvent>(walletId: 'w1').listen((event) {
@@ -121,7 +121,7 @@ LibSpiffy handles Bitcoin mechanics. The host handles platform concerns:
 
 **SecureStorage** (required for real wallets): An implementation of the `SecureStorage` interface that persists wallet private keys. LibSpiffy ships with `InMemorySecureStorage` for development, but production apps must provide platform-appropriate secure storage (iOS Keychain, Android Keystore, etc.).
 
-**P2P Transport** (required for payment channels): If you use payment channels, the coordinator emits `ChannelP2PMessageToSendEvent` when it needs to send a protocol message to a peer. Your app must transmit this over whatever P2P layer you use (libp2p, WebSocket, HTTP, etc.) and feed incoming messages back via `ChannelP2PReceived`. The coordinator handles all protocol logic; you handle the transport.
+**P2P Transport** (required for payment channels and merkle-proof requests): the coordinator emits `P2PMessageToSendEvent` when it needs to send a protocol message to a peer: a payment channel message, or a `proof_request`/`proof_response` asking a counterparty for a fresh proof or answering one. Your app must transmit this over whatever P2P layer you use (libp2p, WebSocket, HTTP, etc.) and feed incoming messages back via `P2PMessageReceived`. The coordinator handles all protocol logic; you handle the transport.
 
 **Isolate Management** (optional): If you want LibSpiffy to run in a separate isolate (recommended for mobile apps), you manage the isolate spawn and message serialization. The coordinator's commands and events are plain Dart objects — serialize them however you like for the isolate boundary.
 
@@ -149,12 +149,16 @@ await libspiffy.initialize(storageBackend: StorageBackend.inMemory, ...);
 If your app already uses Isar, share the instance to avoid opening multiple databases:
 
 ```dart
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 
-final isar = await Isar.open([
-  ...LibSpiffySchemas.allSchemas, // LibSpiffy read models + event store + queue collections
-  ...myAppSchemas,                 // Your app's schemas
-]);
+final isar = await Isar.open(
+  [
+    ...LibSpiffySchemas.allSchemas, // LibSpiffy read models + event store + queue collections
+    ...myAppSchemas,                 // Your app's schemas
+  ],
+  directory: dataDirectory,
+);
 
 await libspiffy.initialize(isar: isar, ...);
 ```
@@ -387,14 +391,14 @@ outputs: [
   P2PKHOutputSpec(address: 'addr1', amount: BigInt.from(40000)),
   P2MSOutputSpec(
     publicKeys: ['pubkey1', 'pubkey2'],
-    requiredSignatures: 2,
+    threshold: 2,
     amount: BigInt.from(10000),
   ),
   OPReturnOutputSpec(dataChunks: [myDataBytes]),
 ]
 ```
 
-For token protocols and custom script types, use the plugin system. Register your plugin at startup, then include `PluginOutputSpec` in payments. See the [Script Plugin API Guide](doc/script-plugin-api-guide.md) for the full plugin interface.
+For token protocols and custom script types, use the plugin system. Register your plugin at startup, then include `PluginOutputSpec` in payments. See the [Script Plugin API Guide](script-plugin-api-guide.md) for the full plugin interface.
 
 ```dart
 // After registering your plugin (see plugin guide):
@@ -414,21 +418,21 @@ Payment channels enable high-frequency, low-latency payments between two parties
 
 ### Host Responsibilities
 
-The coordinator does not know how to send network messages. When it needs to send a P2P protocol message to a peer, it emits `ChannelP2PMessageToSendEvent`. Your app must:
+The coordinator does not know how to send network messages. When it needs to send a P2P protocol message to a peer, it emits `P2PMessageToSendEvent` (`ChannelP2PMessageToSendEvent` for a channel message). Your app must:
 
-1. Listen for `ChannelP2PMessageToSendEvent` on the coordinator stream
+1. Listen for `P2PMessageToSendEvent` on the coordinator stream
 2. Transmit the `payload` to `toPeerId` via your P2P layer
 3. When a message arrives from a peer, feed it back to the coordinator
 
 ```dart
 // Outgoing: coordinator → your P2P layer → peer
-coordinator.on<ChannelP2PMessageToSendEvent>().listen((msg) {
+coordinator.on<P2PMessageToSendEvent>().listen((msg) {
   myP2PLayer.send(msg.toPeerId, msg.messageType, msg.payload);
 });
 
 // Incoming: peer → your P2P layer → coordinator
 myP2PLayer.onMessage((fromPeerId, messageType, payload) {
-  coordinator.tell(ChannelP2PReceived(
+  coordinator.tell(P2PMessageReceived(
     fromPeerId: fromPeerId,
     messageType: messageType,
     payload: payload,
@@ -436,7 +440,20 @@ myP2PLayer.onMessage((fromPeerId, messageType, payload) {
 });
 ```
 
-That is the entire P2P contract. The coordinator handles the 11-message channel protocol internally.
+That is the entire P2P contract. The coordinator routes each incoming message by `messageType` and handles the 11-message channel protocol and the proof protocol internally.
+
+A node takes part in channels only when `initialize()` is given `channelTiming` (when a channel stops taking payments and settles, and how long it must run; the library supplies no default) and `channelPeerId` (this node's own peer id on your transport):
+
+```dart
+await libspiffy.initialize(
+  channelTiming: ChannelTiming(
+    settlementMargin: Duration(hours: 1),
+    minimumLifetime: Duration(hours: 2),
+  ),
+  channelPeerId: myPeerId,
+  ...
+);
+```
 
 ### Opening a Channel (Client Side)
 
@@ -452,7 +469,7 @@ final channel = await coordinator.ask(OpenChannelCommand(
 This initiates a multi-step protocol. The coordinator:
 1. Generates a key pair and address for the channel
 2. Emits a `ChannelP2PMessageToSendEvent` with the channel request (your app transmits it)
-3. Waits for the server's acceptance (arrives via `ChannelP2PReceived`)
+3. Waits for the server's acceptance (arrives via `P2PMessageReceived`)
 4. Builds the funding transaction
 5. Builds the refund transaction (safety net)
 6. Exchanges refund signatures with the server
@@ -555,7 +572,7 @@ await coordinator.ask(RegisterWatchAddressCommand(
 
 ## Error Handling
 
-A request's failure is its own: `ask` throws `CoordinatorFailure`, whose `event` is the reply that reported it or an `ErrorEvent` naming the request. With `tell`, the reply carries `success` and `error` (`valid` and `error` for `BEEFValidationResultEvent`); `CoordinatorReply.failure` gives the reason whatever the reply type.
+A request's failure is its own: `ask` throws `CoordinatorFailure`, whose `event` is the reply that reported it or an `ErrorEvent` naming the request. With `tell`, read the reply's `failure` (`CoordinatorReply.failure`): the reason, or null when it succeeded. A request whose failure is reported as an `ErrorEvent` (a channel step, for one) has that event carry its `requestId`.
 
 Failures no request caused (a channel step the counterparty started, a broadcast retried later) arrive as `ErrorEvent` with no `requestId`. The `source` field tells you what failed, and `walletId` (when present) which wallet:
 
@@ -603,13 +620,6 @@ final invoice = await coordinator.ask(CreateInvoiceCommand(...));
 ```
 
 **Do not manage BEEF/SPV correlation yourself.** The multi-step validation flow (structural validation → SPV validation → broadcast) involves correlation maps that the coordinator maintains. If you try to manage this yourself, you will lose track of which BEEF data belongs to which invoice.
-
-**Do not import `package:libspiffy/coordinator.dart` and `package:libspiffy/libspiffy.dart` in the same file** if you reference any of the colliding names (`WalletCreatedEvent`, `InvoiceCreatedEvent`, `ChannelOpenedEvent`, etc.). Use one import per file, or prefix one of them:
-
-```dart
-import 'package:libspiffy/coordinator.dart';
-import 'package:libspiffy/libspiffy.dart' as spiffy; // prefix to avoid collisions
-```
 
 ## Integration with the Plugin System
 
@@ -674,7 +684,7 @@ Every command and query below is answered with one reply of the type named, carr
 | `RetryChannelFundingCommand` | `ChannelFundingRetriedEvent` |
 | `ResendChannelOpenCommand` | `ChannelOpenResentEvent` |
 
-`ShutdownCommand` and `ChannelP2PReceived` are told; they have no reply.
+`ShutdownCommand` and `P2PMessageReceived` are told; they have no reply.
 
 The tables below are the events the coordinator emits without a request, and the replies' types when they are emitted that way.
 
@@ -710,7 +720,7 @@ The tables below are the events the coordinator emits without a request, and the
 | `ChannelOpenedEvent` | A channel this node serves is open |
 | `ChannelPaymentEvent` | A payment received on a channel this node serves |
 | `ChannelClosedEvent` | A channel closed by the counterparty or the settlement timer |
-| `ChannelP2PMessageToSendEvent` | App must transmit this P2P message to a peer |
+| `P2PMessageToSendEvent` | App must transmit this P2P message to a peer (`ChannelP2PMessageToSendEvent` for a channel message) |
 
 ### Utility Events
 | Event | When Emitted |

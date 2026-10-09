@@ -4,7 +4,7 @@ Fast initial block header synchronization via pre-built binary files hosted on a
 
 ## Overview
 
-A fresh wallet needs all block headers for SPV validation. Via P2P, this means ~860 sequential round-trips at 2,000 headers each -- easily 30+ minutes on testnet. CDN sync downloads the same headers as compact binary files in parallel, completing in under 2 minutes.
+A fresh wallet needs all block headers for SPV validation. Via P2P, this means ~860 sequential round-trips at 2,000 headers each -- easily 30+ minutes on testnet. CDN sync downloads the same headers as compact binary files, completing in under 2 minutes.
 
 **How it works:**
 
@@ -17,7 +17,7 @@ A fresh wallet needs all block headers for SPV validation. Via P2P, this means ~
 
 ### Prerequisites
 
-- A block header source: either a `block_headers.json` backup file (OverNode format) or an existing Isar/PostgreSQL database with synced headers
+- A block header source: a `block_headers.json` backup file (OverNode format), or WhatsOnChain (see [Building from WhatsOnChain](#building-from-whatsonchain))
 - Dart SDK installed
 
 ### Step 1: Export headers to binary chunks
@@ -61,6 +61,19 @@ dart run tool/export_headers_to_cdn.dart \
 ```
 
 Orphaned headers (`"isOrphaned": true`) are automatically skipped.
+
+### Building from WhatsOnChain
+
+Without a backup file, `tool/fetch_woc_headers_to_cdn.dart` builds the same layout from the raw header files WhatsOnChain publishes:
+
+```bash
+dart run tool/fetch_woc_headers_to_cdn.dart \
+  --network mainnet \
+  --output /path/to/cdn/mainnet \
+  [--cache /path/to/cache] [--chunk-size 50000] [--reorg-margin 100]
+```
+
+`--network` is `mainnet` or `testnet`. Before writing anything it checks that block 0 is the network's genesis block, that every header links to the one before it, and that every header meets its own difficulty target. It leaves out the newest `--reorg-margin` blocks (default 100), so a tip that is later reorganised away never reaches the CDN. Downloads are cached in `--cache` (default `<output>/.woc-cache`), so a rerun fetches only new files.
 
 ### Step 2: Verify the output
 
@@ -117,7 +130,7 @@ Upload the output directory to any static file server. The files are served as-i
 **Examples:**
 
 ```bash
-# Local testing with Python
+# Local testing with Python (plain http: only CdnHeaderSyncService with allowInsecureHttp: true accepts it)
 cd /path/to/cdn && python3 -m http.server 8080
 
 # AWS S3 + CloudFront
@@ -152,28 +165,36 @@ await libspiffy.initialize(
 ```
 
 CDN sync runs automatically during `initialize()`:
-1. Fetches `manifest.json` from `{cdnBaseUrl}/{network}/`
+1. Fetches `manifest.json` from `{cdnBaseUrl}/{network}/`, where `{network}` is `mainnet`, `testnet` or `regtest`, from `networkType`
 2. Determines which chunks are needed (skips already-synced ranges)
-3. Downloads chunks with 4 concurrent HTTP connections
-4. Validates SHA-256 integrity, chain continuity, and checkpoints
+3. Processes one chunk at a time: downloads it (cached on disk in `dataDirectory`, when given, until imported), validates it, and imports it before downloading the next
+4. Validates SHA-256 integrity, the link to the stored tip (or the genesis block), chain continuity, proof of work, and checkpoints
 5. Bulk-inserts into storage (Isar or PostgreSQL)
 6. P2P sync then picks up any remaining blocks
 
-If the CDN is unavailable or validation fails, initialization continues normally and P2P handles the full sync.
+`cdnBaseUrl` must be an `https` URL. A failed pass is retried from where it stopped, up to three passes. If the CDN is still unavailable or validation fails, initialization continues normally, the headers already imported stay, and P2P handles the rest. Pass `onHeaderSyncResult` to learn how the sync ended (a `CdnSyncResult` with `success`, `headersImported`, `finalHeight` and `error`).
 
 ### Configuration options
 
-Pass a `CdnHeaderSyncConfig` for fine-grained control:
+`initialize()` builds its `CdnHeaderSyncConfig` from its own parameters. To run a sync yourself, pass a `CdnHeaderSyncConfig` to `CdnHeaderSyncService`:
 
 ```dart
 final cdnConfig = CdnHeaderSyncConfig(
   baseUrl: 'https://your-cdn.com',
   network: 'testnet',
   downloadTimeout: Duration(seconds: 30),
-  validateProofOfWork: false,     // PoW check per header (default: false, slow)
+  validateProofOfWork: true,      // PoW check per header (default: true)
   verifyCheckpoints: true,        // Verify manifest checkpoints (default: true)
+  allowInsecureHttp: false,       // Permit an http baseUrl, for a local test CDN (default: false)
+  cacheDirectory: '/path/to/cache', // Keep downloaded chunks on disk until imported (default: memory only)
+  maxRetries: 3,                  // Download attempts per chunk (default: 3)
   onProgress: (current, total, phase) { ... },
 );
+
+final result = await CdnHeaderSyncService(
+  config: cdnConfig,
+  headerChain: libspiffy.headerChain,
+).synchronize();
 ```
 
 ### Progress phases
@@ -183,7 +204,7 @@ The `onProgress` callback reports these phases:
 | Phase | Description |
 |-------|-------------|
 | `fetchingManifest` | Downloading `manifest.json` |
-| `downloadingChunks` | Downloading binary chunk files in parallel |
+| `downloadingChunks` | Downloading a binary chunk file |
 | `validatingChunks` | Verifying SHA-256 hashes and chain continuity |
 | `importingHeaders` | Bulk-inserting into storage |
 | `complete` | CDN sync finished successfully |
@@ -203,12 +224,13 @@ The wallet handles the gap between CDN data and the current chain tip via normal
 
 CDN-served headers go through multiple validation layers:
 
-1. **SHA-256 chunk integrity** -- each downloaded chunk's hash must match the manifest
-2. **Chain continuity** -- every header's `prevBlock` must equal the previous header's hash
-3. **Checkpoint verification** -- block hashes at known heights must match the manifest's checkpoint values
-4. **Proof-of-work** (optional) -- each header meets its stated difficulty target
+1. **SHA-256 chunk integrity** -- each downloaded chunk's hash must match the manifest (a transport check only: the manifest comes from the same CDN)
+2. **Anchoring** -- the first new header must link to the stored tip, or be the network's genesis block built into the code
+3. **Chain continuity** -- every header's `prevBlock` must equal the previous header's hash
+4. **Proof-of-work** (on by default) -- each header's hash is at or below its own target, and that target is no easier than the network's proof-of-work limit
+5. **Checkpoint verification** -- block hashes at known heights must match the manifest's checkpoint values. These are advisory: a mismatch rejects the chunk, a match proves nothing on its own
 
-This means a malicious CDN cannot serve fabricated headers unless they also solve proof-of-work for every block -- the same security guarantee as P2P sync.
+This means a malicious CDN cannot serve fabricated headers unless they also solve proof-of-work for every block -- the same security guarantee as P2P sync. A CDN URL must be `https`, so a network attacker cannot choose which headers the wallet sees.
 
 ## Size Estimates
 

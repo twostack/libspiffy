@@ -65,7 +65,7 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │  │  WalletCoordinatorActor (Unified Facade)                           │   │
 │  │  • Send: CreateWalletCommand, PayInvoiceCommand, GetBalanceQuery   │   │
 │  │  • Recv: WalletCreatedEvent, PaymentReadyEvent, BalanceResponse    │   │
-│  │  • Handles correlation tracking, error routing, channel P2P        │   │
+│  │  • Answers each request with its own reply (ask), channel P2P      │   │
 │  └────────────────────────────────┬───────────────────────────────────┘   │
 │                                   │ Internal delegation                   │
 │  COMMAND SIDE (Write Operations)  │                                       │
@@ -291,7 +291,9 @@ await initializeLibSpiffy(dataDirectory: './wallet-data');
 final walletManager = getLibSpiffySystem().walletManager;
 final spvActor = getLibSpiffySystem().spvActor;
 
-walletManager.tell(CreateWalletMessage('my-wallet', 'My Wallet'));
+// libspiffy generates no keys: the app supplies a mnemonic, xpriv, WIF or xpub
+final mnemonic = await DartSVCryptoService().generateMnemonic();
+walletManager.tell(CreateWalletMessage('my-wallet', 'My Wallet', mnemonic: mnemonic));
 
 await shutdownLibSpiffy();
 ```
@@ -351,7 +353,8 @@ await initializeLibSpiffy(dataDirectory: './data');
 
 // Use wallet functionality
 final walletManager = getLibSpiffySystem().walletManager;
-walletManager.tell(CreateWalletMessage('my-wallet', 'My Wallet'));
+final mnemonic = await DartSVCryptoService().generateMnemonic();
+walletManager.tell(CreateWalletMessage('my-wallet', 'My Wallet', mnemonic: mnemonic));
 
 // LibSpiffy handles its own lifecycle
 await shutdownLibSpiffy();
@@ -393,7 +396,7 @@ await app.shutdown();       // Host manages actor system shutdown
 
 ### Pattern 3: Coordinator (Built-in Gateway)
 
-LibSpiffy provides a built-in `WalletCoordinatorActor` that serves as the canonical gateway. You no longer need to build your own:
+LibSpiffy provides a built-in `WalletCoordinator` that serves as the canonical gateway. You no longer need to build your own:
 
 ```dart
 import 'package:libspiffy/coordinator.dart';
@@ -758,7 +761,7 @@ final verdict = await bobCoordinator.ask(ValidateBEEFCommand(
 6. **UTXO Extraction**: Identifies new spendable UTXOs and spent UTXOs
 7. **Fee Calculation**: Computes transaction fee from input/output values in BEEF
 8. **State Update**: Wallet state updated via event sourcing
-9. **Invoice Marking**: Invoice marked as paid
+9. **Invoice Marking**: Invoice marked as paid once ARC reports the network holds the payment
 
 ### Payments Handed to the Recipient (Deferred Payments)
 
@@ -887,8 +890,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 Long-lived coordinator that manages multiple wallet aggregates:
 
 ```dart
-// Create wallet (spawns BitcoinWalletAggregate actor)
-walletManager.tell(CreateWalletMessage('wallet-001', 'My Bitcoin Wallet'));
+// Create wallet (spawns BitcoinWalletAggregate actor) from the app's key
+// material: a mnemonic, xpriv, WIF or xpub
+walletManager.tell(CreateWalletMessage('wallet-001', 'My Bitcoin Wallet', mnemonic: mnemonic));
 
 // Send a command to a wallet aggregate. An application asks the
 // coordinator instead: its GenerateAddressCommand answers with an
@@ -904,8 +908,8 @@ walletManager.tell(WalletCommandMessage(
 ));
 
 // Query wallet (reads from ReadModel, not EventStore). The wallet manager
-// has no balance message: read the read model, or send the coordinator a
-// GetBalanceQuery and listen for its BalanceResponse.
+// has no balance message: read the read model, or ask the coordinator
+// GetBalanceQuery, answered with a BalanceResponse.
 final BigInt balance = await getLibSpiffySystem().walletStorage.getBalance('wallet-001');
 ```
 
@@ -1298,9 +1302,9 @@ Peer messages travel over the app's own transport: deliver what arrives as
   double spend, or an orphan (an input the node cannot connect, or one
   already spent in a block), fails the step, and nothing is recorded;
   repeating the step retries it. A status ARC gives while still processing
-  is no verdict: the library asks ARC again until it gives one, for up to
-  the manager's `inFlightTimeout` (30 s by default), and fails the step if
-  it has not.
+  is no verdict: the library asks ARC again until it gives one, at the
+  delays `LibSpiffyActorSystem.initialize(arcInFlightFollowDelays:)` sets
+  (about 30 s in all by default), and fails the step if it has not.
 - **Peers:** messages about a channel are accepted only from the channel's
   counterparty, and only in that counterparty's role.
 
@@ -1505,41 +1509,6 @@ await libspiffy.initialize(
 handshake. Header sync does not start from it: it continues from the tip of
 the stored header chain.
 
-## Monitoring and Observability
-
-### Actor Metrics
-- Message processing rates
-- Error rates and types
-- Actor lifecycle events
-- Memory usage and performance
-
-### Wallet Metrics
-- Balance changes over time
-- Transaction volume and fees
-- UTXO set size and distribution
-- Address generation patterns
-- Event store size and growth
-
-### Invoice Metrics
-- Invoice creation rate
-- Payment success rate
-- Invoice expiration rate
-- Average payment time
-- Active vs. paid vs. expired invoices
-
-### SPV Validation Metrics
-- Merkle proof validation success rate
-- BEEF/BUMP processing time
-- Fee calculation accuracy
-- Address verification success rate
-- Block header sync progress
-
-### Network Metrics
-- ARC service response times
-- Transaction broadcast success rate
-- Block header sync status
-- Network fee rates
-
 ## Testing
 
 ```bash
@@ -1566,6 +1535,12 @@ dart test -P localnet test/integration/localnet_payment_e2e_test.dart   # invoic
 dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # payment channels
 dart test -P localnet test/integration/localnet_deferred_e2e_test.dart  # deferred payments, double spends
 dart test -P localnet test/integration/localnet_reorg_e2e_test.dart     # chain reorganizations
+dart test -P localnet test/integration/localnet_delegated_payment_e2e_test.dart  # payment to an offline xpub payee
+dart test -P localnet test/integration/localnet_type42_payment_e2e_test.dart     # type-42 payment to an offline payee
+
+# Against the public testnet Arcade, reading from WhatsOnChain. Skipped
+# unless asked for.
+dart test -P arcade test/integration/arcade_testnet_live_test.dart
 ```
 
 ### What the suite covers
@@ -1585,12 +1560,13 @@ dart test -P localnet test/integration/localnet_reorg_e2e_test.dart     # chain 
 ```
 lib/
 ├── libspiffy.dart                       # Primary barrel file
-├── coordinator.dart                     # Public API (WalletCoordinatorActor)
+├── coordinator.dart                     # Public API (WalletCoordinator, requests, replies, events)
 ├── internals.dart                       # Aggregate commands, domain events (advanced use)
 └── src/
     ├── actors/                          # Actor System
     │   ├── libspiffy_actor_system.dart      # System initialization & event registration
-    │   ├── wallet_coordinator_actor.dart     # Unified public API facade
+    │   ├── wallet_coordinator.dart           # WalletCoordinator: tell, ask, on
+    │   ├── wallet_coordinator_actor.dart     # The actor behind WalletCoordinator
     │   ├── wallet_manager_actor.dart         # Wallet aggregate coordinator
     │   ├── invoice_coordinator_actor.dart    # Invoice aggregate coordinator
     │   ├── payment_coordinator_actor.dart    # Payment flow orchestration
@@ -1697,13 +1673,13 @@ lib/
 ```
 
 **Key Architectural Layers:**
-- **actors/**: Long-lived coordinators that route commands; WalletCoordinatorActor is the single public entry point
+- **actors/**: Long-lived coordinators that route commands; WalletCoordinator is the single public entry point
 - **core/**: Event-sourced aggregates (write-side domain logic)
 - **plugin/**: Extensible system for custom script types and token protocols
 - **projections/**: Read-side event handlers (update read models)
-- **models/**: Separated into aggregate state (mutable) and read models (denormalized)
+- **models/**: Separated into aggregate state (immutable: each event yields a new state) and read models (denormalized)
 - **spv/**: Block header chain, CDN header sync and merkle proof checks (BEEF/BUMP parsing is in utils/)
-- **storage/**: Read model persistence — Isar (mobile), PostgreSQL (server), in-memory (dev); EventStore managed by Eventador
+- **storage/**: Read model persistence — Isar (mobile), PostgreSQL (server), in-memory (dev); the event store is Eventador's Isar store, or libspiffy's PostgreSQL event store on a server
 
 ### Adding New Features
 
@@ -1980,16 +1956,15 @@ Future<bool> handle(Event event) async {
 ### UTXO Management
 
 ✅ **DO**:
-- Reserve UTXOs before transaction creation
-- Set expiration times on reservations
-- Release reservations after transaction broadcast
-- Track UTXO lifecycle through events
+- Let `PayInvoiceCommand` select and hold a payment's inputs; it reserves them before it builds
+- Settle every payment you hand over: the recipient broadcasts it, or you broadcast, cancel or reclaim it (the deferred-payment commands)
+- Give a payment a `deadline` when its counterparty may never complete or broadcast it
+- Release a reservation you no longer need with `ReleaseUTXOsCommand`
+- Record a transaction built outside the wallet that spends its outputs (`RecordOutgoingCommand`)
 
 ❌ **DON'T**:
-- Spend UTXOs without reservation
-- Keep indefinite reservations
-- Manually track UTXO state outside events
-- Modify UTXO state without commands/events
+- Expect a payment's held inputs to come back with time: only the network's answer, a cancellation or a reclaim ends the hold
+- Track UTXO state outside the wallet: read it from the read model, or ask the coordinator
 
 ## Documentation
 

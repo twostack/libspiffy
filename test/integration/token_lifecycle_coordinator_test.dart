@@ -226,35 +226,30 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
 // Test helpers
 // ==========================================================================
 
-/// Send a token operation through the coordinator and await the result
+/// Sends a token operation through the coordinator and returns its payment.
 Future<PaymentReadyEvent> tokenOp(
   WalletCoordinator coordinator,
-  Stream<CoordinatorEvent> events,
   String walletId,
   String action,
   Map<String, dynamic> params,
-) async {
-  final ready = ofType<PaymentReadyEvent>(events)
-      .first
-      .timeout(const Duration(seconds: 30));
-
-  coordinator.tell(PayInvoiceCommand(
-    walletId: walletId,
-    invoiceId: 'token-$action-${DateTime.now().microsecondsSinceEpoch}',
-    addresses: [],
-    amount: BigInt.from(546),
-    outputs: [
-      PluginOutputSpec(
-        pluginId: 'tstoken_nft',
-        pluginScriptType: 'pp1_nft',
-        params: {'action': action, ...params},
+) =>
+    coordinator.ask(
+      PayInvoiceCommand(
+        walletId: walletId,
+        invoiceId: 'token-$action-${DateTime.now().microsecondsSinceEpoch}',
+        addresses: [],
         amount: BigInt.from(546),
+        outputs: [
+          PluginOutputSpec(
+            pluginId: 'tstoken_nft',
+            pluginScriptType: 'pp1_nft',
+            params: {'action': action, ...params},
+            amount: BigInt.from(546),
+          ),
+        ],
       ),
-    ],
-  ));
-
-  return ready;
-}
+      timeout: const Duration(seconds: 30),
+    );
 
 // ==========================================================================
 // Test
@@ -401,7 +396,7 @@ void main() {
       // ================================================================
       // Step 1: Bob issues a token
       // ================================================================
-      final issuanceResult = await tokenOp(bobCoordinator, bobEvents, bobWalletId, 'issuance', {
+      final issuanceResult = await tokenOp(bobCoordinator, bobWalletId, 'issuance', {
         'fundingTxHex': bobFundingTxHex,
         'ownerAddress': bobAddress.toBase58(),
       });
@@ -442,7 +437,7 @@ void main() {
       // ================================================================
       // Step 2: Bob creates issuance witness
       // ================================================================
-      final witnessResult1 = await tokenOp(bobCoordinator, bobEvents, bobWalletId, 'witness', {
+      final witnessResult1 = await tokenOp(bobCoordinator, bobWalletId, 'witness', {
         'fundingTxHex': bobFundingTxHex,
         'tokenTxHex': issuanceTx.serialize(),
         'tokenChangePKH': dartsv.Address.fromPublicKey(bobPub, dartsv.NetworkType.TEST).pubkeyHash160,
@@ -456,7 +451,7 @@ void main() {
       // ================================================================
       // Step 3: Bob transfers to Alice
       // ================================================================
-      final transfer1Result = await tokenOp(bobCoordinator, bobEvents, bobWalletId, 'transfer', {
+      final transfer1Result = await tokenOp(bobCoordinator, bobWalletId, 'transfer', {
         'fundingTxHex': bobFundingTxHex,
         'prevWitnessTxHex': issuanceWitnessTx.serialize(),
         'prevTokenTxHex': issuanceTx.serialize(),
@@ -476,7 +471,7 @@ void main() {
       // ================================================================
       // Step 4: Alice creates transfer witness
       // ================================================================
-      final witnessResult2 = await tokenOp(aliceCoordinator, aliceEvents, aliceWalletId, 'witness', {
+      final witnessResult2 = await tokenOp(aliceCoordinator, aliceWalletId, 'witness', {
         'fundingTxHex': aliceFundingTxHex,
         'tokenTxHex': firstTransferTx.serialize(),
         'parentTokenTxHex': issuanceTx.serialize(),
@@ -491,7 +486,7 @@ void main() {
       // ================================================================
       // Step 5: Alice transfers back to Bob
       // ================================================================
-      final transfer2Result = await tokenOp(aliceCoordinator, aliceEvents, aliceWalletId, 'transfer', {
+      final transfer2Result = await tokenOp(aliceCoordinator, aliceWalletId, 'transfer', {
         'fundingTxHex': aliceFundingTxHex,
         'prevWitnessTxHex': aliceWitnessTx.serialize(),
         'prevTokenTxHex': firstTransferTx.serialize(),
@@ -511,7 +506,7 @@ void main() {
       // ================================================================
       // Step 6: Bob creates transfer witness
       // ================================================================
-      final witnessResult3 = await tokenOp(bobCoordinator, bobEvents, bobWalletId, 'witness', {
+      final witnessResult3 = await tokenOp(bobCoordinator, bobWalletId, 'witness', {
         'fundingTxHex': bobFundingTxHex,
         'tokenTxHex': secondTransferTx.serialize(),
         'parentTokenTxHex': firstTransferTx.serialize(),
@@ -526,7 +521,7 @@ void main() {
       // ================================================================
       // Step 7: Bob burns the token
       // ================================================================
-      final burnResult = await tokenOp(bobCoordinator, bobEvents, bobWalletId, 'burn', {
+      final burnResult = await tokenOp(bobCoordinator, bobWalletId, 'burn', {
         'fundingTxHex': bobFundingTxHex,
         'tokenTxHex': secondTransferTx.serialize(),
       });

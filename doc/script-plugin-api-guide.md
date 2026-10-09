@@ -23,6 +23,7 @@ LibSpiffy defines abstract interfaces. External libraries (or the host app) impl
 The base interface. Implement this to teach libspiffy how to identify and work with your script types.
 
 ```dart
+import 'package:dartsv/dartsv.dart';
 import 'package:libspiffy/libspiffy.dart';
 
 class MyTokenPlugin extends ScriptPlugin {
@@ -97,22 +98,25 @@ class MyTokenTransactionPlugin extends TransactionBuilderPlugin {
   List<String> get supportedActions => ['issuance', 'transfer', 'burn'];
 
   @override
-  Future<Transaction> buildTransaction(PluginTransactionRequest request) async {
+  Future<TransactionBuilderResult> buildTransaction(PluginTransactionRequest request) async {
     final action = request.params['action'] as String;
     final tokenId = request.params['tokenId'] as String;
 
     // Use funding UTXOs provided by libspiffy
     final fundingUtxo = request.fundingUtxos.first;
 
-    // Build the full multi-output transaction using your protocol's logic
-    return myProtocol.buildTokenTransaction(
+    // Build the full multi-output transaction using your protocol's logic,
+    // signing with the signer libspiffy provides (the key stays in the wallet)
+    final (tx, fee) = myProtocol.buildTokenTransaction(
       action: action,
       tokenId: tokenId,
       fundingTxId: fundingUtxo.txid,
       fundingVout: fundingUtxo.vout,
-      changeAddress: request.changeAddress,
-      signingKeys: request.signingKeys,
+      signer: request.signer,
+      fundingPubKey: request.publicKeys.first,
+      feeRate: request.feeRate,
     );
+    return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: fee);
   }
 
   @override
@@ -123,6 +127,14 @@ class MyTokenTransactionPlugin extends TransactionBuilderPlugin {
   }
 }
 ```
+
+A payment reaches `buildTransaction` only when its `PluginOutputSpec` names a `TransactionBuilderPlugin` and its `params['action']` is one of the plugin's `supportedActions`. The `PluginTransactionRequest` carries `fundingUtxos` (and the same coins as `fundingInputs`, over their real locking scripts), a `signer` that signs through the wallet, the funding `publicKeys`, the spec's `params`, the `feeRate` every wallet transaction pays, and a `transactionLookup` for raw transactions the wallet holds. For a paired action (issuance and its witness), return `TransactionBuilderResult.paired`.
+
+A `TransactionBuilderPlugin` can also override:
+
+- **`requiredFundingUtxoCount(action)`** (default 1): how many separate funding UTXOs the action needs. When the wallet selects fewer, libspiffy splits its funds into earmark transactions first.
+- **`spendsAnyWalletOutput`** (default false): true when the plugin spends every funding coin through `fundingInputs`. Only then is it funded from bare multisig and P2PK outputs as well as P2PKH ones.
+- **`provisionFunding(request)`**: builds a split transaction and its earmarks, returned as `ProvisionedTransaction`s in broadcast order. The default throws `UnsupportedError`.
 
 ### Signing an input whose owner the signed script does not name
 
@@ -218,7 +230,7 @@ final meta = registry.extractScriptMetadata(script);
 To include plugin-managed outputs in a payment, use `PluginOutputSpec`:
 
 ```dart
-final message = PayInvoiceMessage(
+final payment = await coordinator.ask(PayInvoiceCommand(
   walletId: 'my-wallet',
   invoiceId: 'inv-001',
   addresses: [],
@@ -241,10 +253,10 @@ final message = PayInvoiceMessage(
       amount: BigInt.from(546), // dust limit for token carrier
     ),
   ],
-);
+));
 ```
 
-The `PaymentCoordinatorActor` calls `plugin.createLockBuilder(spec)` to produce the locking script for the output.
+The payment calls `plugin.createLockBuilder(spec)` to produce the locking script for the output. When the plugin is a `TransactionBuilderPlugin` and `params['action']` is one of its `supportedActions`, its `buildTransaction()` builds the whole transaction instead.
 
 ### 4. Serialization
 
@@ -272,6 +284,8 @@ final restored = InvoiceOutputSpec.fromMap(map); // returns PluginOutputSpec
 A host application using both libspiffy and tstokenlib would wire them together like this:
 
 ```dart
+import 'package:convert/convert.dart';
+import 'package:dartsv/dartsv.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:tstokenlib/tstokenlib.dart';
 
@@ -314,9 +328,9 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
       return {
         'pluginId': pluginId,
         'scriptType': 'pp1_nft',
-        'tokenId': builder.tokenId,
-        'ownerPKH': builder.ownerPKH,
-        'rabinPubKeyHash': builder.rabinPubKeyHash,
+        'tokenId': hex.encode(builder.tokenId!),
+        'ownerAddress': builder.recipientAddress?.toBase58(),
+        'rabinPubKeyHash': hex.encode(builder.rabinPubKeyHash!),
       };
     } catch (_) {}
     return null;
@@ -326,9 +340,9 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
   LockingScriptBuilder? createLockBuilder(PluginOutputSpec spec) {
     if (spec.pluginScriptType == 'pp1_nft') {
       return PP1NftLockBuilder(
-        recipientPKH: spec.params['ownerPKH'],
-        tokenId: spec.params['tokenId'],
-        rabinPubKeyHash: spec.params['rabinPubKeyHash'],
+        Address.fromBase58(spec.params['ownerAddress']),
+        hex.decode(spec.params['tokenId']),
+        hex.decode(spec.params['rabinPubKeyHash']),
       );
     }
     return null;
@@ -341,15 +355,18 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
   }
 
   @override
-  Future<Transaction> buildTransaction(
+  Future<TransactionBuilderResult> buildTransaction(
       PluginTransactionRequest request) async {
     final action = request.params['action'] as String;
 
+    // tstokenlib signs with request.signer and request.publicKeys.first
     switch (action) {
       case 'issuance':
-        return _tokenTool.createTokenIssuanceTxn(/* ... */);
+        final tx = await _tokenTool.createTokenIssuanceTxn(/* ... */);
+        return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: /* ... */);
       case 'transfer':
-        return _tokenTool.createTokenTransferTxn(/* ... */);
+        final tx = _tokenTool.createTokenTransferTxn(/* ... */);
+        return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: /* ... */);
       default:
         throw ArgumentError('Unsupported action: $action');
     }
@@ -369,7 +386,7 @@ void main() {
 
   // Now libspiffy natively:
   // - Identifies PP1_NFT scripts in wallet UTXOs
-  // - Tags them with tokenId, ownerPKH metadata
+  // - Tags them with tokenId, ownerAddress metadata
   // - Builds token outputs via PluginOutputSpec
   // - Queries token UTXOs via getUTXOsByPlugin()
 }
@@ -387,7 +404,10 @@ void main() {
 | `PluginOutputSpec` | Sealed variant of `InvoiceOutputSpec` for plugin-delegated outputs |
 | `PluginUnlockSpec` | Parameters for building an unlocking script |
 | `PluginTransactionRequest` | Request object for `TransactionBuilderPlugin.buildTransaction()`; `keyFor(pubkeyHash)` names a wallet key |
+| `PluginFundingInput` | One funding UTXO over its real locking script, with the unlocking script the wallet writes for it |
 | `PluginKey` | A wallet key named by hash: a signer bound to it and its public key |
+| `TransactionBuilderResult` | What `buildTransaction()` returns: the transaction and its fee, or a paired transaction and witness |
+| `ProvisionedTransaction` | One transaction of a funding provision: the split or an earmark |
 
 ### BitcoinUtxo.pluginMetadata
 
@@ -411,5 +431,6 @@ void main() {
 | `lib/src/plugin/script_plugin.dart` | `ScriptPlugin` abstract class |
 | `lib/src/plugin/transaction_builder_plugin.dart` | `TransactionBuilderPlugin` abstract class |
 | `lib/src/plugin/plugin_registry.dart` | `PluginRegistry` singleton |
-| `lib/src/plugin/plugin_types.dart` | `PluginUnlockSpec`, `PluginTransactionRequest`, `PluginKey` |
+| `lib/src/plugin/plugin_types.dart` | `PluginUnlockSpec`, `PluginTransactionRequest`, `PluginFundingInput`, `PluginKey`, `TransactionBuilderResult` |
+| `lib/src/plugin/provisioned_transaction.dart` | `ProvisionedTransaction` |
 | `lib/src/models/invoice_output_spec.dart` | `PluginOutputSpec` (alongside other sealed variants) |

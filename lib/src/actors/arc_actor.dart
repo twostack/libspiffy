@@ -844,10 +844,16 @@ class ARCActor extends Actor {
   /// outputs, and a policy fee for the same — two of them sizing every input
   /// as P2PKH whatever it spent. Sizing is the wallet's, from the scripts
   /// the transaction really has (`TransactionSize`); ARC's is the rate.
+  ///
+  /// The app's floor ([ArcServiceConfig.minimumFeeRate]) is paid instead
+  /// when the policy is lower; it is a floor under a published rate, never a
+  /// rate in place of one ARC could not be asked for.
   Future<FeeRateQuote> _quoteFeeRate() async {
     if (_arcService == null) return FeeRateQuote.failed('ARC service not available');
     try {
-      return FeeRateQuote((await _arcService!.getPolicy()).miningFee);
+      final published = (await _arcService!.getPolicy()).miningFee;
+      final floor = _arcConfig?.minimumFeeRate;
+      return FeeRateQuote(floor != null && floor.isAbove(published) ? floor : published);
     } catch (e) {
       return FeeRateQuote.failed("ARC's policy could not be read: $e");
     }

@@ -1484,6 +1484,10 @@ ArcServiceConfig.gorillaPoolMainnet();
 ArcServiceConfig.gorillaPoolTestnet();
 // Arcade, the Teranode-era ARC, serves the same API at its root (no /v1):
 ArcServiceConfig.bsvaArcadeTestnet();
+// The wallet pays ARC's published policy rate. An app that knows its
+// network sets a floor under it (an ARC can publish a rate no miner mines
+// at); libspiffy assumes none of its own:
+ArcServiceConfig.gorillaPoolTestnet(minimumFeeRate: const FeeRate(satoshis: 1, bytes: 1000));
 
 await libspiffy.initialize(
   dataDirectory: './wallet-data',

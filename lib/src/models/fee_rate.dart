@@ -5,9 +5,10 @@ library;
 /// (`GET /v1/policy`, `miningFee`, schema `FeeAmount`).
 ///
 /// Every transaction the wallet builds pays ARC's published rate on its
-/// signed size (`TransactionSize`), and nothing else: this is Bitcoin SV,
-/// there is no replace-by-fee and no fee auction, so paying above the policy
-/// buys nothing, and a rate nobody published is not one to pay at.
+/// signed size (`TransactionSize`), or the app's floor when ARC publishes
+/// less (`ArcServiceConfig.minimumFeeRate`), and nothing else: this is
+/// Bitcoin SV, there is no replace-by-fee and no fee auction, so paying
+/// above the policy buys nothing, and libspiffy invents no rate of its own.
 class FeeRate {
   final int satoshis;
   final int bytes;
@@ -21,6 +22,14 @@ class FeeRate {
   /// undercuts the policy.
   BigInt feeFor(int sizeBytes) =>
       bytes <= 0 ? BigInt.zero : BigInt.from((sizeBytes * satoshis + bytes - 1) ~/ bytes);
+
+  /// Whether this rate charges more per byte than [other]. Compared exactly
+  /// (`a/b > c/d` as `a*d > c*b`); a rate over zero bytes charges nothing.
+  bool isAbove(FeeRate other) {
+    if (bytes <= 0) return false;
+    if (other.bytes <= 0) return satoshis > 0;
+    return satoshis * other.bytes > other.satoshis * bytes;
+  }
 
   @override
   bool operator ==(Object other) => other is FeeRate && other.satoshis == satoshis && other.bytes == bytes;

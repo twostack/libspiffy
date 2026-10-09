@@ -392,6 +392,14 @@ class ScriptedSpvActor extends Actor {
   }
 }
 
+/// The transactions, in order, of the BEEF [broadcast] carries; empty when
+/// it carries none.
+List<String> beefTxHexes(BroadcastTransactionMessage broadcast) {
+  final beefHex = broadcast.beefHex;
+  if (beefHex == null) return const [];
+  return [for (final tx in BEEF.parse(Uint8List.fromList(hex.decode(beefHex))).txs) hex.encode(tx)];
+}
+
 /// An ARCActor stand-in: records every [BroadcastTransactionMessage] and
 /// answers it with success, or with [failWith] while that is set; and
 /// answers [GetFeeRateMessage] with [feeRate], ARC's published policy rate

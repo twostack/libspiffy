@@ -2626,7 +2626,24 @@ class PaymentChannelManagerActor extends Actor {
   /// it.
   Future<void> _broadcastSettlement(String channelId, FullChannelStateResponse state,
           ({dartsv.Transaction tx, String hex, String ourAddress}) leg) =>
-      _submitUncontested(state.walletId, leg.hex, leg.tx.id, 'settlement ${leg.tx.id} of channel $channelId');
+      _submitUncontested(state.walletId, leg.hex, leg.tx.id, 'settlement ${leg.tx.id} of channel $channelId',
+          beefHex: _fundingSpendBeef(state, leg.hex));
+
+  /// [spendHex], a spend of the channel's funding output, as a BEEF with
+  /// the funding transaction before it, so ARCActor submits the spend in
+  /// Extended Format: the funding output is no wallet UTXO, so storage
+  /// cannot supply it, and Arcade refuses a transaction it cannot extend
+  /// (460). Null when the state holds no funding transaction.
+  static String? _fundingSpendBeef(FullChannelStateResponse state, String spendHex) {
+    final fundingHex = state.fundingTxHex;
+    if (fundingHex == null || fundingHex.isEmpty) return null;
+    return hex.encode(BEEF.create(
+      bumps: const [],
+      txs: [Uint8List.fromList(hex.decode(fundingHex)), Uint8List.fromList(hex.decode(spendHex))],
+      hasMerkle: const [false, false],
+      bumpIndex: const [],
+    ).serialize());
+  }
 
   /// Submits [txHex] to ARC and returns once ARC reports the network holds
   /// it; throws otherwise, saying why.
@@ -2985,7 +3002,8 @@ class PaymentChannelManagerActor extends Actor {
       // for it (bead libspiffy-67eo). A failed claim is claimed again by
       // the app.
       await _submitUncontested(state.walletId, refundTxHex, refundTxId,
-          'refund $refundTxId of channel ${msg.channelId}');
+          'refund $refundTxId of channel ${msg.channelId}',
+          beefHex: _fundingSpendBeef(state, refundTxHex));
 
       // Registered BEFORE the command: the aggregate publishes its event to
       // the projection's mailbox before it answers, so registering after

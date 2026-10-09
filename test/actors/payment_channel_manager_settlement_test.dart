@@ -389,6 +389,9 @@ void main() {
       expect(arc.broadcasts.single.txHex, settlement.hex);
       expect(arc.broadcasts.single.retryOnFailure, isFalse,
           reason: 'the channel owns the retry: closing again re-sends it');
+      // Arcade takes only Extended Format, and the funding output the
+      // settlement spends is in no wallet's storage.
+      expect(beefTxHexes(arc.broadcasts.single), [f.fundingTxHex, settlement.hex]);
     });
 
     test('u6q6: a settlement ARC did not take leaves the channel closing, and closing again closes it', () async {

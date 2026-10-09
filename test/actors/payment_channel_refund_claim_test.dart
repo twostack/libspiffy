@@ -216,6 +216,9 @@ void main() {
       expect(arc.broadcasts.single.walletId, _walletId);
       expect(arc.broadcasts.single.retryOnFailure, isFalse,
           reason: 'a failed claim is claimed again by the app; ARC must not queue a second retry (r56l)');
+      // Arcade takes only Extended Format: the funding transaction goes with
+      // the refund that spends it.
+      expect(beefTxHexes(arc.broadcasts.single), [f.fundingTxHex, f.signedRefundTxHex()]);
 
       // The claim is journaled.
       final events = journal().whereType<RefundClaimedEvent>().toList();

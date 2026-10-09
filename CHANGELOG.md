@@ -1,5 +1,6 @@
 ## 4.7.0 (unreleased)
 
+- **A channel's settlement and refund reach Arcade.** `PaymentChannelManagerActor` submitted the settlement (server) and the refund claim (client) without the funding transaction they spend. The funding output is no wallet UTXO, so the Extended Format fell back to raw; ARC looked the parent up itself, Arcade answered 460 and every channel close and refund failed. Both now go with a BEEF of the funding transaction and the spend (bead libspiffy-uqa4).
 - **The default P2P user agent passes Teranode.** Teranode's wire-protocol service accepts a peer only if its user agent contains `BSV` or `Bitcoin SV`, and bans any other's IP for 24 hours; `/LibSpiffy:1.0/` did not pass, and one refused connection locked every client behind the same address out. The default is `LibSpiffyActorSystem.defaultUserAgent`, `/LibSpiffy-BSV:1.0/` (bead libspiffy-c04p). The P2P network line is a log record, not a `print`.
 
 ## 4.6.1

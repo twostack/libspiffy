@@ -78,6 +78,7 @@ export 'src/plugin/script_plugin.dart';              // Core plugin interface
 export 'src/plugin/plugin_registry.dart';            // Plugin registration singleton
 export 'src/plugin/plugin_types.dart';               // PluginUnlockSpec, PluginTransactionRequest, PluginKey
 export 'src/plugin/transaction_builder_plugin.dart'; // Multi-output transaction builder interface
+export 'src/plugin/provisioned_transaction.dart';     // What a plugin's provisionFunding returns
 
 // SECURE SIGNING - Callback-based transaction signing for plugin isolation
 export 'src/services/callback_transaction_signer.dart';

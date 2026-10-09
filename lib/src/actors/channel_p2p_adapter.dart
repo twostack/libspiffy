@@ -122,6 +122,24 @@ class ChannelP2PAdapter {
   /// The settlement armed for each channel this node serves, by channel id.
   final Map<String, Timer> _settlements = {};
 
+  /// What each channel this node is the client of still has to get to its
+  /// server, by channel id (bead overnode_v2-0o5.3.2): the latest payment
+  /// not yet acknowledged, and the close until `channel_closed` arrives.
+  /// Nothing else resends a message the transport lost.
+  final Map<String, _Outbox> _outboxes = {};
+
+  /// The app's payments not yet acknowledged, by channel id and sequence.
+  final Map<String, Map<int, _Unconfirmed>> _unconfirmed = {};
+
+  /// The latest payment of each channel this node is the client of, as
+  /// `payment_update` sends it: what its close carries, so the server is
+  /// paid it even when its `payment_update` was lost.
+  final Map<String, Map<String, dynamic>> _latestPayment = {};
+
+  Duration get _resendAfter => _timing?.resendAfter ?? const Duration(seconds: 2);
+  Duration get _resendAtMost => _timing?.resendAtMost ?? const Duration(seconds: 30);
+  Duration get _confirmWithin => _timing?.confirmWithin ?? const Duration(seconds: 20);
+
   /// Closes [channelId], a channel this node serves locked until
   /// [lockTimeUnix], when its settlement margin begins — or [now] (bead
   /// libspiffy-ywbk).
@@ -151,6 +169,16 @@ class ChannelP2PAdapter {
       timer.cancel();
     }
     _settlements.clear();
+    for (final outbox in _outboxes.values) {
+      outbox.timer?.cancel();
+    }
+    _outboxes.clear();
+    for (final waiting in _unconfirmed.values) {
+      for (final payment in waiting.values) {
+        payment.deadline.cancel();
+      }
+    }
+    _unconfirmed.clear();
     _disposed = true;
     _eventSubscription?.cancel();
   }
@@ -222,6 +250,21 @@ class ChannelP2PAdapter {
         fundingTxHex: state.fundingTxHex,
         fundingOutputIndex: state.fundingOutputIndex,
       );
+      final latestHex = state.latestPaymentTxHex;
+      final signature = state.latestClientSignatureHex;
+      if (state.latestSequenceNumber > 0 && latestHex != null && signature != null) {
+        _latestPayment[channelId] = _paymentUpdate(
+          channelId: channelId,
+          // The amount of the latest payment alone is not journaled in the
+          // state; the server reads the payment from the balances.
+          amountSats: 0,
+          paymentTxHex: latestHex,
+          clientSignatureHex: signature,
+          sequence: state.latestSequenceNumber,
+          clientBalance: state.clientBalanceSats.toInt(),
+          serverBalance: state.serverBalanceSats.toInt(),
+        );
+      }
       final serverPeerId = state.serverPeerId;
       if (serverPeerId != null) {
         _channelPeers[channelId] = PeerInfo(
@@ -613,6 +656,9 @@ class ChannelP2PAdapter {
       proposedSequence: proposedSequence,
       proposedClientBalance: BigInt.from(proposedClientBalance),
       proposedServerBalance: BigInt.from(proposedServerBalance),
+      // The one payment of nothing is a client's with no payment, closing
+      // (bead libspiffy-w4l2); the aggregate refuses it on any other channel.
+      closing: amountSats == 0 && proposedServerBalance == 0,
     ), sender: _replyTo);
   }
 
@@ -621,25 +667,64 @@ class ChannelP2PAdapter {
   /// then it is handed the settlement the server broadcast
   /// (`channel_closed`). A `payment_ack` from an older server that carries
   /// one is not acted on.
+  ///
+  /// It acknowledges every payment up to [sequenceNumber]: each payment
+  /// carries the channel's balances, so the server holding a later one
+  /// holds the earlier ones' money. Each such payment of the app's is now
+  /// confirmed, answering its request unless that was already told it
+  /// failed.
   void _handlePaymentAck(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final sequenceNumber = payload['sequenceNumber'] as int;
     _log.fine('Payment acknowledged for channel $channelId, sequence $sequenceNumber');
+    final outbox = _outboxes[channelId];
+    if (outbox != null && outbox.paymentSequence <= sequenceNumber) {
+      outbox.payment = null;
+      _rearm(channelId, outbox, reset: true);
+    }
+    _confirmUpTo(channelId, sequenceNumber);
   }
 
+  /// Confirms the app's payments on [channelId] up to [sequence].
+  void _confirmUpTo(String channelId, int sequence) {
+    final waiting = _unconfirmed[channelId];
+    if (waiting == null) return;
+    for (final seq in waiting.keys.where((s) => s <= sequence).toList()..sort()) {
+      final payment = waiting.remove(seq)!;
+      payment.deadline.cancel();
+      _emitEvent(coord.ChannelPaymentEvent(
+        walletId: _walletFor(channelId),
+        channelId: channelId,
+        amountSats: payment.amountSats,
+        sequence: seq,
+        clientBalance: payment.clientBalance,
+        serverBalance: payment.serverBalance,
+        // A payment already reported failed is confirmed late, answering
+        // no request.
+        requestId: payment.failed ? null : payment.requestId,
+      ));
+    }
+    if (waiting.isEmpty) _unconfirmed.remove(channelId);
+  }
+
+  /// The counterparty closes the channel.
+  ///
+  /// From the client it carries the client's latest payment, which the
+  /// server takes first: its `payment_update` may have been lost, and the
+  /// server settles with the latest payment it holds. A repeat (the client
+  /// resends its close until `channel_closed` arrives) goes to the manager
+  /// too, which answers a closed channel with the settlement it closed
+  /// with, handed over again in [handleChannelCloseAnswered].
   void _handleChannelClose(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final reason = payload['reason'] as String?;
-
-    if (_closingChannels.contains(channelId)) {
-      _log.fine('Already closing channel $channelId, ignoring duplicate close');
-      return;
+    final payment = payload['payment'];
+    if (_serverChannelInfo.containsKey(channelId) && payment is Map) {
+      _handlePaymentUpdate(fromPeerId, Map<String, dynamic>.from(payment));
     }
-
-    _channelManager.tell(CloseChannelMessage(
-      channelId: channelId,
-      reason: reason,
-    ));
+    _channelManager.tell(
+        CloseChannelMessage(channelId: channelId, reason: reason),
+        sender: _replyTo);
   }
 
   /// The server closed the channel with the settlement it broadcast (bead
@@ -653,6 +738,7 @@ class ChannelP2PAdapter {
   void _handleChannelClosed(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final settlementTxHex = payload['settlementTxHex'] as String?;
+    _stopResending(channelId);
     if (settlementTxHex == null || settlementTxHex.isEmpty) {
       _log.warning('channel_closed for $channelId carries no settlement: nothing '
           'is recorded and the channel is not closed on this side');
@@ -666,6 +752,8 @@ class ChannelP2PAdapter {
   void _handleChannelError(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String?;
     final error = payload['error'] as String? ?? 'Unknown channel error';
+    final sequence = payload['sequenceNumber'];
+    if (channelId != null && sequence is int && _refusedPayment(channelId, sequence, error)) return;
 
     _emitEvent(coord.ErrorEvent(
       source: 'ChannelP2PAdapter',
@@ -673,6 +761,30 @@ class ChannelP2PAdapter {
       // The counterparty gave up on the open this side is waiting for.
       requestId: channelId == null ? null : _answering(_Request.open, channelId),
     ));
+  }
+
+  /// The server refused the payment at [sequence] on [channelId]: it is
+  /// not resent, and the app's request for it, if not yet told it failed,
+  /// is answered with the refusal. False when no payment of the app's is
+  /// waiting at that sequence.
+  bool _refusedPayment(String channelId, int sequence, String error) {
+    final outbox = _outboxes[channelId];
+    if (outbox != null && outbox.paymentSequence == sequence) {
+      outbox.payment = null;
+      _rearm(channelId, outbox, reset: true);
+    }
+    final payment = _unconfirmed[channelId]?.remove(sequence);
+    if (payment == null) return false;
+    payment.deadline.cancel();
+    if (!payment.failed) {
+      _emitEvent(coord.ErrorEvent(
+        walletId: _walletFor(channelId),
+        source: 'ChannelP2PAdapter',
+        message: 'Channel $channelId: the server refused the payment of ${payment.amountSats} sats: $error',
+        requestId: payment.requestId,
+      ));
+    }
+    return true;
   }
 
   // ===========================================================================
@@ -870,27 +982,146 @@ class ChannelP2PAdapter {
       return;
     }
 
-    _emitP2PMessage(peers.serverPeerId, 'payment_update', {
-      'channelId': event.channelId,
-      'amountSats': event.amountSats.toInt(),
-      'paymentTxHex': event.paymentTxHex,
-      'clientSignatureHex': event.clientSignatureHex,
-      'proposedSequence': event.sequenceNumber,
-      'proposedClientBalance': event.newClientBalanceSats.toInt(),
-      'proposedServerBalance': event.newServerBalanceSats.toInt(),
-      'purpose': event.purpose,
-      'invoiceId': event.invoiceId,
-    });
-
-    _emitEvent(coord.ChannelPaymentEvent(
-      walletId: _walletFor(event.channelId),
+    final payment = _paymentUpdate(
       channelId: event.channelId,
       amountSats: event.amountSats.toInt(),
+      paymentTxHex: event.paymentTxHex,
+      clientSignatureHex: event.clientSignatureHex,
       sequence: event.sequenceNumber,
       clientBalance: event.newClientBalanceSats.toInt(),
       serverBalance: event.newServerBalanceSats.toInt(),
-      requestId: _answering(_Request.pay, event.channelId),
+      purpose: event.purpose,
+      invoiceId: event.invoiceId,
+    );
+    _latestPayment[event.channelId] = payment;
+
+    // The app's payment is answered when the server acknowledges it, not
+    // when it is handed to the transport (bead overnode_v2-0o5.3.2): a
+    // payment lost on the way was reported sent, and the server then
+    // refused every later one. The payment of nothing a close makes was no
+    // request of the app's.
+    if (event.amountSats > BigInt.zero) {
+      final unconfirmed = _Unconfirmed(
+        requestId: _answering(_Request.pay, event.channelId),
+        amountSats: event.amountSats.toInt(),
+        clientBalance: event.newClientBalanceSats.toInt(),
+        serverBalance: event.newServerBalanceSats.toInt(),
+        deadline: Timer(_confirmWithin, () => _unconfirmedTooLong(event.channelId, event.sequenceNumber)),
+      );
+      (_unconfirmed[event.channelId] ??= {})[event.sequenceNumber] = unconfirmed;
+      _emitEvent(coord.ChannelPaymentPendingEvent(
+        walletId: _walletFor(event.channelId),
+        channelId: event.channelId,
+        amountSats: unconfirmed.amountSats,
+        sequence: event.sequenceNumber,
+        clientBalance: unconfirmed.clientBalance,
+        serverBalance: unconfirmed.serverBalance,
+      ));
+    }
+
+    final outbox = _outboxes[event.channelId] ??= _Outbox(peers.serverPeerId, _resendAfter);
+    outbox.payment = payment;
+    outbox.paymentSequence = event.sequenceNumber;
+    _emitP2PMessage(peers.serverPeerId, 'payment_update', payment);
+    _rearm(event.channelId, outbox, reset: true);
+  }
+
+  /// The payment at [sequence] on [channelId] has gone unacknowledged for
+  /// `confirmWithin`: the app is told it failed. It is kept: the client
+  /// signed it and the server may hold it, so it is still resent and goes
+  /// with the close, and an acknowledgement confirms it late.
+  void _unconfirmedTooLong(String channelId, int sequence) {
+    final payment = _unconfirmed[channelId]?[sequence];
+    if (payment == null || payment.failed) return;
+    payment.failed = true;
+    _emitEvent(coord.ErrorEvent(
+      walletId: _walletFor(channelId),
+      source: 'ChannelP2PAdapter',
+      message: 'Channel $channelId: the server has not acknowledged the payment of '
+          '${payment.amountSats} sats within ${_confirmWithin.inSeconds} s. It is still sent, '
+          'and goes with the close.',
+      requestId: payment.requestId,
     ));
+  }
+
+  static Map<String, dynamic> _paymentUpdate({
+    required String channelId,
+    required int amountSats,
+    required String paymentTxHex,
+    required String clientSignatureHex,
+    required int sequence,
+    required int clientBalance,
+    required int serverBalance,
+    String? purpose,
+    String? invoiceId,
+  }) =>
+      {
+        'channelId': channelId,
+        'amountSats': amountSats,
+        'paymentTxHex': paymentTxHex,
+        'clientSignatureHex': clientSignatureHex,
+        'proposedSequence': sequence,
+        'proposedClientBalance': clientBalance,
+        'proposedServerBalance': serverBalance,
+        'purpose': purpose,
+        'invoiceId': invoiceId,
+      };
+
+  // ===========================================================================
+  // RESENDING (bead overnode_v2-0o5.3.2)
+  // ===========================================================================
+
+  /// Arms [outbox]'s resend for [channelId], or stops it when nothing is
+  /// left to send. [reset] starts the wait again from `resendAfter`.
+  void _rearm(String channelId, _Outbox outbox, {bool reset = false}) {
+    outbox.timer?.cancel();
+    outbox.timer = null;
+    if (reset) outbox.wait = _resendAfter;
+    if (outbox.payment == null && outbox.close == null) {
+      _outboxes.remove(channelId);
+      return;
+    }
+    if (_disposed) return;
+    outbox.timer = Timer(outbox.wait, () => _resend(channelId));
+  }
+
+  void _resend(String channelId) {
+    final outbox = _outboxes[channelId];
+    if (outbox == null || _disposed) return;
+    final payment = outbox.payment;
+    final close = outbox.close;
+    // The close carries the latest payment: sending both would only make
+    // the server take it twice.
+    if (close != null) {
+      _log.fine('Channel $channelId: resending channel_close');
+      _emitP2PMessage(outbox.peerId, 'channel_close', close);
+    } else if (payment != null) {
+      _log.fine('Channel $channelId: resending payment_update ${outbox.paymentSequence}');
+      _emitP2PMessage(outbox.peerId, 'payment_update', payment);
+    }
+    final doubled = outbox.wait * 2;
+    outbox.wait = doubled > _resendAtMost ? _resendAtMost : doubled;
+    _rearm(channelId, outbox);
+  }
+
+  void _stopResending(String channelId) {
+    final outbox = _outboxes.remove(channelId);
+    outbox?.timer?.cancel();
+  }
+
+  /// The app's transport could not deliver [failed] (bead
+  /// overnode_v2-0o5.3.2): a channel message still waiting for its answer
+  /// is sent again after `resendAfter`, sooner than its resend would come.
+  void handleSendFailed(coord.P2PSendFailed failed) {
+    final channelId = failed.payload['channelId'];
+    if (channelId is! String) return;
+    final outbox = _outboxes[channelId];
+    if (outbox == null) return;
+    _log.fine('Channel $channelId: sending ${failed.messageType} to ${failed.toPeerId} failed: ${failed.error}');
+    if (outbox.wait > _resendAfter) {
+      outbox.timer?.cancel();
+      outbox.timer = Timer(_resendAfter, () => _resend(channelId));
+    }
   }
 
   void _onPaymentAcknowledged(ch.PaymentAcknowledgedEvent event) {
@@ -923,15 +1154,27 @@ class ChannelP2PAdapter {
     _closingChannels.add(event.channelId);
 
     final peers = _channelPeers[event.channelId];
-    if (peers != null) {
-      final targetPeerId = event.initiator == 'client'
-          ? peers.serverPeerId
-          : peers.clientPeerId;
-      _emitP2PMessage(targetPeerId, 'channel_close', {
+    if (peers == null) return;
+    if (event.initiator != 'client') {
+      // The server's close: channel_closed with the settlement follows.
+      _emitP2PMessage(peers.clientPeerId, 'channel_close', {
         'channelId': event.channelId,
         'reason': event.reason,
       });
+      return;
     }
+    // The client's close carries its latest payment, so the server settles
+    // with it even if its payment_update was lost, and is resent until the
+    // server's channel_closed arrives (bead overnode_v2-0o5.3.2).
+    final close = {
+      'channelId': event.channelId,
+      'reason': event.reason,
+      if (_latestPayment[event.channelId] case final payment?) 'payment': payment,
+    };
+    final outbox = _outboxes[event.channelId] ??= _Outbox(peers.serverPeerId, _resendAfter);
+    outbox.close = close;
+    _emitP2PMessage(peers.serverPeerId, 'channel_close', close);
+    _rearm(event.channelId, outbox, reset: true);
   }
 
   void _onChannelClosed(ch.ChannelClosedEvent event) {
@@ -950,14 +1193,48 @@ class ChannelP2PAdapter {
     }
 
     final walletId = _walletFor(event.channelId);
+    _settleUnconfirmed(event.channelId, event.finalServerBalanceSats.toInt());
     _cleanupChannel(event.channelId);
 
     _emitEvent(coord.ChannelClosedEvent(
       walletId: walletId,
       channelId: event.channelId,
       settlementTxId: event.settlementTxId,
+      finalClientBalance: event.finalClientBalanceSats.toInt(),
+      finalServerBalance: event.finalServerBalanceSats.toInt(),
       requestId: _answering(_Request.close, event.channelId),
     ));
+  }
+
+  /// The channel closed paying the server [finalServerBalance]: each of the
+  /// app's payments still unconfirmed is confirmed if the settlement paid
+  /// it, and reported failed if it did not (and was not already).
+  void _settleUnconfirmed(String channelId, int finalServerBalance) {
+    final waiting = _unconfirmed.remove(channelId);
+    if (waiting == null) return;
+    for (final seq in waiting.keys.toList()..sort()) {
+      final payment = waiting[seq]!;
+      payment.deadline.cancel();
+      if (payment.serverBalance <= finalServerBalance) {
+        _emitEvent(coord.ChannelPaymentEvent(
+          walletId: _walletFor(channelId),
+          channelId: channelId,
+          amountSats: payment.amountSats,
+          sequence: seq,
+          clientBalance: payment.clientBalance,
+          serverBalance: payment.serverBalance,
+          requestId: payment.failed ? null : payment.requestId,
+        ));
+      } else if (!payment.failed) {
+        _emitEvent(coord.ErrorEvent(
+          walletId: _walletFor(channelId),
+          source: 'ChannelP2PAdapter',
+          message: 'Channel $channelId closed without the payment of ${payment.amountSats} sats: '
+              'the settlement pays the server $finalServerBalance sats',
+          requestId: payment.requestId,
+        ));
+      }
+    }
   }
 
   // ===========================================================================
@@ -1015,11 +1292,13 @@ class ChannelP2PAdapter {
 
   /// Handle a request to make a payment over an open channel.
   ///
-  /// Answered by the payment's [coord.ChannelPaymentEvent] once the channel
-  /// journals it and `payment_update` is handed to the transport, or by an
-  /// [coord.ErrorEvent] naming the request when the channel refuses it. The
-  /// payment was told with no sender, so a refusal (more than the client's
-  /// balance, a closed channel) was not reported at all.
+  /// Answered by the payment's [coord.ChannelPaymentEvent] once the server
+  /// acknowledges it, or by an [coord.ErrorEvent] naming the request when
+  /// the channel refuses it, the server refuses it, or no acknowledgement
+  /// comes within `ChannelTiming.confirmWithin` (bead
+  /// overnode_v2-0o5.3.2). Meanwhile [coord.ChannelPaymentPendingEvent] says
+  /// it is signed and on its way, and `payment_update` is resent until it is
+  /// acknowledged.
   void handleMakePayment(coord.ChannelPayCommand command) {
     _awaiting(_Request.pay, command.channelId, command.requestId);
     unawaited(_askManager<PaymentRecordedResponse>(RecordPaymentMessage(
@@ -1060,10 +1339,38 @@ class ChannelP2PAdapter {
   /// failure is reported to the host, whose channel stays `closing` until
   /// it closes again (bead libspiffy-u6q6). A close that succeeded is
   /// reported by its [ch.ChannelClosedEvent].
+  ///
+  /// A close of a channel already closed is a repeat: on the server the
+  /// client's close, resent because `channel_closed` was lost, which is
+  /// handed the settlement again; on either side the app's close is
+  /// answered with the channel's [coord.ChannelClosedEvent].
   void handleChannelCloseAnswered(ChannelClosedResponse response) {
     if (!response.success) {
       _reportFailure(response.channelId, 'closing the channel', response.error, answers: _Request.close);
+      return;
     }
+    if (!response.alreadyClosed) return;
+    final channelId = response.channelId;
+    _sequenced(channelId, () {
+      final settlementTxHex = response.settlementTxHex;
+      final clientPeerId = _serverChannelInfo.containsKey(channelId) ? _counterpartyPeer(channelId) : null;
+      if (clientPeerId != null && settlementTxHex != null && settlementTxHex.isNotEmpty) {
+        _emitP2PMessage(clientPeerId, 'channel_closed', {
+          'channelId': channelId,
+          'settlementTxId': response.settlementTxId,
+          'settlementTxHex': settlementTxHex,
+        });
+      }
+      final requestId = _answering(_Request.close, channelId);
+      if (requestId != null) {
+        _emitEvent(coord.ChannelClosedEvent(
+          walletId: _walletFor(channelId),
+          channelId: channelId,
+          settlementTxId: response.settlementTxId,
+          requestId: requestId,
+        ));
+      }
+    });
   }
 
   /// The manager's answer to an expiry, which answers the
@@ -1361,13 +1668,28 @@ class ChannelP2PAdapter {
   /// `tellPeer` is right here and is not everywhere: the client is blocked
   /// waiting on this exact payment, and its channel is still open — the
   /// error names the payment, not the channel's end.
+  ///
+  /// A repeat — a payment the server already holds, resent because its
+  /// `payment_ack` was lost — is acknowledged again, at the latest payment
+  /// the server holds (bead overnode_v2-0o5.3.2).
   void handlePaymentAcknowledged(PaymentAcknowledgedResponse response) {
-    if (response.success) return;
+    if (response.success) {
+      if (!response.repeat) return;
+      _sequenced(response.channelId, () {
+        final clientPeerId = _counterpartyPeer(response.channelId);
+        if (clientPeerId == null) return;
+        _emitP2PMessage(clientPeerId, 'payment_ack', {
+          'channelId': response.channelId,
+          'sequenceNumber': response.sequenceNumber,
+        });
+      });
+      return;
+    }
     _sequenced(
         response.channelId,
         () => _reportFailure(response.channelId,
             'acknowledging the payment', response.error,
-            tellPeer: true));
+            tellPeer: true, sequenceNumber: response.sequenceNumber));
   }
 
   /// The manager's answer to opening a channel: on the client a failed
@@ -1490,8 +1812,11 @@ class ChannelP2PAdapter {
   ///
   /// [answers] is the kind of app request the failed step ends, if one is
   /// waiting for this channel: the error then carries its id.
+  ///
+  /// [sequenceNumber] names the payment the failure is about, for the
+  /// client to match the `channel_error` to it.
   void _reportFailure(String channelId, String step, String? error,
-      {bool tellPeer = false, _Request? answers}) {
+      {bool tellPeer = false, _Request? answers, int? sequenceNumber}) {
     final message =
         'Channel $channelId: $step failed: ${error ?? 'unknown error'}';
     _log.warning(message);
@@ -1501,7 +1826,7 @@ class ChannelP2PAdapter {
       message: message,
       requestId: answers == null ? null : _answering(answers, channelId),
     ));
-    if (tellPeer) _tellPeerChannelError(channelId, message);
+    if (tellPeer) _tellPeerChannelError(channelId, message, sequenceNumber: sequenceNumber);
   }
 
   /// The peer on the other side of [channelId]: the client of a channel this
@@ -1540,7 +1865,7 @@ class ChannelP2PAdapter {
   /// client whose own step failed left the server waiting for the next
   /// message of the handshake. The local records are kept: this says the
   /// step failed, not that the channel is gone.
-  void _tellPeerChannelError(String channelId, String message) {
+  void _tellPeerChannelError(String channelId, String message, {int? sequenceNumber}) {
     final peer = _counterpartyPeer(channelId);
     if (peer == null) {
       _log.warning(
@@ -1550,6 +1875,7 @@ class ChannelP2PAdapter {
     _emitP2PMessage(peer, 'channel_error', {
       'channelId': channelId,
       'error': message,
+      if (sequenceNumber != null && sequenceNumber > 0) 'sequenceNumber': sequenceNumber,
     });
   }
 
@@ -1563,6 +1889,8 @@ class ChannelP2PAdapter {
 
   void _cleanupChannel(String channelId) {
     _settlements.remove(channelId)?.cancel();
+    _stopResending(channelId);
+    _latestPayment.remove(channelId);
     _channelPeers.remove(channelId);
     _pendingRequests.remove(channelId);
     _clientChannelInfo.remove(channelId);
@@ -1577,6 +1905,43 @@ class ChannelP2PAdapter {
 
 /// What an app's channel request asks, for matching its answer to it.
 enum _Request { open, pay, close, expire, refund, retry, resend }
+
+/// What a client channel still has to get to its server.
+class _Outbox {
+  final String peerId;
+
+  /// The latest payment not yet acknowledged, as `payment_update` sends it.
+  Map<String, dynamic>? payment;
+  int paymentSequence = 0;
+
+  /// The close, until `channel_closed` arrives.
+  Map<String, dynamic>? close;
+
+  Duration wait;
+  Timer? timer;
+
+  _Outbox(this.peerId, this.wait);
+}
+
+/// An app's payment the server has not acknowledged yet.
+class _Unconfirmed {
+  final String? requestId;
+  final int amountSats;
+  final int clientBalance;
+  final int serverBalance;
+  final Timer deadline;
+
+  /// Already reported failed: a later acknowledgement answers no request.
+  bool failed = false;
+
+  _Unconfirmed({
+    required this.requestId,
+    required this.amountSats,
+    required this.clientBalance,
+    required this.serverBalance,
+    required this.deadline,
+  });
+}
 
 /// Tracks which peers are involved in a channel.
 class PeerInfo {

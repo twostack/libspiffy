@@ -1171,6 +1171,7 @@ class PaymentChannelManagerActor extends Actor {
           proposedServerBalance: pending.newServerBalance,
           feeRate: pending.feeRate,
           timing: pending.timing,
+          closing: pending.closing,
         );
 
         final events = await _askAggregate(pending.channelId, aggregateRef, ackCmd);
@@ -1199,6 +1200,7 @@ class PaymentChannelManagerActor extends Actor {
           invoiceId: pending.invoiceId,
           feeRate: pending.feeRate,
           timing: pending.timing,
+          closing: pending.closing,
         );
         
         final events = await _askAggregate(pending.channelId, aggregateRef, recordCmd);
@@ -1221,6 +1223,7 @@ class PaymentChannelManagerActor extends Actor {
       if (pending.isAcknowledgment) {
         pending.originalSender?.tell(PaymentAcknowledgedResponse(
           channelId: pending.channelId,
+          sequenceNumber: pending.sequenceNumber,
           success: false,
           error: e.toString(),
         ));
@@ -2255,10 +2258,12 @@ class PaymentChannelManagerActor extends Actor {
   }
 
   /// Client records a payment
-  Future<void> _handleRecordPayment(RecordPaymentMessage msg) async {
-    
-    final originalSender = context.sender;
-    
+  Future<void> _handleRecordPayment(RecordPaymentMessage msg) =>
+      _recordPayment(msg, context.sender);
+
+  /// Builds, signs and journals the client's payment [msg]; [originalSender]
+  /// is answered with [PaymentRecordedResponse].
+  Future<void> _recordPayment(RecordPaymentMessage msg, ActorRef? originalSender) async {
     try {
       // Step 1: Get aggregate reference
       final aggregateRef = await _channelAggregate(msg.channelId);
@@ -2356,6 +2361,7 @@ class PaymentChannelManagerActor extends Actor {
         amountSats: msg.amountSats,
         purpose: msg.purpose,
         invoiceId: msg.invoiceId,
+        closing: msg.closing,
         feeRate: feeRate,
         timing: timing,
       );
@@ -2408,15 +2414,28 @@ class PaymentChannelManagerActor extends Actor {
       final stateResponse = _stateOrThrow(
           await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
 
+      // A payment this server already holds: the client resends one until
+      // its payment_ack arrives, and the ack may be what was lost. It is
+      // acknowledged again, at the latest payment held; nothing is
+      // journaled.
+      if (msg.proposedSequence <= stateResponse.latestSequenceNumber) {
+        originalSender?.tell(PaymentAcknowledgedResponse(
+          channelId: msg.channelId,
+          sequenceNumber: stateResponse.latestSequenceNumber,
+          repeat: true,
+          success: true,
+        ));
+        return;
+      }
+
       // Validate channel is open
       if (stateResponse.status != 'open') {
         throw StateError('Channel not open: ${stateResponse.status}');
       }
-      
-      // Validate sequence is incrementing
-      if (msg.proposedSequence != stateResponse.latestSequenceNumber + 1) {
-        throw StateError('Invalid sequence: expected ${stateResponse.latestSequenceNumber + 1}, got ${msg.proposedSequence}');
-      }
+
+      // Any later sequence: each payment carries the channel's balances, so
+      // one that follows a payment lost on the way pays that one too. The
+      // aggregate checks the balances follow from the server's own.
       
       // The rate the transaction's fee is held to before the server signs
       // it: a payment the server cannot get mined is not a payment (bead
@@ -2461,6 +2480,7 @@ class PaymentChannelManagerActor extends Actor {
         serverPubKeyHex: stateResponse.serverPubKeyHex,
         fundingAmountSats: stateResponse.fundingAmountSats,
         isAcknowledgment: true,
+        closing: msg.closing,
         feeRate: feeRate,
         timing: timing,
       );
@@ -2472,6 +2492,7 @@ class PaymentChannelManagerActor extends Actor {
         removePending: () => _removePendingPayment(correlationId, pending),
         onFailure: (error) => originalSender?.tell(PaymentAcknowledgedResponse(
           channelId: msg.channelId,
+          sequenceNumber: msg.proposedSequence,
           success: false,
           error: error,
         )),
@@ -2482,6 +2503,7 @@ class PaymentChannelManagerActor extends Actor {
       _log.warning('Acknowledging a payment on channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(PaymentAcknowledgedResponse(
         channelId: msg.channelId,
+        sequenceNumber: msg.proposedSequence,
         success: false,
         error: e.toString(),
       ));
@@ -2514,7 +2536,28 @@ class PaymentChannelManagerActor extends Actor {
           await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
 
       String? settlementTxId;
-      if (state.status != 'closed') {
+      final alreadyClosed = state.status == 'closed';
+      if (!alreadyClosed) {
+        if (state.status == 'open' && state.role == 'client' && state.latestSequenceNumber == 0) {
+          // Nothing paid yet: the server holds no payment to settle with,
+          // and the client's funds would wait for the refund lock time.
+          // The client closes with a payment of nothing (bead
+          // libspiffy-w4l2), which goes to the server with the close.
+          await _recordPayment(
+              RecordPaymentMessage(
+                channelId: msg.channelId,
+                walletId: state.walletId,
+                amountSats: BigInt.zero,
+                purpose: 'close',
+                closing: true,
+              ),
+              null);
+          state = _stateOrThrow(await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+          if (state.latestSequenceNumber == 0) {
+            _log.warning('Channel ${msg.channelId}: the payment of nothing to close with was not recorded; '
+                'the server has nothing to settle with');
+          }
+        }
         if (state.status != 'closing') {
           final closeCmd = CloseChannelCommand(
             channelId: msg.channelId,
@@ -2545,7 +2588,12 @@ class PaymentChannelManagerActor extends Actor {
         channelId: msg.channelId,
         success: true,
         finalized: state.status == 'closed' || settlementTxId != null,
-        settlementTxId: settlementTxId,
+        settlementTxId: settlementTxId ?? (alreadyClosed && state.role == 'server' ? _settlementTxId(state) : null),
+        alreadyClosed: alreadyClosed,
+        // The server's settlement, to hand over again (bead
+        // overnode_v2-0o5.3.2): the client resends its close until
+        // channel_closed arrives.
+        settlementTxHex: alreadyClosed && state.role == 'server' ? state.latestPaymentTxHex : null,
       ));
 
     } catch (e, stackTrace) {
@@ -2555,6 +2603,25 @@ class PaymentChannelManagerActor extends Actor {
         success: false,
         error: e.toString(),
       ));
+    }
+  }
+
+  /// What [tx] pays [addressB58].
+  static BigInt _paidTo(dartsv.Transaction tx, String addressB58) {
+    final script = dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(addressB58)).getScriptPubkey().toHex();
+    return tx.outputs
+        .where((o) => o.script.toHex() == script)
+        .fold(BigInt.zero, (sum, o) => sum + o.satoshis);
+  }
+
+  /// The txid of the settlement a closed channel's state holds, or null.
+  static String? _settlementTxId(FullChannelStateResponse state) {
+    final settlementHex = state.latestPaymentTxHex;
+    if (settlementHex == null || settlementHex.isEmpty) return null;
+    try {
+      return dartsv.Transaction.fromHex(settlementHex).id;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -2590,6 +2657,12 @@ class PaymentChannelManagerActor extends Actor {
     final settlementTxId =
         await _recordReturnLegInWallet(channelId, state, leg);
     await _journalReturnLegRecorded(channelId, aggregateRef, settlementTxId);
+    // What the settlement pays, which on the client may be less than its
+    // latest payment gave the server: the server's output carries its
+    // whole balance (bead libspiffy-b4kv).
+    final serverAddress = state.serverAddressB58;
+    final finalServer = serverAddress == null ? state.serverBalanceSats : _paidTo(leg.tx, serverAddress);
+    final finalClient = state.fundingAmountSats - finalServer;
     final applied = _awaitApplied(
         _channelProjection,
         (e) => e is ChannelClosedEvent && e.channelId == channelId,
@@ -2601,8 +2674,8 @@ class PaymentChannelManagerActor extends Actor {
         FinalizeCloseCommand(
           channelId: channelId,
           settlementTxId: settlementTxId,
-          finalClientBalanceSats: state.clientBalanceSats,
-          finalServerBalanceSats: state.serverBalanceSats,
+          finalClientBalanceSats: finalClient,
+          finalServerBalanceSats: finalServer,
           settlementTxHex: leg.hex,
         ),
       ));
@@ -2703,9 +2776,15 @@ class PaymentChannelManagerActor extends Actor {
   }
 
   /// The settlement [settlementTxHex] the server handed this client, as the
-  /// return leg to record, after checking it is the client's latest
-  /// payment — the transaction the client signed last — with both
-  /// signatures, spending the funding output (bead libspiffy-u6q6).
+  /// return leg to record, after checking it is one of the client's
+  /// payments with both signatures, spending the funding output (bead
+  /// libspiffy-u6q6), and pays the server no more than the latest one.
+  ///
+  /// Not necessarily the latest: a payment the server never received (its
+  /// `payment_update` lost, and the channel closed before a resend got
+  /// through) is not in the settlement, which pays the client more. The
+  /// client used to refuse such a settlement, and its channel stayed
+  /// `closing` until the refund lock time.
   ({dartsv.Transaction tx, String hex, String ourAddress}) _handedOverSettlement(
       FullChannelStateResponse state, String settlementTxHex) {
     final channelId = state.channelId;
@@ -2727,15 +2806,20 @@ class PaymentChannelManagerActor extends Actor {
     String outputs(dartsv.Transaction tx) =>
         tx.outputs.map((o) => '${o.satoshis}:${o.script.toHex()}').join(',');
     final input = settlement.inputs.length == 1 ? settlement.inputs.single : null;
+    final serverAddress = state.serverAddressB58;
+    final paysServer = serverAddress == null ? null : _paidTo(settlement, serverAddress);
     if (input == null ||
         input.prevTxnId != latest.inputs.single.prevTxnId ||
         input.prevTxnOutputIndex != latest.inputs.single.prevTxnOutputIndex ||
-        input.sequenceNumber != latest.inputs.single.sequenceNumber ||
+        // nSequence is the payment's sequence (PaymentChannelBuilder).
+        input.sequenceNumber > latest.inputs.single.sequenceNumber ||
         settlement.nLockTime != latest.nLockTime ||
         settlement.version != latest.version ||
-        outputs(settlement) != outputs(latest)) {
-      throw StateError('Settlement ${settlement.id} of channel $channelId is not the '
-          'latest payment (sequence ${state.latestSequenceNumber})');
+        paysServer == null ||
+        paysServer > state.serverBalanceSats) {
+      throw StateError('Settlement ${settlement.id} of channel $channelId is not one of its '
+          'payments up to the latest (sequence ${state.latestSequenceNumber}): '
+          '${outputs(settlement)}');
     }
     final clientPubKey = dartsv.SVPublicKey.fromHex(clientPubKeyHex);
     final serverPubKey = dartsv.SVPublicKey.fromHex(serverPubKeyHex);
@@ -3235,6 +3319,10 @@ class _PaymentSignatureContext {
 
   final bool isAcknowledgment;
 
+  /// The payment of nothing a client with no payment closes with (bead
+  /// libspiffy-w4l2).
+  final bool closing;
+
   /// ARC's policy rate the payment transaction's fee is held to: the one
   /// the client built it at, or the one the server requires (bead
   /// libspiffy-zs4l).
@@ -3259,6 +3347,7 @@ class _PaymentSignatureContext {
     this.serverPubKeyHex,
     this.fundingAmountSats,
     this.isAcknowledgment = false,
+    this.closing = false,
     required this.feeRate,
     required this.timing,
   });

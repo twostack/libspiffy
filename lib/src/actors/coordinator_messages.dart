@@ -2946,6 +2946,31 @@ class ChannelPaymentEvent extends CoordinatorReply {
   String? get failure => null;
 }
 
+/// A payment the client signed and sent, not yet acknowledged by the server
+/// (bead overnode_v2-0o5.3.2). The [ChannelPayCommand] is answered by its
+/// [ChannelPaymentEvent] once the server acknowledges it, or by an
+/// [ErrorEvent] when it does not within `ChannelTiming.confirmWithin`; it is
+/// still resent then, and a later acknowledgement brings a
+/// [ChannelPaymentEvent] that answers no request.
+class ChannelPaymentPendingEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String channelId;
+  final int amountSats;
+  final int sequence;
+  final int clientBalance;
+  final int serverBalance;
+
+  ChannelPaymentPendingEvent({
+    this.walletId,
+    required this.channelId,
+    required this.amountSats,
+    required this.sequence,
+    required this.clientBalance,
+    required this.serverBalance,
+  });
+}
+
 /// Channel closed
 class ChannelClosedEvent extends CoordinatorReply {
   @override
@@ -2956,11 +2981,21 @@ class ChannelClosedEvent extends CoordinatorReply {
   final String? reason;
   final String? settlementTxId;
 
+  /// What the settlement pays each side (bead overnode_v2-0o5.3.2): the
+  /// server's output carries its whole balance, and the client's balance is
+  /// the rest of the funding. On a client whose latest payment the server
+  /// never received, less than its latest payment gave the server. Null
+  /// when this answers a close of a channel already closed.
+  final int? finalClientBalance;
+  final int? finalServerBalance;
+
   ChannelClosedEvent({
     this.walletId,
     required this.channelId,
     this.reason,
     this.settlementTxId,
+    this.finalClientBalance,
+    this.finalServerBalance,
     this.requestId,
   });
   /// Never: a failure to answer arrives as an [ErrorEvent].
@@ -3049,6 +3084,33 @@ class P2PMessageToSendEvent extends CoordinatorEvent {
     required this.messageType,
     required Map<String, dynamic> payload,
   })  : payload = frozenPlainMap(payload);
+}
+
+/// The app could not hand a [P2PMessageToSendEvent] to [toPeerId] (bead
+/// overnode_v2-0o5.3.2): its transport failed to reach the peer. The
+/// payment-channel protocol sends it again sooner than it would otherwise;
+/// the rest of the library has nothing to retry.
+class P2PSendFailed implements Message {
+  final String toPeerId;
+  final String messageType;
+  final Map<String, dynamic> payload;
+  final String? error;
+
+  P2PSendFailed({
+    required this.toPeerId,
+    required this.messageType,
+    required Map<String, dynamic> payload,
+    this.error,
+  }) : payload = frozenPlainMap(payload);
+
+  @override
+  final String correlationId = uniqueId('p2p-failed');
+  @override
+  Map<String, dynamic> get metadata => {'toPeerId': toPeerId, 'messageType': messageType};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  final DateTime timestamp = DateTime.now();
 }
 
 /// What became of a [RequestAncestorProofCommand] (bead libspiffy-a2v3).

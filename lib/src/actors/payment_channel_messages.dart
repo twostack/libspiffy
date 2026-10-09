@@ -443,12 +443,17 @@ class RecordPaymentMessage extends LocalMessage {
   final String? purpose;
   final String? invoiceId;
 
+  /// The payment of nothing a client with no payment closes with (bead
+  /// libspiffy-w4l2); [amountSats] is zero.
+  final bool closing;
+
   RecordPaymentMessage({
     required this.channelId,
     required this.walletId,
     required this.amountSats,
     this.purpose,
     this.invoiceId,
+    this.closing = false,
   }) : super(payload: null);
 
   @override
@@ -493,6 +498,10 @@ class AcknowledgePaymentMessage extends LocalMessage {
   final BigInt proposedClientBalance;
   final BigInt proposedServerBalance;
 
+  /// The payment of nothing a client with no payment closes with (bead
+  /// libspiffy-w4l2).
+  final bool closing;
+
   AcknowledgePaymentMessage({
     required this.channelId,
     required this.walletId,
@@ -502,6 +511,7 @@ class AcknowledgePaymentMessage extends LocalMessage {
     required this.proposedSequence,
     required this.proposedClientBalance,
     required this.proposedServerBalance,
+    this.closing = false,
   }) : super(payload: null);
 
   @override
@@ -516,6 +526,12 @@ class PaymentAcknowledgedResponse extends ActorResponse {
   /// alone is never answered, so that nothing hands it to the client (bead
   /// libspiffy-pkg5).
   final String fullySignedPaymentTxHex;
+
+  /// The payment was one this server had already acknowledged: a client
+  /// resends a payment until its `payment_ack` arrives, and the ack may be
+  /// what was lost. Nothing was journaled; [sequenceNumber] is the latest
+  /// payment the server holds, which the client is acknowledged again.
+  final bool repeat;
   @override
   final bool success;
   @override
@@ -525,6 +541,7 @@ class PaymentAcknowledgedResponse extends ActorResponse {
     required this.channelId,
     this.sequenceNumber = 0,
     this.fullySignedPaymentTxHex = '',
+    this.repeat = false,
     required this.success,
     this.error,
   });
@@ -742,6 +759,14 @@ class ChannelClosedResponse extends ActorResponse {
   /// the wallet. Null when [finalized] is false.
   final String? settlementTxId;
 
+  /// The channel was already closed: a client resends `channel_close` until
+  /// `channel_closed` arrives, and that may be what was lost. On the server
+  /// [settlementTxHex] is the settlement it closed with, to hand over again.
+  final bool alreadyClosed;
+
+  /// The settlement the server closed with, when [alreadyClosed].
+  final String? settlementTxHex;
+
   @override
   final bool success;
   @override
@@ -752,6 +777,8 @@ class ChannelClosedResponse extends ActorResponse {
     required this.success,
     this.finalized = false,
     this.settlementTxId,
+    this.alreadyClosed = false,
+    this.settlementTxHex,
     this.error,
   });
 }
@@ -918,6 +945,9 @@ class FullChannelStateResponse extends ActorResponse {
   /// ends the channel (bead libspiffy-f5p2).
   final String? latestPaymentTxHex;
 
+  /// On the client, its signature on [latestPaymentTxHex]: a close sends
+  /// the latest payment with it.
+  final String? latestClientSignatureHex;
 
   /// Whether this side's wallet already holds the transaction that ended the
   /// channel and paid it back (bead libspiffy-lfrv).
@@ -965,6 +995,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.refundTxHex,
     this.fundingBeefHex,
     this.latestPaymentTxHex,
+    this.latestClientSignatureHex,
     this.returnLegRecordedInWallet = false,
     this.refundClaimedTxId,
     required this.success,

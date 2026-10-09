@@ -25,13 +25,42 @@ class ChannelTiming {
   /// The least time from now to the lock time a channel is opened with.
   final Duration minimumLifetime;
 
-  ChannelTiming({required this.settlementMargin, required this.minimumLifetime}) {
+  /// How long a client waits for the server to acknowledge a payment, or to
+  /// answer its close, before sending it again; the wait doubles with each
+  /// resend, up to [resendAtMost]. A message on a phone's connection is lost
+  /// as often as not when the connection changes, and nothing else resends
+  /// it.
+  final Duration resendAfter;
+
+  /// The longest wait between resends.
+  final Duration resendAtMost;
+
+  /// How long a payment may go unacknowledged before the app is told it
+  /// failed. It is not withdrawn: the client signed it and the server may
+  /// hold it (the acknowledgement may be what was lost), so it is still
+  /// resent, goes with the close, and is confirmed if its acknowledgement
+  /// comes later.
+  final Duration confirmWithin;
+
+  ChannelTiming({
+    required this.settlementMargin,
+    required this.minimumLifetime,
+    this.resendAfter = const Duration(seconds: 2),
+    this.resendAtMost = const Duration(seconds: 30),
+    this.confirmWithin = const Duration(seconds: 20),
+  }) {
     if (settlementMargin <= Duration.zero) {
       throw ArgumentError.value(settlementMargin, 'settlementMargin', 'must be positive');
     }
     if (minimumLifetime <= settlementMargin) {
       throw ArgumentError.value(minimumLifetime, 'minimumLifetime',
           'must be longer than the settlement margin ($settlementMargin): a shorter channel settles before it opens');
+    }
+    if (resendAfter <= Duration.zero || resendAtMost < resendAfter) {
+      throw ArgumentError('resendAfter ($resendAfter) must be positive and no longer than resendAtMost ($resendAtMost)');
+    }
+    if (confirmWithin <= Duration.zero) {
+      throw ArgumentError.value(confirmWithin, 'confirmWithin', 'must be positive');
     }
   }
 
@@ -40,5 +69,6 @@ class ChannelTiming {
   int settleByUnix(int lockTimeUnix) => lockTimeUnix - settlementMargin.inSeconds;
 
   @override
-  String toString() => 'ChannelTiming(settlementMargin: $settlementMargin, minimumLifetime: $minimumLifetime)';
+  String toString() => 'ChannelTiming(settlementMargin: $settlementMargin, minimumLifetime: $minimumLifetime, '
+      'resendAfter: $resendAfter, resendAtMost: $resendAtMost, confirmWithin: $confirmWithin)';
 }

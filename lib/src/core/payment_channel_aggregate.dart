@@ -94,6 +94,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'latestSequenceNumber': s.latestSequenceNumber,
         'latestPaymentTxHex': s.latestPaymentTxHex,
         'latestPaymentTxId': s.latestPaymentTxId,
+        'latestClientSignatureHex': s.latestClientSignatureHex,
         'context': s.context,
         'counterpartyMarker': s.counterpartyMarker,
         'createdAt': s.createdAt?.toIso8601String(),
@@ -150,10 +151,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestSequenceNumber: map['latestSequenceNumber'] as int,
       latestPaymentTxHex: map['latestPaymentTxHex'] as String?,
       latestPaymentTxId: map['latestPaymentTxId'] as String?,
-      // Snapshots written before V-149 also hold latestClientSignatureHex,
-      // which nothing has read since the client stopped assembling
-      // settlements (V-141); it is ignored. PaymentRecordedEvent still
-      // carries the signature in the journal.
+      // Snapshots written between V-149 and 5.1.0 have none: the client's
+      // close then sends no payment, as before.
+      latestClientSignatureHex: map['latestClientSignatureHex'] as String?,
       context: map['context'] as String?,
       // Snapshots written before libspiffy-bps1 have no marker key.
       counterpartyMarker: map['counterpartyMarker'] as String?,
@@ -278,6 +278,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       refundTxHex: currentState.refundTxHex,
       fundingBeefHex: currentState.fundingBeefHex,
       latestPaymentTxHex: currentState.latestPaymentTxHex,
+      latestClientSignatureHex: currentState.latestClientSignatureHex,
       refundClaimedTxId: currentState.refundClaimedTxId,
       success: true,
     ));
@@ -1055,11 +1056,22 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     required BigInt amountSats,
     required BigInt newClientBalanceSats,
     required BigInt newServerBalanceSats,
+    bool closing = false,
   }) {
     // A payment moves a POSITIVE amount from the client to the server. A
     // zero payment burns a sequence number for nothing, and a negative one
-    // is a payment backwards that no balance check would catch.
-    if (amountSats <= BigInt.zero) {
+    // is a payment backwards that no balance check would catch. The one
+    // payment of nothing is the one a client with no payment closes with:
+    // without it the server holds nothing to settle with, and the client's
+    // funds wait for the refund lock time (bead libspiffy-w4l2).
+    if (closing) {
+      if (amountSats != BigInt.zero) {
+        throw StateError('A closing payment pays nothing');
+      }
+      if (currentState.latestSequenceNumber != 0) {
+        throw StateError('A channel with a payment closes with its latest payment, not a payment of nothing');
+      }
+    } else if (amountSats <= BigInt.zero) {
       throw StateError('Payment amount must be positive');
     }
     if (newClientBalanceSats < BigInt.zero ||
@@ -1230,6 +1242,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       amountSats: cmd.amountSats,
       newClientBalanceSats: cmd.newClientBalanceSats,
       newServerBalanceSats: cmd.newServerBalanceSats,
+      closing: cmd.closing,
     );
     // The same rule the server countersigns under (bead libspiffy-zj20), so
     // the client journals as its latest payment only a transaction that pays
@@ -1292,6 +1305,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       amountSats: cmd.amountSats,
       newClientBalanceSats: cmd.proposedClientBalance,
       newServerBalanceSats: cmd.proposedServerBalance,
+      closing: cmd.closing,
     );
 
     // And the transaction the server's signature is on pays those balances
@@ -1671,6 +1685,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestSequenceNumber: event.sequenceNumber,
       latestPaymentTxHex: event.paymentTxHex,
       latestPaymentTxId: event.paymentTxId,
+      latestClientSignatureHex: event.clientSignatureHex,
       version: event.version,
       lastModified: event.timestamp,
     );

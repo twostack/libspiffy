@@ -170,8 +170,11 @@ class ChannelFunding {
     // Add multisig output first (will be at index 0)
     txBuilder.spendToLockBuilder(msLockBuilder, fundingAmount);
 
-    // Add change output if above dust threshold
-    if (changeAmount > BigInt.from(546)) {
+    // Change of a satoshi or more comes back to the wallet: BSV has no dust
+    // limit, and the fee already pays for the change output. Change at or
+    // below 546 sats, Bitcoin Core's dust limit, went to the miner (bead
+    // libspiffy-kov9).
+    if (changeAmount > BigInt.zero) {
       txBuilder.sendChangeToPKH(changeAddress);
     }
 

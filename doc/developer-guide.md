@@ -433,8 +433,14 @@ The coordinator does not know how to send network messages. When it needs to sen
 
 ```dart
 // Outgoing: coordinator → your P2P layer → peer
-coordinator.on<P2PMessageToSendEvent>().listen((msg) {
-  myP2PLayer.send(msg.toPeerId, msg.messageType, msg.payload);
+coordinator.on<P2PMessageToSendEvent>().listen((msg) async {
+  try {
+    await myP2PLayer.send(msg.toPeerId, msg.messageType, msg.payload);
+  } catch (e) {
+    // Optional: a payment channel then sends it again sooner.
+    coordinator.tell(P2PSendFailed(
+        toPeerId: msg.toPeerId, messageType: msg.messageType, payload: msg.payload, error: '$e'));
+  }
 });
 
 // Incoming: peer → your P2P layer → coordinator
@@ -448,6 +454,8 @@ myP2PLayer.onMessage((fromPeerId, messageType, payload) {
 ```
 
 That is the entire P2P contract. The coordinator routes each incoming message by `messageType` and handles the 11-message channel protocol and the proof protocol internally.
+
+Your transport may lose a message, as a phone's connection does when it changes. A client resends its latest unacknowledged payment, and its close, until the server answers, waiting `ChannelTiming.resendAfter` and then twice as long each time, up to `resendAtMost`. The server answers a repeat as it answered the first. Telling the coordinator `P2PSendFailed` makes the next resend come sooner; without it the resend still comes.
 
 A node takes part in channels only when `initialize()` is given `channelTiming` (when a channel stops taking payments and settles, and how long it must run; the library supplies no default) and `channelPeerId` (this node's own peer id on your transport):
 
@@ -527,7 +535,7 @@ final paid = await coordinator.ask(ChannelPayCommand(
 ));
 ```
 
-The reply is the payment's `ChannelPaymentEvent`, with the updated balances, once the channel has journaled it and handed `payment_update` to your transport. A payment the channel refuses (more than the client's balance) throws. The server's own payments arrive as `ChannelPaymentEvent`s on its stream.
+The reply is the payment's `ChannelPaymentEvent`, with the updated balances, once the server acknowledges it. Meanwhile `ChannelPaymentPendingEvent` says it is signed and on its way. A payment the channel or the server refuses (more than the client's balance) throws, and so does one the server has not acknowledged within `ChannelTiming.confirmWithin` (20 s by default). That one is not withdrawn: the client signed it and the server may hold it, so it is still resent and goes with the close. If its acknowledgement comes later, a `ChannelPaymentEvent` that answers no request says so. The server's own payments arrive as `ChannelPaymentEvent`s on its stream.
 
 ### Closing a Channel
 
@@ -535,7 +543,7 @@ The reply is the payment's `ChannelPaymentEvent`, with the updated balances, onc
 final closed = await coordinator.ask(CloseChannelCommand(channelId: channel.channelId));
 ```
 
-The reply is `ChannelClosedEvent`, with the settlement transaction ID, once the server's settlement is recorded.
+The reply is `ChannelClosedEvent`, with the settlement transaction ID and what it pays each side, once the server's settlement is recorded. The client's close carries its latest payment, so the server settles with it even if its `payment_update` was lost. A channel with nothing paid closes with a payment of nothing, which the server settles with at once instead of leaving the client's funds until the refund lock time. If the server never received the client's latest payment, the settlement pays the client more than its tab counted; the payments it left out are answered as failed.
 
 ## Utility Operations
 
@@ -725,7 +733,8 @@ The tables below are the events the coordinator emits without a request, and the
 |---|---|
 | `ChannelRequestReceivedEvent` | Peer wants to open a channel (show UI for approval) |
 | `ChannelOpenedEvent` | A channel this node serves is open |
-| `ChannelPaymentEvent` | A payment received on a channel this node serves |
+| `ChannelPaymentEvent` | A payment received on a channel this node serves; on a client, one the server acknowledged after the app was told it failed |
+| `ChannelPaymentPendingEvent` | A client's payment is signed and sent, not yet acknowledged |
 | `ChannelClosedEvent` | A channel closed by the counterparty or the settlement timer |
 | `P2PMessageToSendEvent` | App must transmit this P2P message to a peer |
 

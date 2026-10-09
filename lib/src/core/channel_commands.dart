@@ -460,6 +460,11 @@ class RecordPaymentCommand extends ChannelCommand {
   /// must be at least this rate on its signed size (bead libspiffy-zs4l).
   final FeeRate feeRate;
 
+  /// A payment of nothing that a client with no payment closes with, so
+  /// the server holds a settlement to close the channel with (bead
+  /// libspiffy-w4l2). Refused on a channel that already has a payment.
+  final bool closing;
+
   RecordPaymentCommand({
     required String channelId,
     required this.timing,
@@ -473,6 +478,7 @@ class RecordPaymentCommand extends ChannelCommand {
     this.purpose,
     this.invoiceId,
     required this.feeRate,
+    this.closing = false,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -514,6 +520,11 @@ class AcknowledgePaymentCommand extends ChannelCommand {
   /// mined, so it is not countersigned (bead libspiffy-zs4l).
   final FeeRate feeRate;
 
+  /// A payment of nothing that a client with no payment closes with, so
+  /// the server holds a settlement to close the channel with (bead
+  /// libspiffy-w4l2). Refused on a channel that already has a payment.
+  final bool closing;
+
   AcknowledgePaymentCommand({
     required String channelId,
     required this.timing,
@@ -526,6 +537,7 @@ class AcknowledgePaymentCommand extends ChannelCommand {
     required this.proposedClientBalance,
     required this.proposedServerBalance,
     required this.feeRate,
+    this.closing = false,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

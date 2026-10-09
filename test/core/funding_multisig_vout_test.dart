@@ -147,4 +147,21 @@ void main() {
     expect(tx.outputs[equalChange.changeOutputIndex!].script.toHex(),
         isNot(multisigScriptHex));
   });
+
+  // Bead libspiffy-kov9: change at or below 546 sats, Bitcoin Core's dust
+  // limit, was left out of the funding transaction and went to the miner.
+  test('change of a few hundred satoshis comes back to the wallet', () async {
+    final scout = await buildFunding(100000);
+    final scoutTx = dartsv.Transaction.fromHex(scout.fundingTxHex);
+    final fee = 100000 - scoutTx.outputs.fold<int>(0, (sum, o) => sum + o.satoshis.toInt());
+
+    final response = await buildFunding(_fundingAmount + fee + 300);
+
+    final tx = dartsv.Transaction.fromHex(response.fundingTxHex);
+    expect(response.changeOutputIndex, isNotNull, reason: 'old code: no change output');
+    expect(tx.outputs[response.changeOutputIndex!].satoshis.toInt(), inInclusiveRange(298, 302));
+    final paid = tx.outputs.fold<int>(0, (sum, o) => sum + o.satoshis.toInt());
+    expect(_fundingAmount + fee + 300 - paid, inInclusiveRange(fee - 2, fee + 2),
+        reason: 'the miner is paid the fee, not the change');
+  });
 }

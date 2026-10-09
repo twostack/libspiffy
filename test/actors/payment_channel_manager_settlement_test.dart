@@ -775,17 +775,63 @@ void main() {
       expect(imported(), hasLength(1));
     });
 
-    test('a settlement that is not the latest payment is refused', () async {
+    test('a settlement paying the server more than the latest payment is refused', () async {
       await spawn(clientJournalWithPayment(), key: f.clientKey);
       final other = await _PaymentPair.build(f, serverAmountSats: BigInt.from(40000));
 
       final closed = await handOver(other.settlementHex);
 
       expect(closed.success, isFalse);
-      expect(closed.error, contains('not the latest payment'));
+      expect(closed.error, contains('not one of its payments up to the latest'));
       expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
       await flushWallet();
       expect(imported(), isEmpty);
+    });
+
+    // Bead overnode_v2-0o5.3.2: the server never received the client's
+    // latest payment (its payment_update lost, the channel closed before a
+    // resend got through) and settled with the one before. The client
+    // refused it and its channel stayed closing until the refund lock time.
+    test('an earlier payment settles the channel, with the balances it pays', () async {
+      final earlier = await _PaymentPair.build(f, serverAmountSats: BigInt.from(10000), sequenceNumber: 1);
+      final latest = await _PaymentPair.build(f, serverAmountSats: BigInt.from(30000), sequenceNumber: 2);
+      await spawn([
+        ...f.openClientJournal(walletId: _walletId),
+        PaymentRecordedEvent(
+          channelId: _channelId,
+          amountSats: BigInt.from(10000),
+          sequenceNumber: 1,
+          paymentTxHex: earlier.templateHex,
+          paymentTxId: earlier.templateTxId,
+          clientSignatureHex: earlier.clientSignatureHex,
+          newClientBalanceSats: f.amountSats - BigInt.from(10000),
+          newServerBalanceSats: BigInt.from(10000),
+          version: 7,
+        ),
+        PaymentRecordedEvent(
+          channelId: _channelId,
+          amountSats: BigInt.from(20000),
+          sequenceNumber: 2,
+          paymentTxHex: latest.templateHex,
+          paymentTxId: latest.templateTxId,
+          clientSignatureHex: latest.clientSignatureHex,
+          newClientBalanceSats: f.amountSats - BigInt.from(30000),
+          newServerBalanceSats: BigInt.from(30000),
+          version: 8,
+        ),
+      ], key: f.clientKey);
+
+      final closed = await handOver(earlier.settlementHex);
+
+      expect(closed.success, isTrue, reason: closed.error);
+      expect(closed.settlementTxId, earlier.settlementTxId);
+      final ended = journal().whereType<ChannelClosedEvent>().single;
+      expect(ended.finalServerBalanceSats, BigInt.from(10000), reason: 'what the settlement pays the server');
+      expect(ended.finalClientBalanceSats, f.amountSats - BigInt.from(10000));
+      await flushWallet();
+      final w = await readBack();
+      final ours = (await w.storage.getUTXOs(_walletId)).where((u) => u.txid == earlier.settlementTxId).toList();
+      expect(ours.single.value.getValue(), earlier.clientAmount);
     });
 
     test('an unsigned settlement is refused: it is not a transaction the network has', () async {
@@ -821,6 +867,157 @@ void main() {
 
       expect(closed.success, isFalse);
       expect(closed.error, contains('Only a client'));
+    });
+  });
+
+  // Bead overnode_v2-0o5.3.2: the client resends a payment until its
+  // payment_ack arrives and its close until channel_closed does, so the
+  // server sees repeats, payments that follow a lost one, and closes of
+  // channels it has closed; and a channel with nothing paid closes with a
+  // payment of nothing (bead libspiffy-w4l2).
+  group('overnode_v2-0o5.3.2: what a resending client sends the server', () {
+    setUp(() async {
+      f = await ChannelRefundFixture.create(channelId: _channelId);
+    });
+
+    List<Event> openServerJournal() => [
+          f.serverAccepted(version: 1),
+          RefundCountersignedEvent(
+            channelId: _channelId,
+            serverSignatureHex: f.serverSignatureHex,
+            signedRefundTxHex: f.signedRefundTxHex(),
+            version: 2,
+          ),
+          ChannelOpenedEvent(
+            channelId: _channelId,
+            fundingTxId: f.fundingTxId,
+            fundingOutputIndex: 0,
+            fundingTxHex: f.fundingTxHex,
+            initialClientBalanceSats: f.amountSats,
+            initialServerBalanceSats: BigInt.zero,
+            version: 3,
+          ),
+        ];
+
+    /// The client's payment leaving the server [serverSats], at [sequence].
+    Future<AcknowledgePaymentMessage> payment(int serverSats, int sequence,
+        {required BigInt serverBefore, bool closing = false}) async {
+      final pair = await _PaymentPair.build(f, serverAmountSats: BigInt.from(serverSats), sequenceNumber: sequence);
+      return AcknowledgePaymentMessage(
+        channelId: _channelId,
+        walletId: _walletId,
+        amountSats: BigInt.from(serverSats) - serverBefore,
+        paymentTxHex: pair.templateHex,
+        clientSignatureHex: pair.clientSignatureHex,
+        proposedSequence: sequence,
+        proposedClientBalance: f.amountSats - BigInt.from(serverSats),
+        proposedServerBalance: BigInt.from(serverSats),
+        closing: closing,
+      );
+    }
+
+    Future<PaymentAcknowledgedResponse> acknowledge(AcknowledgePaymentMessage message) =>
+        managerRef.ask<PaymentAcknowledgedResponse>(message, _timeout);
+
+    test('a payment the server holds is acknowledged again, and nothing is journaled', () async {
+      await spawn(openServerJournal(), key: f.serverKey);
+      final first = await payment(30000, 1, serverBefore: BigInt.zero);
+      expect((await acknowledge(first)).success, isTrue);
+
+      final again = await acknowledge(first);
+
+      expect(again.success, isTrue, reason: again.error);
+      expect(again.repeat, isTrue);
+      expect(again.sequenceNumber, 1);
+      expect(journal().whereType<PaymentAcknowledgedEvent>(), hasLength(1));
+    });
+
+    test('a payment after a lost one is taken: it pays the lost one too', () async {
+      await spawn(openServerJournal(), key: f.serverKey);
+      // Sequence 1 (10,000 sats) never arrived; sequence 2 leaves the
+      // server 30,000.
+      final acked = await acknowledge(await payment(30000, 2, serverBefore: BigInt.zero));
+
+      expect(acked.success, isTrue, reason: acked.error);
+      final event = journal().whereType<PaymentAcknowledgedEvent>().single;
+      expect(event.sequenceNumber, 2);
+      expect(event.newServerBalanceSats, BigInt.from(30000));
+    });
+
+    test('a refused payment is answered with its sequence', () async {
+      await spawn(openServerJournal(), key: f.serverKey);
+      final wrong = await payment(30000, 1, serverBefore: BigInt.zero);
+      final refused = await acknowledge(AcknowledgePaymentMessage(
+        channelId: _channelId,
+        walletId: _walletId,
+        amountSats: wrong.amountSats,
+        paymentTxHex: wrong.paymentTxHex,
+        clientSignatureHex: wrong.clientSignatureHex,
+        proposedSequence: 1,
+        // Balances that do not follow from the transaction.
+        proposedClientBalance: f.amountSats - BigInt.from(20000),
+        proposedServerBalance: BigInt.from(20000),
+      ));
+
+      expect(refused.success, isFalse);
+      expect(refused.sequenceNumber, 1);
+    });
+
+    test('a close of a closed channel is answered with the settlement it closed with', () async {
+      await spawn(openServerJournal(), key: f.serverKey);
+      await acknowledge(await payment(30000, 1, serverBefore: BigInt.zero));
+      final first = await managerRef.ask<ChannelClosedResponse>(CloseChannelMessage(channelId: _channelId), _timeout);
+      expect(first.finalized, isTrue, reason: first.error);
+
+      final again = await managerRef.ask<ChannelClosedResponse>(CloseChannelMessage(channelId: _channelId), _timeout);
+
+      expect(again.success, isTrue);
+      expect(again.alreadyClosed, isTrue);
+      expect(again.settlementTxId, first.settlementTxId);
+      expect(dartsv.Transaction.fromHex(again.settlementTxHex!).id, first.settlementTxId);
+      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
+    });
+
+    test('w4l2: a client with nothing paid closes with a payment of nothing', () async {
+      await spawn(f.openClientJournal(walletId: _walletId), key: f.clientKey);
+
+      final closed = await managerRef.ask<ChannelClosedResponse>(
+          CloseChannelMessage(channelId: _channelId, reason: 'left the room'), _timeout);
+
+      expect(closed.success, isTrue, reason: closed.error);
+      final recorded = journal().whereType<PaymentRecordedEvent>().single;
+      expect(recorded.amountSats, BigInt.zero);
+      expect(recorded.sequenceNumber, 1);
+      expect(recorded.newServerBalanceSats, BigInt.zero);
+      final tx = dartsv.Transaction.fromHex(recorded.paymentTxHex);
+      expect(tx.outputs, hasLength(1), reason: 'a share of nothing has no output');
+      expect(journal().last, isA<ChannelClosingEvent>(),
+          reason: 'the payment goes with the close, and the server settles with it');
+    });
+
+    test('w4l2: the server settles with the payment of nothing, paying the client back', () async {
+      await spawn(openServerJournal(), key: f.serverKey);
+      final nothing = await payment(0, 1, serverBefore: BigInt.zero, closing: true);
+      final acked = await acknowledge(nothing);
+      expect(acked.success, isTrue, reason: acked.error);
+
+      final closed = await managerRef.ask<ChannelClosedResponse>(CloseChannelMessage(channelId: _channelId), _timeout);
+
+      expect(closed.finalized, isTrue, reason: closed.error);
+      expect(arc.broadcasts.single.txid, closed.settlementTxId, reason: 'the settlement is broadcast, not left to the lock time');
+      final ended = journal().whereType<ChannelClosedEvent>().single;
+      expect(ended.finalServerBalanceSats, BigInt.zero);
+      expect(ended.finalClientBalanceSats, f.amountSats);
+    });
+
+    test('w4l2: a payment of nothing is refused on a channel with a payment', () async {
+      await spawn(openServerJournal(), key: f.serverKey);
+      await acknowledge(await payment(30000, 1, serverBefore: BigInt.zero));
+
+      final refused = await acknowledge(await payment(30000, 2, serverBefore: BigInt.from(30000), closing: true));
+
+      expect(refused.success, isFalse);
+      expect(refused.error, contains('closes with its latest payment'));
     });
   });
 

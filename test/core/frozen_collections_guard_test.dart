@@ -92,8 +92,9 @@ const _sources = <String, String?>{
 /// `RecordTransactionAncestorsCommand.ancestors`,
 /// `TransactionAncestorsRecordedEvent.ancestors`), 180 with the UTXOs a
 /// release names (xc78.1: `UTXOsReleasedEvent.releasedUtxoKeys`,
-/// `UTXOsReleasedResponse.releasedUtxoKeys`).
-const _expectedFields = 180;
+/// `UTXOsReleasedResponse.releasedUtxoKeys`), 181 with a channel message the
+/// app could not send (overnode_v2-0o5.3.2: `P2PSendFailed.payload`).
+const _expectedFields = 181;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

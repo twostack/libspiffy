@@ -22,6 +22,12 @@ import 'blockchain_data_source.dart';
 /// );
 /// final utxos = await dataSource.getUtxos('n2ar44RA...');
 /// ```
+///
+/// Deprecated (owner decision, 9 Oct 2026): it reads proofs with
+/// `gettxoutproof`, which only an SV Node serves; Teranode does not, and the
+/// SV Node regtest stack it was tested against is retired. Removed in 5.0.0
+/// (bead libspiffy-cquj).
+@Deprecated('Needs an SV Node RPC (gettxoutproof), which Teranode does not serve. Will be removed in 5.0.0.')
 class NodeRpcDataSource implements BlockchainDataSource {
   final Logger _logger = Logger('NodeRpcDataSource');
   final String _rpcUrl;

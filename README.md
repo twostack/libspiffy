@@ -1571,7 +1571,7 @@ dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # paymen
 dart test -P localnet test/integration/localnet_deferred_e2e_test.dart  # deferred payments, double spends
 dart test -P localnet test/integration/localnet_reorg_e2e_test.dart     # chain reorganizations
 
-# NodeRpcDataSource against an SV Node's RPC (:18332, the retired
+# NodeRpcDataSource (deprecated, removed in 5.0.0) against an SV Node's RPC (:18332, the retired
 # ../localnet stack; Teranode serves no gettxoutproof).
 dart test -P svnode test/integration/node_rpc_data_source_test.dart     # node RPC data source
 dart test -P svnode test/integration/node_rpc_wif_import_test.dart      # WIF import from the node

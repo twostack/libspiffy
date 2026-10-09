@@ -1164,29 +1164,33 @@ class PaymentCoordinatorActor extends Actor {
               ancestorTxids = provision.ancestorTxids;
             }
 
-            final result = await signing.buildWithSigner(
-              walletId: walletId,
-              // a fundless plugin names every key it signs with (keyFor)
-              fallbackPath: fundingPaths.firstOrNull ?? const HdKeyPath(0),
-              build: (signer) => _guardPluginAsync(
-                  pluginOutput.pluginId,
-                  'building the transaction',
-                  () => pluginInstance.buildTransaction(PluginTransactionRequest(
-                        fundingUtxos: pluginFundingUtxos,
-                        signer: signer,
-                        publicKeys: pluginPublicKeys,
-                        params: pluginOutput.params,
-                        fundingInputs: _fundingInputs(pluginFundingUtxos, pluginPublicKeys),
-                        feeRate: rate,
-                        keyLookup: (hash) => signing.keyFor(walletId, signer, hash),
-                        transactionLookup: (txid) async {
-                          // All auto-provisioned ancestors are persisted before
-                          // _autoProvisionForPlugin returns, so a single storage read
-                          // is authoritative. No in-memory shortcut.
-                          final tx = await _storage.getTransaction(txid);
-                          return tx?.rawHex;
-                        },
-                      ))),
+            // Guarded around the whole build, not each pass: a pass signed
+            // with placeholder signatures may fail by design, and only a
+            // failure with nothing left to sign is the plugin's.
+            final result = await _guardPluginAsync(
+              pluginOutput.pluginId,
+              'building the transaction',
+              () => signing.buildWithSigner(
+                walletId: walletId,
+                // a fundless plugin names every key it signs with (keyFor)
+                fallbackPath: fundingPaths.firstOrNull ?? const HdKeyPath(0),
+                build: (signer) => pluginInstance.buildTransaction(PluginTransactionRequest(
+                  fundingUtxos: pluginFundingUtxos,
+                  signer: signer,
+                  publicKeys: pluginPublicKeys,
+                  params: pluginOutput.params,
+                  fundingInputs: _fundingInputs(pluginFundingUtxos, pluginPublicKeys),
+                  feeRate: rate,
+                  keyLookup: (hash) => signing.keyFor(walletId, signer, hash),
+                  transactionLookup: (txid) async {
+                    // All auto-provisioned ancestors are persisted before
+                    // _autoProvisionForPlugin returns, so a single storage read
+                    // is authoritative. No in-memory shortcut.
+                    final tx = await _storage.getTransaction(txid);
+                    return tx?.rawHex;
+                  },
+                )),
+              ),
             );
 
             // Validate primary TX structure
@@ -1339,10 +1343,6 @@ class PaymentCoordinatorActor extends Actor {
     return headers;
   }
 
-  /// Create a minimal BEEF wrapper containing a single transaction with no
-  /// ancestor chain. Used for plugin-built transactions where the plugin
-  /// manages its own inputs and the standard BEEF ancestor chain is not
-  /// applicable.
   /// Build a BEEF for a plugin-built transaction, including any auto-provisioned
   /// ancestors (split + earmark TXs) that were created in-memory and not yet
   /// on chain.

@@ -184,6 +184,25 @@ void main() {
     });
   });
 
+  // ruggerbot report #9: a token plugin checks the spend it built, and a
+  // signing pass with placeholder signatures fails that check by design.
+  // The next pass signs for real and succeeds; the failed pass is no plugin
+  // failure and is not logged as one.
+  test('a plugin refusing the placeholder signing pass is not logged as failing', () async {
+    plugin.refusePlaceholderPass = true;
+
+    // The build is what this is about: these stand-ins do not carry a
+    // payment past it, so its answer is not awaited.
+    coordinator.tell(payment());
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (plugin.builds < 2 && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(plugin.builds, greaterThanOrEqualTo(2), reason: 'the first pass was refused and built again');
+    expect(logs.where((r) => r.level >= log.Level.WARNING && r.message.contains(_pluginId)), isEmpty,
+        reason: 'logged: ${logs.where((r) => r.level >= log.Level.WARNING).map((r) => r.message).toList()}');
+  });
+
   // spiffyvault-5he.12: a payer must not pay an address of the other network.
   // The same keys exist on both networks, so the payee would never see it,
   // and the payer's coins would stay held for a payment that cannot settle.
@@ -251,6 +270,13 @@ class _FaultyPlugin extends TransactionBuilderPlugin {
   /// Name of the method that throws; null for a plugin that works.
   String? throwFrom;
 
+  /// Whether [buildTransaction] throws on its first call, as a plugin that
+  /// checks the spend it built refuses a pass signed with placeholders.
+  bool refusePlaceholderPass = false;
+
+  /// How many times [buildTransaction] was called.
+  int builds = 0;
+
   Never _boom(String method) => throw StateError('$method exploded');
 
   @override
@@ -317,7 +343,13 @@ class _FaultyPlugin extends TransactionBuilderPlugin {
       dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(request.params['to'] as String)),
       total - BigInt.from(fee),
     );
-    return TransactionBuilderResult(primaryTx: builder.build(false), primaryFeeSats: BigInt.from(fee));
+    final tx = builder.build(false);
+    // Signed (the signer saw every input), then checked: the first pass
+    // carries placeholder signatures.
+    if (refusePlaceholderPass && builds++ == 0) {
+      throw StateError('the token refuses the spend: placeholder signature');
+    }
+    return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: BigInt.from(fee));
   }
 }
 

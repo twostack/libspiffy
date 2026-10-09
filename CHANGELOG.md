@@ -1,3 +1,7 @@
+## 4.7.0 (unreleased)
+
+- **The default P2P user agent passes Teranode.** Teranode's wire-protocol service accepts a peer only if its user agent contains `BSV` or `Bitcoin SV`, and bans any other's IP for 24 hours; `/LibSpiffy:1.0/` did not pass, and one refused connection locked every client behind the same address out. The default is `LibSpiffyActorSystem.defaultUserAgent`, `/LibSpiffy-BSV:1.0/` (bead libspiffy-c04p). The P2P network line is a log record, not a `print`.
+
 ## 4.6.1
 
 - **A payment channel's payment pays every share of a satoshi or more.** `PaymentChannelBuilder` left a party's output out of a payment, and a refund failed, when its share was at or below 546 sats, Bitcoin Core's dust limit. BSV has no dust limit and ARC asks for none, so the share went to the miner: a 1000 sat room tab that paid the host 350 settled with one output, back to the client, and the host's 350 was lost. `dustThreshold` is replaced by `PaymentChannelBuilder.minimumOutputSats` (1); a share of nothing is still left out. The server no longer accepts a payment that leaves its own balance out: `_checkPaymentTransaction` requires the server's output to carry its whole balance (bead libspiffy-b4kv).

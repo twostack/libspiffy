@@ -56,6 +56,12 @@ enum _Lifecycle { uninitialized, initializing, initialized, shutDown }
 
 /// Initialization and management utilities for the LibSpiffy actor system
 class LibSpiffyActorSystem {
+  /// The user agent this node sends in its version handshake unless the app
+  /// passes its own. Teranode's wire-protocol service accepts a peer only if
+  /// its user agent contains `BSV` or `Bitcoin SV`, and bans any other's IP
+  /// for 24 hours.
+  static const String defaultUserAgent = '/LibSpiffy-BSV:1.0/';
+
   late ActorSystem _actorSystem;
   bool _ownsActorSystem = false;
   _Lifecycle _lifecycle = _Lifecycle.uninitialized;
@@ -168,7 +174,8 @@ class LibSpiffyActorSystem {
   ///   version handshake. Header sync does not start from it: it continues
   ///   from the tip of the stored header chain.
   /// - [peerAddresses]: Optional custom peer addresses in 'host:port' format
-  /// - [userAgent]: Optional custom user agent string (default: '/LibSpiffy:1.0/')
+  /// - [userAgent]: Optional custom user agent string (default:
+  ///   [defaultUserAgent]; a Teranode peer refuses one without `BSV`)
   /// 
   /// When [enableP2P] is true, LibSpiffy automatically:
   /// - Initializes SpiffyNode for P2P connectivity (no application setup needed)
@@ -1097,7 +1104,8 @@ class LibSpiffyActorSystem {
           : NetworkName.isRegtest(networkType)
               ? BitcoinNetwork.regtest
               : BitcoinNetwork.testnet;
-      print('[LibSpiffy] P2P network: $networkType → ${network.name} (magic: 0x${network.magic.toRadixString(16)})');
+      Logger('LibSpiffyActorSystem').info('P2P network: $networkType → ${network.name} '
+          '(magic: 0x${network.magic.toRadixString(16)})');
 
       // 3. Create PeerManager
       _peerManager = PeerManager(
@@ -1127,10 +1135,10 @@ class LibSpiffyActorSystem {
       final peerConfig = startHeight != null
           ? PeerConfig(
               startHeight: startHeight,
-              userAgent: userAgent ?? '/LibSpiffy:1.0/',
+              userAgent: userAgent ?? defaultUserAgent,
             )
           : PeerConfig(
-              userAgent: userAgent ?? '/LibSpiffy:1.0/',
+              userAgent: userAgent ?? defaultUserAgent,
             );
 
       // 7. Connect to every address in parallel; only fail if none can be
@@ -1846,7 +1854,8 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 ///   version handshake. Header sync does not start from it: it continues
 ///   from the tip of the stored header chain.
 /// - [peerAddresses]: Optional custom peer addresses (format: 'host:port')
-/// - [userAgent]: Optional custom user agent string (default: '/LibSpiffy:1.0/')
+/// - [userAgent]: Optional custom user agent string (default:
+///   [LibSpiffyActorSystem.defaultUserAgent]; a Teranode peer refuses one without `BSV`)
 Future<void> initializeLibSpiffy({
   ActorSystem? actorSystem,
   String? dataDirectory,

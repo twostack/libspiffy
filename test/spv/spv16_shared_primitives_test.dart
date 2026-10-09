@@ -16,9 +16,6 @@ import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
-import 'package:libspiffy/src/services/node_rpc_data_source.dart';
 import 'package:libspiffy/src/spv/merkle.dart' as merkle;
 import 'package:libspiffy/src/spv/network_params.dart';
 import 'package:libspiffy/src/utils/beef.dart';
@@ -63,22 +60,6 @@ List<String> _referencePath(List<List<Uint8List>> tree, int index) {
   return path;
 }
 
-NodeRpcDataSource _node(List<String> txids, String merkleRoot) => NodeRpcDataSource(
-      rpcUrl: 'http://node.test',
-      rpcUser: 'u',
-      rpcPassword: 'p',
-      client: MockClient((request) async {
-        final call = json.decode(request.body) as Map<String, dynamic>;
-        final params = call['params'] as List;
-        final Object result = switch (call['method']) {
-          'getrawtransaction' => {'txid': params[0], 'blockhash': '00' * 32, 'blockheight': 900},
-          'getblock' => {'hash': '00' * 32, 'height': 900, 'tx': txids, 'merkleroot': merkleRoot},
-          _ => throw StateError('unexpected ${call['method']}'),
-        };
-        return http.Response(json.encode({'result': result, 'error': null, 'id': call['id']}), 200);
-      }),
-    );
-
 /// A valid two-transaction BEEF: testnet tx a05924fc... with its BRC-74
 /// BUMP, and its second real child proven by a second BUMP.
 Uint8List _validBeefBytes() => BEEF.create(
@@ -104,11 +85,6 @@ void main() {
           final txid = txids[index];
           final path = _referencePath(tree, index);
           final reason = 'size $size index $index';
-
-          // The node-RPC source derives the same path from the block's txids.
-          final proof = await _node(txids, rootDisplay).getMerkleProof(txid);
-          expect(proof.nodes, path, reason: reason);
-          expect(proof.index, index, reason: reason);
 
           final bump = BUMP.fromTscProof(blockHeight: 900, txid: txid, index: index, nodes: path);
           expect(_display(bump.computeMerkleRoot(leaves[index])), rootDisplay, reason: reason);

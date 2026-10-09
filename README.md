@@ -1566,18 +1566,13 @@ dart test -P localnet test/integration/localnet_payment_e2e_test.dart   # invoic
 dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # payment channels
 dart test -P localnet test/integration/localnet_deferred_e2e_test.dart  # deferred payments, double spends
 dart test -P localnet test/integration/localnet_reorg_e2e_test.dart     # chain reorganizations
-
-# NodeRpcDataSource (deprecated, removed in 5.0.0) against an SV Node's RPC (:18332, the retired
-# ../localnet stack; Teranode serves no gettxoutproof).
-dart test -P svnode test/integration/node_rpc_data_source_test.dart     # node RPC data source
-dart test -P svnode test/integration/node_rpc_wif_import_test.dart      # WIF import from the node
 ```
 
 ### What the suite covers
 
 - **Integration tests**: end-to-end flows including the coordinator API, P2P payments and payment channels (also against a real regtest Teranode and Arcade), SPV validation, token lifecycle, invoice persistence, wallet import, header sync
 - **Unit tests**: plugin registry, output specs, encryption, CDN sync, script builders
-- **Service tests**: ARC service, payment channels, address discovery, node RPC merkle proofs, WhatsOnChain TSC proofs
+- **Service tests**: ARC service, payment channels, address discovery, WhatsOnChain TSC proofs
 - **Core model tests**: UTXO, transaction, wallet state, commands, events
 - **Storage tests**: Isar schemas, wallet storage, PostgreSQL integration
 - **Actor and aggregate tests**: the actors, the channel, wallet and invoice aggregates, and their replies

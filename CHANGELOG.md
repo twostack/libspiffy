@@ -16,6 +16,7 @@ Breaking changes are marked **Breaking**; each says what to change.
   - The channel's request, its acceptance and a payment are asked of the channel manager: told with no sender, a refusal of any of them (an unknown wallet, a payment above the client's balance) reached nobody, and the app waited for a channel or payment that never came.
   - A coordinator built without channel events answers a channel command with an `ErrorEvent`; it dropped it.
   - A server's settlement timer closes its channel without registering a close request, so it cannot take the answer of a close the app asked for.
+- **Breaking: `NodeRpcDataSource` is removed**, as 4.7.0 announced. It read proofs with `gettxoutproof`, which only an SV Node serves; Teranode does not. Use `WhatsOnChainDataSource`, or a `BlockchainDataSource` of your own. The `svnode` test tag and its tests are gone with it (bead libspiffy-cquj).
 - **The README, the developer guide and `lib/coordinator.dart` teach `ask`**, with a request-to-reply table; `example/coordinator_example.dart` runs it offline. The guide said a wallet created without key material gets a generated mnemonic: libspiffy generates no keys, and the refusal now says what to provide. The localnet tests and their harness use `ask` for every request they wait on; `next<T>()` remains for events nobody requested (bead libspiffy-xc78.3).
 
 ## 4.7.0

@@ -24,13 +24,6 @@ tags:
     #   dart test -P localnet test/integration/localnet_channel_e2e_test.dart
     skip: "needs ../localnet-teranode; run with -P localnet"
 
-  svnode:
-    # Runs against an SV Node's JSON-RPC (:18332), as the retired ../localnet
-    # stack served it: NodeRpcDataSource reads proofs with gettxoutproof,
-    # which Teranode does not implement.
-    #   dart test -P svnode test/integration/node_rpc_data_source_test.dart
-    skip: "needs an SV Node RPC at :18332; run with -P svnode"
-
   arcade:
     # Runs against the BSV Association's public testnet Arcade and reads
     # testnet transactions from WhatsOnChain, so it runs only when asked for:
@@ -41,10 +34,6 @@ presets:
   localnet:
     tags:
       localnet:
-        skip: false
-  svnode:
-    tags:
-      svnode:
         skip: false
   arcade:
     tags:

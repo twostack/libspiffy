@@ -46,6 +46,29 @@ class ChannelP2PAdapter {
   final Map<String, ServerChannelInfo> _serverChannelInfo = {};
   final Set<String> _closingChannels = {};
 
+  /// The app's channel requests still to be answered, by what they ask and
+  /// the channel, oldest first: the channel manager answers a channel's
+  /// messages in the order it gets them (bead libspiffy-xc78.2).
+  final Map<(_Request, String), List<String>> _requests = {};
+
+  void _awaiting(_Request request, String channelId, String requestId) =>
+      (_requests[(request, channelId)] ??= []).add(requestId);
+
+  /// The oldest [request] for [channelId] still to be answered, now
+  /// answered; null when there is none (the step was not the app's request:
+  /// a peer's message, the settlement timer, the server's side of an open).
+  String? _answering(_Request request, String channelId) {
+    final waiting = _requests[(request, channelId)];
+    if (waiting == null || waiting.isEmpty) return null;
+    final requestId = waiting.removeAt(0);
+    if (waiting.isEmpty) _requests.remove((request, channelId));
+    return requestId;
+  }
+
+  /// How long the channel manager may take to answer a request it handles
+  /// itself (it may be busy broadcasting a funding transaction).
+  static const Duration _managerTimeout = Duration(seconds: 60);
+
   /// Work waiting behind a channel record being rebuilt (see [_sequenced]).
   Future<void> _queue = Future<void>.value();
   int _queued = 0;
@@ -479,6 +502,7 @@ class ChannelP2PAdapter {
     _emitEvent(coord.ErrorEvent(
       source: 'ChannelP2PAdapter',
       message: 'Channel $channelId rejected: $reason',
+      requestId: _answering(_Request.open, channelId),
     ));
   }
 
@@ -646,6 +670,8 @@ class ChannelP2PAdapter {
     _emitEvent(coord.ErrorEvent(
       source: 'ChannelP2PAdapter',
       message: 'Channel error${channelId != null ? ' ($channelId)' : ''}: $error',
+      // The counterparty gave up on the open this side is waiting for.
+      requestId: channelId == null ? null : _answering(_Request.open, channelId),
     ));
   }
 
@@ -833,6 +859,7 @@ class ChannelP2PAdapter {
       fundingTxId: event.fundingTxId,
       fundingAmountSats: event.initialClientBalanceSats.toInt() +
           event.initialServerBalanceSats.toInt(),
+      requestId: _answering(_Request.open, event.channelId),
     ));
   }
 
@@ -862,6 +889,7 @@ class ChannelP2PAdapter {
       sequence: event.sequenceNumber,
       clientBalance: event.newClientBalanceSats.toInt(),
       serverBalance: event.newServerBalanceSats.toInt(),
+      requestId: _answering(_Request.pay, event.channelId),
     ));
   }
 
@@ -928,6 +956,7 @@ class ChannelP2PAdapter {
       walletId: walletId,
       channelId: event.channelId,
       settlementTxId: event.settlementTxId,
+      requestId: _answering(_Request.close, event.channelId),
     ));
   }
 
@@ -939,6 +968,9 @@ class ChannelP2PAdapter {
   void handleOpenChannel(coord.OpenChannelCommand command) =>
       _sequenced(null, () => _openChannel(command));
 
+  /// Answered by the channel's [coord.ChannelOpenedEvent] once the server
+  /// accepted it and its funding is on the network, or by an
+  /// [coord.ErrorEvent] naming the request when a step fails.
   void _openChannel(coord.OpenChannelCommand command) {
     // A timestamp-derived id repeated within one millisecond (A-L1).
     final channelId = uniqueId('ch');
@@ -947,32 +979,74 @@ class ChannelP2PAdapter {
       clientPeerId: _myPeerId,
       serverPeerId: command.serverPeerId,
     );
+    _awaiting(_Request.open, channelId, command.requestId);
 
-    _channelManager.tell(InitiateChannelMessage(
-      channelId: channelId,
-      walletId: command.walletId,
-      clientPeerId: _myPeerId,
-      serverPeerId: command.serverPeerId,
-      fundingAmountSats: BigInt.from(command.fundingAmountSats),
-      lockTimeDurationSeconds: command.lockTimeDurationSeconds,
-      context: command.context,
-      counterpartyMarker: command.counterpartyMarker,
-    ));
+    // Asked, so a request the manager refuses (an unknown wallet, a key it
+    // cannot derive) is reported; told with no sender, its answer went
+    // nowhere and the app waited for a channel never requested.
+    unawaited(_askManager<ChannelInitiatedResponse>(
+      InitiateChannelMessage(
+        channelId: channelId,
+        walletId: command.walletId,
+        clientPeerId: _myPeerId,
+        serverPeerId: command.serverPeerId,
+        fundingAmountSats: BigInt.from(command.fundingAmountSats),
+        lockTimeDurationSeconds: command.lockTimeDurationSeconds,
+        context: command.context,
+        counterpartyMarker: command.counterpartyMarker,
+      ),
+    ).then((error) {
+      if (error != null) _reportFailure(channelId, 'requesting the channel', error, answers: _Request.open);
+    }));
+  }
+
+  /// Asks the channel manager, and resolves with why the answer is not a
+  /// success, or null.
+  Future<String?> _askManager<T extends ActorResponse>(Message message) async {
+    try {
+      final reply = await _channelManager.ask<Object>(message, _managerTimeout);
+      if (reply is ActorResponse && !reply.success) return reply.error ?? 'refused';
+      if (reply is! T) return 'answered with ${reply.runtimeType}';
+      return null;
+    } catch (e) {
+      return '$e';
+    }
   }
 
   /// Handle a request to make a payment over an open channel.
+  ///
+  /// Answered by the payment's [coord.ChannelPaymentEvent] once the channel
+  /// journals it and `payment_update` is handed to the transport, or by an
+  /// [coord.ErrorEvent] naming the request when the channel refuses it. The
+  /// payment was told with no sender, so a refusal (more than the client's
+  /// balance, a closed channel) was not reported at all.
   void handleMakePayment(coord.ChannelPayCommand command) {
-    _channelManager.tell(RecordPaymentMessage(
+    _awaiting(_Request.pay, command.channelId, command.requestId);
+    unawaited(_askManager<PaymentRecordedResponse>(RecordPaymentMessage(
       channelId: command.channelId,
       walletId: command.walletId,
       amountSats: BigInt.from(command.amountSats),
       purpose: command.purpose,
       invoiceId: command.invoiceId,
-    ));
+    )).then((error) {
+      if (error == null) return;
+      final message = 'Channel ${command.channelId}: the payment was refused: $error';
+      _log.warning(message);
+      _emitEvent(coord.ErrorEvent(
+        walletId: command.walletId,
+        source: 'ChannelP2PAdapter',
+        message: message,
+        requestId: _answering(_Request.pay, command.channelId),
+      ));
+    }));
   }
 
   /// Handle a request to close a channel.
+  ///
+  /// Answered by the channel's [coord.ChannelClosedEvent], or by an
+  /// [coord.ErrorEvent] naming the request when the close fails.
   void handleCloseChannel(coord.CloseChannelCommand command) {
+    _awaiting(_Request.close, command.channelId, command.requestId);
     _channelManager.tell(
         CloseChannelMessage(
           channelId: command.channelId,
@@ -989,20 +1063,29 @@ class ChannelP2PAdapter {
   /// reported by its [ch.ChannelClosedEvent].
   void handleChannelCloseAnswered(ChannelClosedResponse response) {
     if (!response.success) {
-      _reportFailure(response.channelId, 'closing the channel', response.error);
+      _reportFailure(response.channelId, 'closing the channel', response.error, answers: _Request.close);
     }
   }
 
-  /// The manager's answer to an expiry: a failure (a server whose
-  /// settlement ARC did not take, bead libspiffy-u6q6) is reported.
+  /// The manager's answer to an expiry, which answers the
+  /// [coord.ExpireChannelCommand]; a failure (a server whose settlement ARC
+  /// did not take, bead libspiffy-u6q6) says why.
   void handleChannelExpiryAnswered(ChannelExpiredResponse response) {
     if (!response.success) {
-      _reportFailure(response.channelId, 'recording the expiry', response.error);
+      _log.warning('Channel ${response.channelId}: recording the expiry failed: ${response.error}');
     }
+    _emitEvent(coord.ChannelExpiredEvent(
+      walletId: _walletFor(response.channelId),
+      channelId: response.channelId,
+      success: response.success,
+      error: response.error,
+      requestId: _answering(_Request.expire, response.channelId),
+    ));
   }
 
   /// Handle a request to record channel expiry (lockTime elapsed).
   void handleExpireChannel(coord.ExpireChannelCommand command) {
+    _awaiting(_Request.expire, command.channelId, command.requestId);
     _channelManager.tell(
         ExpireChannelMessage(
           channelId: command.channelId,
@@ -1021,6 +1104,7 @@ class ChannelP2PAdapter {
   /// it wait behind a rebuild would only delay a transaction that is already
   /// past its lockTime.
   void handleClaimRefund(coord.ClaimChannelRefundCommand command) {
+    _awaiting(_Request.refund, command.channelId, command.requestId);
     _channelManager.tell(
         ClaimRefundMessage(
           channelId: command.channelId,
@@ -1049,6 +1133,7 @@ class ChannelP2PAdapter {
       refundTxId: response.refundTxId,
       success: response.success,
       error: response.error,
+      requestId: _answering(_Request.refund, response.channelId),
     ));
   }
 
@@ -1066,12 +1151,14 @@ class ChannelP2PAdapter {
   /// sends the peer a `channel_error`: the counterparty was told when the
   /// original attempt failed, and a repair that fails again has abandoned
   /// nothing.
-  void handleRetryChannelFunding(coord.RetryChannelFundingCommand command) =>
-      _sequenced(
-          command.channelId,
-          () => _channelManager.tell(
-              RetryChannelFundingMessage(channelId: command.channelId),
-              sender: _replyTo));
+  void handleRetryChannelFunding(coord.RetryChannelFundingCommand command) {
+    _awaiting(_Request.retry, command.channelId, command.requestId);
+    _sequenced(
+        command.channelId,
+        () => _channelManager.tell(
+            RetryChannelFundingMessage(channelId: command.channelId),
+            sender: _replyTo));
+  }
 
   /// Handle a request to send `channel_open` again (bead libspiffy-1n3).
   ///
@@ -1084,12 +1171,14 @@ class ChannelP2PAdapter {
   /// refusal would reach [handleChannelOpenedResponse], which tells the
   /// counterparty the channel failed. The manager only reads state here and
   /// journals nothing.
-  void handleResendChannelOpen(coord.ResendChannelOpenCommand command) =>
-      _sequenced(
-          command.channelId,
-          () => _channelManager.tell(
-              ResendChannelOpenMessage(channelId: command.channelId),
-              sender: _replyTo));
+  void handleResendChannelOpen(coord.ResendChannelOpenCommand command) {
+    _awaiting(_Request.resend, command.channelId, command.requestId);
+    _sequenced(
+        command.channelId,
+        () => _channelManager.tell(
+            ResendChannelOpenMessage(channelId: command.channelId),
+            sender: _replyTo));
+  }
 
   /// Handle acceptance of an incoming channel request (we are server).
   ///
@@ -1115,7 +1204,9 @@ class ChannelP2PAdapter {
       serverPeerId: _myPeerId,
     );
 
-    _channelManager.tell(AcceptChannelMessage(
+    // Asked, and answered with the manager's answer: told with no sender, a
+    // refused acceptance (an unknown wallet) went nowhere.
+    unawaited(_askManager<ChannelAcceptedResponse>(AcceptChannelMessage(
       channelId: command.channelId,
       walletId: command.walletId,
       clientPeerId: pending.clientPeerId,
@@ -1126,7 +1217,13 @@ class ChannelP2PAdapter {
       context: pending.context,
       counterpartyMarker: command.counterpartyMarker,
       serverPeerId: _myPeerId.isEmpty ? null : _myPeerId,
-    ));
+    )).then((error) => _emitEvent(coord.ChannelAcceptedEvent(
+          walletId: command.walletId,
+          channelId: command.channelId,
+          success: error == null,
+          error: error,
+          requestId: command.requestId,
+        ))));
   }
 
   /// Handle rejection of an incoming channel request.
@@ -1143,6 +1240,8 @@ class ChannelP2PAdapter {
     }
 
     _cleanupChannel(command.channelId);
+    _emitEvent(coord.ChannelRejectedEvent(
+        channelId: command.channelId, clientTold: pending != null, requestId: command.requestId));
   }
 
   /// Handle a funding transaction that has been built by the wallet.
@@ -1163,7 +1262,7 @@ class ChannelP2PAdapter {
       // The server accepted this channel and is waiting for the refund it
       // must sign; it never arrives (bead libspiffy-kyw).
       _reportFailure(channelId, 'building the funding transaction',
-          response.error, tellPeer: true);
+          response.error, tellPeer: true, answers: _Request.open);
       return;
     }
 
@@ -1222,7 +1321,7 @@ class ChannelP2PAdapter {
     // so the peer is not asked to (libspiffy-lhd).
     if (!response.success) {
       _reportFailure(channelId, 'building the refund transaction',
-          response.error, tellPeer: true);
+          response.error, tellPeer: true, answers: _Request.open);
       return;
     }
 
@@ -1245,7 +1344,8 @@ class ChannelP2PAdapter {
               'recording the server refund signature', response.error,
               // The server signed and waits for channel_open; this client
               // will not send one.
-              tellPeer: true));
+              tellPeer: true,
+              answers: _Request.open));
     }
   }
 
@@ -1283,7 +1383,8 @@ class ChannelP2PAdapter {
               // The server refused the funding transaction, or the client
               // could not broadcast it: either way the counterparty is
               // waiting for a channel that is not coming (libspiffy-kyw).
-              tellPeer: true));
+              tellPeer: true,
+              answers: _Request.open));
     }
   }
 
@@ -1307,6 +1408,7 @@ class ChannelP2PAdapter {
       fundingTxId: response.fundingTxId,
       success: response.success,
       error: response.error,
+      requestId: _answering(_Request.retry, response.channelId),
     ));
   }
 
@@ -1333,6 +1435,7 @@ class ChannelP2PAdapter {
         channelId: channelId,
         success: false,
         error: error,
+        requestId: _answering(_Request.resend, channelId),
       ));
     }
 
@@ -1362,6 +1465,7 @@ class ChannelP2PAdapter {
       toPeerId: peerId,
       fundingTxId: response.fundingTxId,
       success: true,
+      requestId: _answering(_Request.resend, channelId),
     ));
   }
 
@@ -1384,8 +1488,11 @@ class ChannelP2PAdapter {
   /// step this reports is one this side has abandoned, and the peer is
   /// waiting for what comes next (bead libspiffy-kyw). A failure the peer
   /// cannot be waiting for reports locally only.
+  ///
+  /// [answers] is the kind of app request the failed step ends, if one is
+  /// waiting for this channel: the error then carries its id.
   void _reportFailure(String channelId, String step, String? error,
-      {bool tellPeer = false}) {
+      {bool tellPeer = false, _Request? answers}) {
     final message =
         'Channel $channelId: $step failed: ${error ?? 'unknown error'}';
     _log.warning(message);
@@ -1393,6 +1500,7 @@ class ChannelP2PAdapter {
       walletId: _walletFor(channelId),
       source: 'ChannelP2PAdapter',
       message: message,
+      requestId: answers == null ? null : _answering(answers, channelId),
     ));
     if (tellPeer) _tellPeerChannelError(channelId, message);
   }
@@ -1467,6 +1575,9 @@ class ChannelP2PAdapter {
 // =============================================================================
 // HELPER CLASSES
 // =============================================================================
+
+/// What an app's channel request asks, for matching its answer to it.
+enum _Request { open, pay, close, expire, refund, retry, resend }
 
 /// Tracks which peers are involved in a channel.
 class PeerInfo {

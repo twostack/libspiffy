@@ -750,6 +750,72 @@ void main() {
       expect(claimed.single.success, isTrue);
     });
   });
+
+  // Bead libspiffy-xc78.2: a channel request's answer carries the request's
+  // id, so `WalletCoordinator.ask` returns it to the caller that asked.
+  group('xc78.2: each answer names the request it answers', () {
+    const channelId = 'chan-answers';
+
+    test('a refund claim, a funding retry, a resend and an expiry', () async {
+      // A channel the adapter knows: work for an unknown one waits for its
+      // record to be rebuilt from the channel manager.
+      channelEvents.add(ch.ChannelRequestedEvent(
+        channelId: channelId,
+        walletId: 'client-wallet',
+        clientPeerId: 'client-peer',
+        serverPeerId: 'server-peer',
+        clientPubKeyHex: '02' * 33,
+        clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+        derivationIndex: 7,
+        fundingAmountSats: BigInt.from(50000),
+        lockTimeUnix: 1700000000,
+      ));
+      await Future.delayed(const Duration(milliseconds: 50));
+      final claim = coord.ClaimChannelRefundCommand(channelId: channelId);
+      final retry = coord.RetryChannelFundingCommand(channelId: channelId);
+      final resend = coord.ResendChannelOpenCommand(channelId: channelId);
+      final expire = coord.ExpireChannelCommand(channelId: channelId, observedBy: 'client');
+      adapter.handleClaimRefund(claim);
+      adapter.handleRetryChannelFunding(retry);
+      adapter.handleResendChannelOpen(resend);
+      adapter.handleExpireChannel(expire);
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      adapter.handleChannelRefundClaimed(ChannelRefundClaimedResponse(channelId: channelId, success: true));
+      adapter.handleChannelFundingRetried(ChannelFundingRetriedResponse(channelId: channelId, success: false, error: 'x'));
+      adapter.handleChannelOpenResent(ChannelOpenResentResponse(channelId: channelId, success: false, error: 'y'));
+      adapter.handleChannelExpiryAnswered(ChannelExpiredResponse(channelId: channelId, success: true));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      expect(emitted.whereType<coord.ChannelRefundClaimedEvent>().single.requestId, claim.requestId);
+      expect(emitted.whereType<coord.ChannelFundingRetriedEvent>().single.requestId, retry.requestId);
+      expect(emitted.whereType<coord.ChannelOpenResentEvent>().single.requestId, resend.requestId);
+      final expired = emitted.whereType<coord.ChannelExpiredEvent>().single;
+      expect(expired.requestId, expire.requestId);
+      expect(expired.success, isTrue);
+    });
+
+    test('two claims of one channel are answered in the order they were made', () async {
+      final first = coord.ClaimChannelRefundCommand(channelId: channelId);
+      final second = coord.ClaimChannelRefundCommand(channelId: channelId);
+      adapter.handleClaimRefund(first);
+      adapter.handleClaimRefund(second);
+      adapter.handleChannelRefundClaimed(ChannelRefundClaimedResponse(channelId: channelId, success: true));
+      adapter.handleChannelRefundClaimed(
+          ChannelRefundClaimedResponse(channelId: channelId, success: false, error: 'already claimed'));
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      expect(emitted.whereType<coord.ChannelRefundClaimedEvent>().map((e) => (e.requestId, e.success)),
+          [(first.requestId, true), (second.requestId, false)]);
+    });
+
+    test('an answer nobody asked for names no request', () async {
+      adapter.handleChannelRefundClaimed(ChannelRefundClaimedResponse(channelId: channelId, success: true));
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      expect(emitted.whereType<coord.ChannelRefundClaimedEvent>().single.requestId, isNull);
+    });
+  });
 }
 
 class _Received {

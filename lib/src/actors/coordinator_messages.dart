@@ -100,6 +100,10 @@ abstract class CoordinatorRequest<R extends CoordinatorReply> implements Message
   /// and a receive per proven spender.
   static const foreignSpendsTimeout = Duration(minutes: 15);
 
+  /// A channel's open or close: messages to and from the counterparty, over
+  /// the app's transport, and a broadcast ARC answers.
+  static const channelTimeout = Duration(minutes: 5);
+
   /// An import: the wallet's whole history, fetched and proven.
   static const importTimeout = Duration(hours: 1);
 
@@ -1100,7 +1104,7 @@ class CancelDeferredPaymentCommand extends CoordinatorRequest<DeferredPaymentCan
 // ==========================================================================
 
 /// Open a payment channel with a peer
-class OpenChannelCommand implements Message {
+class OpenChannelCommand extends CoordinatorRequest<ChannelOpenedEvent> {
   final String walletId;
   final String serverPeerId;
   final int fundingAmountSats;
@@ -1127,20 +1131,17 @@ class OpenChannelCommand implements Message {
     required this.lockTimeDurationSeconds,
     this.context,
     this.counterpartyMarker,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'open-channel-$walletId-${DateTime.now().millisecondsSinceEpoch}';
+  Duration get replyTimeout => CoordinatorRequest.channelTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Make a payment over an open channel
-class ChannelPayCommand implements Message {
+class ChannelPayCommand extends CoordinatorRequest<ChannelPaymentEvent> {
   final String channelId;
   final String walletId;
   final int amountSats;
@@ -1153,33 +1154,24 @@ class ChannelPayCommand implements Message {
     required this.amountSats,
     this.purpose,
     this.invoiceId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'channel-pay-$channelId';
-  @override
   Map<String, dynamic> get metadata => {'channelId': channelId, 'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Close a payment channel
-class CloseChannelCommand implements Message {
+class CloseChannelCommand extends CoordinatorRequest<ChannelClosedEvent> {
   final String channelId;
   final String? reason;
 
-  CloseChannelCommand({required this.channelId, this.reason});
+  CloseChannelCommand({required this.channelId, this.reason, super.requestId});
 
   @override
-  String get correlationId => 'close-channel-$channelId';
+  Duration get replyTimeout => CoordinatorRequest.channelTimeout;
   @override
   Map<String, dynamic> get metadata => {'channelId': channelId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Record that a payment channel has expired (lockTime elapsed).
@@ -1188,7 +1180,7 @@ class CloseChannelCommand implements Message {
 /// channel adapter and ultimately emits [ChannelExpiredEvent] through the
 /// aggregate so the read model picks up the transition. Distinct from
 /// [CloseChannelCommand] which is the cooperative-close pathway.
-class ExpireChannelCommand implements Message {
+class ExpireChannelCommand extends CoordinatorRequest<ChannelExpiredEvent> {
   final String channelId;
   final String observedBy; // 'client' or 'server'
   final String? settlementOrRefundTxId;
@@ -1197,16 +1189,13 @@ class ExpireChannelCommand implements Message {
     required this.channelId,
     required this.observedBy,
     this.settlementOrRefundTxId,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'expire-channel-$channelId';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'channelId': channelId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Claim the refund of an expired channel (non-cooperative close).
@@ -1227,7 +1216,7 @@ class ExpireChannelCommand implements Message {
 /// There is no replace-by-fee on BSV. A broadcast rejected as a double spend
 /// is a terminal answer — the response says so and nothing is journaled as
 /// claimed; it is never retried at a higher fee.
-class ClaimChannelRefundCommand implements Message {
+class ClaimChannelRefundCommand extends CoordinatorRequest<ChannelRefundClaimedEvent> {
   final String channelId;
 
   /// The refund to claim. Null uses the fully signed refund the channel
@@ -1236,16 +1225,12 @@ class ClaimChannelRefundCommand implements Message {
   /// the aggregate checks).
   final String? refundTxHex;
 
-  ClaimChannelRefundCommand({required this.channelId, this.refundTxHex});
+  ClaimChannelRefundCommand({required this.channelId, this.refundTxHex, super.requestId});
 
   @override
-  String get correlationId => 'claim-refund-$channelId';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'channelId': channelId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 // --- Repairing an open that did not finish (bead libspiffy-1n3) ---
@@ -1297,19 +1282,15 @@ class ClaimChannelRefundCommand implements Message {
 /// guarded by the journal and the wallet read model alike.
 ///
 /// Answered with [ChannelFundingRetriedEvent], on success and failure.
-class RetryChannelFundingCommand implements Message {
+class RetryChannelFundingCommand extends CoordinatorRequest<ChannelFundingRetriedEvent> {
   final String channelId;
 
-  RetryChannelFundingCommand({required this.channelId});
+  RetryChannelFundingCommand({required this.channelId, super.requestId});
 
   @override
-  String get correlationId => 'retry-channel-funding-$channelId';
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'channelId': channelId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Send `channel_open` again for a channel that is already open on this
@@ -1331,23 +1312,17 @@ class RetryChannelFundingCommand implements Message {
 /// that is not open on this side or that this node is not the client of.
 ///
 /// Answered with [ChannelOpenResentEvent], on success and failure.
-class ResendChannelOpenCommand implements Message {
+class ResendChannelOpenCommand extends CoordinatorRequest<ChannelOpenResentEvent> {
   final String channelId;
 
-  ResendChannelOpenCommand({required this.channelId});
+  ResendChannelOpenCommand({required this.channelId, super.requestId});
 
   @override
-  String get correlationId => 'resend-channel-open-$channelId';
-  @override
   Map<String, dynamic> get metadata => {'channelId': channelId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Accept an incoming channel request
-class AcceptChannelCommand implements Message {
+class AcceptChannelCommand extends CoordinatorRequest<ChannelAcceptedEvent> {
   final String channelId;
   final String walletId;
   final String clientPeerId;
@@ -1378,33 +1353,22 @@ class AcceptChannelCommand implements Message {
     required this.fundingAmountSats,
     required this.lockTimeUnix,
     this.counterpartyMarker,
+    super.requestId,
   });
 
   @override
-  String get correlationId => 'accept-channel-$channelId';
-  @override
   Map<String, dynamic> get metadata => {'channelId': channelId, 'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// Reject an incoming channel request
-class RejectChannelCommand implements Message {
+class RejectChannelCommand extends CoordinatorRequest<ChannelRejectedEvent> {
   final String channelId;
   final String? reason;
 
-  RejectChannelCommand({required this.channelId, this.reason});
+  RejectChannelCommand({required this.channelId, this.reason, super.requestId});
 
   @override
-  String get correlationId => 'reject-channel-$channelId';
-  @override
   Map<String, dynamic> get metadata => {'channelId': channelId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
 }
 
 /// An inbound peer-to-peer message the app received on its own transport and
@@ -2784,9 +2748,11 @@ class ChannelRequestReceivedEvent extends CoordinatorEvent {
 }
 
 /// Channel opened successfully
-class ChannelOpenedEvent extends CoordinatorEvent {
+class ChannelOpenedEvent extends CoordinatorReply {
   @override
   final String walletId;
+  @override
+  final String? requestId;
   final String channelId;
   final String? fundingTxId;
   final int fundingAmountSats;
@@ -2796,7 +2762,11 @@ class ChannelOpenedEvent extends CoordinatorEvent {
     required this.channelId,
     this.fundingTxId,
     required this.fundingAmountSats,
+    this.requestId,
   });
+  /// Never: a failure to answer arrives as an [ErrorEvent].
+  @override
+  String? get failure => null;
 }
 
 /// The outcome of a [ClaimChannelRefundCommand] (bead libspiffy-cqc, the
@@ -2807,9 +2777,11 @@ class ChannelOpenedEvent extends CoordinatorEvent {
 /// which surfaces through the channel's own `ChannelClosedEvent`, a claim
 /// has no event the adapter forwards. Without this the host could not tell
 /// a refund that landed from one the network refused as a double spend.
-class ChannelRefundClaimedEvent extends CoordinatorEvent {
+class ChannelRefundClaimedEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String channelId;
 
   /// The refund that was broadcast and journaled; null when the claim
@@ -2825,7 +2797,60 @@ class ChannelRefundClaimedEvent extends CoordinatorEvent {
     this.refundTxId,
     required this.success,
     this.error,
+    this.requestId,
   });
+  @override
+  String? get failure => success ? null : error ?? 'The refund was not claimed';
+}
+
+/// Answer to [AcceptChannelCommand]: the acceptance is journaled and
+/// `channel_accept` handed to the app's transport for the client. The
+/// channel opens when the client funds it ([ChannelOpenedEvent]).
+class ChannelAcceptedEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final String channelId;
+  final bool success;
+  final String? error;
+
+  ChannelAcceptedEvent({required this.walletId, required this.channelId, required this.success, this.error, this.requestId});
+  @override
+  String? get failure => success ? null : error ?? 'The channel was not accepted';
+}
+
+/// Answer to [RejectChannelCommand]: `channel_reject` is handed to the app's
+/// transport for the client, when the request is one this side holds.
+class ChannelRejectedEvent extends CoordinatorReply {
+  @override
+  String? get walletId => null;
+  @override
+  final String? requestId;
+  final String channelId;
+
+  /// Whether a request from the client was held, and the client told.
+  final bool clientTold;
+
+  ChannelRejectedEvent({required this.channelId, required this.clientTold, this.requestId});
+  /// Never: a failure to answer arrives as an [ErrorEvent].
+  @override
+  String? get failure => null;
+}
+
+/// Answer to [ExpireChannelCommand]: the expiry is journaled, or why not.
+class ChannelExpiredEvent extends CoordinatorReply {
+  @override
+  final String? walletId;
+  @override
+  final String? requestId;
+  final String channelId;
+  final bool success;
+  final String? error;
+
+  ChannelExpiredEvent({this.walletId, required this.channelId, required this.success, this.error, this.requestId});
+  @override
+  String? get failure => success ? null : error ?? 'The expiry was not recorded';
 }
 
 /// The outcome of a [RetryChannelFundingCommand] (bead libspiffy-1n3).
@@ -2839,9 +2864,11 @@ class ChannelRefundClaimedEvent extends CoordinatorEvent {
 /// nothing, so a retry that fails again leaves the channel exactly as it
 /// was, its inputs still reserved for the same transaction, ready for
 /// another retry.
-class ChannelFundingRetriedEvent extends CoordinatorEvent {
+class ChannelFundingRetriedEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String channelId;
 
   /// The funding transaction that was re-broadcast; null when the retry was
@@ -2857,7 +2884,10 @@ class ChannelFundingRetriedEvent extends CoordinatorEvent {
     this.fundingTxId,
     required this.success,
     this.error,
+    this.requestId,
   });
+  @override
+  String? get failure => success ? null : error ?? 'The funding was not broadcast';
 }
 
 /// The outcome of a [ResendChannelOpenCommand] (bead libspiffy-1n3).
@@ -2871,9 +2901,11 @@ class ChannelFundingRetriedEvent extends CoordinatorEvent {
 /// no counterparty peer is known — is reported here only. No
 /// `channel_error` is sent: a re-send that cannot happen is not a channel
 /// that has been abandoned.
-class ChannelOpenResentEvent extends CoordinatorEvent {
+class ChannelOpenResentEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String channelId;
 
   /// The peer `channel_open` was re-sent to; null when it was not sent.
@@ -2892,13 +2924,18 @@ class ChannelOpenResentEvent extends CoordinatorEvent {
     this.fundingTxId,
     required this.success,
     this.error,
+    this.requestId,
   });
+  @override
+  String? get failure => success ? null : error ?? 'channel_open was not re-sent';
 }
 
 /// Payment made or received on a channel
-class ChannelPaymentEvent extends CoordinatorEvent {
+class ChannelPaymentEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String channelId;
   final int amountSats;
   final int sequence;
@@ -2912,13 +2949,19 @@ class ChannelPaymentEvent extends CoordinatorEvent {
     required this.sequence,
     required this.clientBalance,
     required this.serverBalance,
+    this.requestId,
   });
+  /// Never: a failure to answer arrives as an [ErrorEvent].
+  @override
+  String? get failure => null;
 }
 
 /// Channel closed
-class ChannelClosedEvent extends CoordinatorEvent {
+class ChannelClosedEvent extends CoordinatorReply {
   @override
   final String? walletId;
+  @override
+  final String? requestId;
   final String channelId;
   final String? reason;
   final String? settlementTxId;
@@ -2928,7 +2971,11 @@ class ChannelClosedEvent extends CoordinatorEvent {
     required this.channelId,
     this.reason,
     this.settlementTxId,
+    this.requestId,
   });
+  /// Never: a failure to answer arrives as an [ErrorEvent].
+  @override
+  String? get failure => null;
 }
 
 /// One channel that started opening and never finished (bead

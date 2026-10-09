@@ -760,8 +760,24 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is ShutdownCommand) {
         await _handleShutdown();
       }
-      // Channel commands
-      else if (message is OpenChannelCommand) {
+      // Channel commands. A coordinator built without channel events has no
+      // adapter, and answers that it cannot.
+      else if (_channelAdapter == null &&
+          (message is OpenChannelCommand ||
+              message is ChannelPayCommand ||
+              message is CloseChannelCommand ||
+              message is ExpireChannelCommand ||
+              message is ClaimChannelRefundCommand ||
+              message is RetryChannelFundingCommand ||
+              message is ResendChannelOpenCommand ||
+              message is AcceptChannelCommand ||
+              message is RejectChannelCommand)) {
+        _emitEvent(ErrorEvent(
+          source: 'WalletCoordinatorActor',
+          message: 'This coordinator has no payment channels: it was built without channel events',
+          requestId: (message as CoordinatorRequest).requestId,
+        ));
+      } else if (message is OpenChannelCommand) {
         _channelAdapter?.handleOpenChannel(message);
       } else if (message is ChannelPayCommand) {
         _channelAdapter?.handleMakePayment(message);

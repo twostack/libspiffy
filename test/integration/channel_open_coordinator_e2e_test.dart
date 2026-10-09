@@ -1971,4 +1971,96 @@ void main() {
       expect(await storage.getBalance(aliceWalletId), BigInt.from(200000000));
     }, timeout: const Timeout(Duration(seconds: 120)));
   });
+
+  group('libspiffy-xc78.2: channel requests are answered through ask', () {
+    const wait = Duration(seconds: 40);
+
+    /// with [onRequest].
+    Future<(String, String)> wallets() async {
+      final ts = DateTime.now().microsecondsSinceEpoch;
+      final aliceWalletId = 'alice-$ts';
+      final bobWalletId = 'bob-$ts';
+      await _createWallet(alice, aliceWalletId, xpriv: kTestXpriv);
+      await _createWallet(bob, bobWalletId, mnemonic: _bobMnemonic);
+      await fundWallet(
+        walletManager: alice.system.walletManager,
+        actorSystem: alice.actorSystem,
+        walletId: aliceWalletId,
+        amount: BigInt.from(200000000),
+      );
+      return (aliceWalletId, bobWalletId);
+    }
+
+    Future<Object> failureOf(Future<Object?> asked) =>
+        asked.then<Object>((answer) => 'answered with $answer', onError: (Object e) => e);
+
+    test('open, accept, pay and close each return their own reply', () async {
+      final (aliceWalletId, bobWalletId) = await wallets();
+      final accepted = Completer<ChannelAcceptedEvent>();
+      bob.wire(() => bob.subs.add(bob.coordinator.on<ChannelRequestReceivedEvent>().listen((r) {
+            accepted.complete(bob.coordinator.ask(
+                AcceptChannelCommand(
+                  channelId: r.channelId,
+                  walletId: bobWalletId,
+                  clientPeerId: r.clientPeerId,
+                  clientPubKey: r.clientPubKey,
+                  clientAddress: r.clientAddress,
+                  fundingAmountSats: r.fundingAmountSats,
+                  lockTimeUnix: r.lockTimeUnix,
+                ),
+                timeout: wait));
+          })));
+
+      final open = OpenChannelCommand(
+          walletId: aliceWalletId, serverPeerId: _bobPeer, fundingAmountSats: 100000, lockTimeDurationSeconds: 86400);
+      final opened = await alice.coordinator.ask(open, timeout: wait);
+      expect(opened.requestId, open.requestId);
+      expect(opened.fundingAmountSats, 100000);
+      final acceptance = await accepted.future;
+      expect(acceptance.success, isTrue);
+      expect(acceptance.channelId, opened.channelId);
+
+      final pay = ChannelPayCommand(channelId: opened.channelId, walletId: aliceWalletId, amountSats: 3000);
+      final paid = await alice.coordinator.ask(pay, timeout: wait);
+      expect(paid.requestId, pay.requestId);
+      expect((paid.sequence, paid.serverBalance), (1, 3000));
+
+      // More than the client holds in the channel is refused, and the
+      // refusal names the request.
+      final refused = await failureOf(alice.coordinator.ask(
+          ChannelPayCommand(channelId: opened.channelId, walletId: aliceWalletId, amountSats: 1000000),
+          timeout: wait));
+      expect(refused, isA<CoordinatorFailure>().having((f) => f.event, 'event', isA<ErrorEvent>()));
+
+      final close = CloseChannelCommand(channelId: opened.channelId);
+      final closed = await bob.coordinator.ask(close, timeout: wait);
+      expect(closed.requestId, close.requestId);
+      expect(closed.settlementTxId, isNotNull);
+    }, timeout: const Timeout(Duration(seconds: 120)));
+
+    test('a request the server rejects fails the open, and the rejection is answered', () async {
+      final (aliceWalletId, _) = await wallets();
+      final rejected = Completer<ChannelRejectedEvent>();
+      bob.wire(() => bob.subs.add(bob.coordinator.on<ChannelRequestReceivedEvent>().listen((r) {
+            rejected.complete(bob.coordinator.ask(RejectChannelCommand(channelId: r.channelId, reason: 'full'), timeout: wait));
+          })));
+
+      final failure = await failureOf(alice.coordinator.ask(
+          OpenChannelCommand(
+              walletId: aliceWalletId, serverPeerId: _bobPeer, fundingAmountSats: 100000, lockTimeDurationSeconds: 86400),
+          timeout: wait));
+
+      expect((await rejected.future).clientTold, isTrue);
+      expect(failure, isA<CoordinatorFailure>().having((f) => f.message, 'message', contains('full')));
+    }, timeout: const Timeout(Duration(seconds: 120)));
+
+    test('an open from a wallet the node does not have fails at once', () async {
+      final failure = await failureOf(alice.coordinator.ask(
+          OpenChannelCommand(
+              walletId: 'no-such-wallet', serverPeerId: _bobPeer, fundingAmountSats: 100000, lockTimeDurationSeconds: 86400),
+          timeout: wait));
+
+      expect(failure, isA<CoordinatorFailure>().having((f) => f.message, 'message', contains('requesting the channel')));
+    });
+  });
 }

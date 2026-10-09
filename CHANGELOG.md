@@ -11,6 +11,10 @@ Breaking changes are marked **Breaking**; each says what to change.
   - **Breaking:** `RefreshWalletCommand` is removed: it refreshed nothing and announced that it had. `PaymentReadyEvent.error` and `ProvisioningCompleteEvent.error`, constructors nothing called, are removed.
   - A `StoreHeadersCommand` whose batch throws is answered, with nothing stored; it was not answered at all.
   - Every coordinator event takes its `eventTimestamp` when it is made; it was the time it was read.
+- **Channel commands are answered through `ask` too.** `OpenChannelCommand` is answered with the channel's `ChannelOpenedEvent` (5 minute default timeout: the counterparty and the funding broadcast are waited for), `ChannelPayCommand` with its `ChannelPaymentEvent`, `CloseChannelCommand` with `ChannelClosedEvent`, `ClaimChannelRefundCommand`, `RetryChannelFundingCommand` and `ResendChannelOpenCommand` with the events they had; a step of an open or close that fails, and the counterparty's `channel_reject` or `channel_error` during an open, is an `ErrorEvent` naming the request. The adapter answers a channel's requests of one kind in the order they were made (bead libspiffy-xc78.2).
+  - **Breaking:** `AcceptChannelCommand` is answered with a new `ChannelAcceptedEvent`, `RejectChannelCommand` with `ChannelRejectedEvent`, and `ExpireChannelCommand` with `ChannelExpiredEvent`, which carries a failed expiry that was an `ErrorEvent`.
+  - The channel's request, its acceptance and a payment are asked of the channel manager: told with no sender, a refusal of any of them (an unknown wallet, a payment above the client's balance) reached nobody, and the app waited for a channel or payment that never came.
+  - A coordinator built without channel events answers a channel command with an `ErrorEvent`; it dropped it.
 
 ## 4.7.0
 

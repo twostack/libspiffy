@@ -41,7 +41,6 @@ void main() {
   late String aliceWallet;
   late String carolWallet;
   String? unavailable;
-  var requests = 0;
 
   final carolIdentity = utf8.encode('carol-peer|epoch-0');
 
@@ -83,17 +82,12 @@ void main() {
 
   /// Carol's anchor key, and her signature binding it to her identity.
   Future<String> publishAnchor(LocalnetNode carol) async {
-    final anchor = carol.next<AnchorPublicKeyEvent>((e) => e.walletId == carolWallet);
-    carol.coordinator.tell(IssueAnchorKeyCommand(walletId: carolWallet, anchorContext: carolIdentity));
-    final key = await anchor;
-    expect(key.success, isTrue, reason: key.error);
+    final key =
+        await carol.coordinator.ask(IssueAnchorKeyCommand(walletId: carolWallet, anchorContext: carolIdentity));
 
     final message = utf8.encode('overmedia:register_payment_pubkey:carol-peer:${key.publicKey}');
-    final signed = carol.next<AnchorSignedEvent>((e) => e.walletId == carolWallet);
-    carol.coordinator
-        .tell(SignWithAnchorKeyCommand(walletId: carolWallet, anchorContext: carolIdentity, message: message));
-    final signature = await signed;
-    expect(signature.success, isTrue, reason: signature.error);
+    final signature = await carol.coordinator
+        .ask(SignWithAnchorKeyCommand(walletId: carolWallet, anchorContext: carolIdentity, message: message));
     expect(
         DartSVCryptoService().verifySignature(dartsv.SVPublicKey.fromHex(key.publicKey!),
             dartsv.SVSignature.fromDER(signature.signatureDer!), Uint8List.fromList(dartsv.sha256(message))),
@@ -101,60 +95,46 @@ void main() {
     return key.publicKey!;
   }
 
-  Future<Type42Destination> derive(String anchor, {List<int>? context}) async {
-    final requestId = 'derive-${requests++}';
-    final derived = alice.next<Type42DestinationEvent>((e) => e.requestId == requestId);
-    alice.coordinator.tell(DeriveType42DestinationCommand(
-        walletId: aliceWallet, anchorPublicKey: anchor, anchorContext: context, requestId: requestId));
-    final event = await derived;
-    expect(event.success, isTrue, reason: event.error);
-    return event.destination!;
-  }
+  Future<Type42Destination> derive(String anchor, {List<int>? context}) async =>
+      (await alice.coordinator.ask(
+              DeriveType42DestinationCommand(walletId: aliceWallet, anchorPublicKey: anchor, anchorContext: context)))
+          .destination!;
 
-  Future<PaymentReadyEvent> pay(LocalnetNode payer, String walletId, String invoiceId, String address, int amount) async {
-    final ready = payer.next<PaymentReadyEvent>((e) => e.invoiceId == invoiceId);
-    payer.coordinator.tell(PayInvoiceCommand(
-      walletId: walletId,
-      invoiceId: invoiceId,
-      addresses: [address],
-      amount: BigInt.from(amount),
-    ));
-    final payment = await ready;
-    expect(payment.success, isTrue, reason: payment.error);
-    return payment;
-  }
+  Future<PaymentReadyEvent> pay(LocalnetNode payer, String walletId, String invoiceId, String address, int amount) =>
+      payer.coordinator.ask(PayInvoiceCommand(
+        walletId: walletId,
+        invoiceId: invoiceId,
+        addresses: [address],
+        amount: BigInt.from(amount),
+      ));
 
   Future<(String, String)> invoice(LocalnetNode payee, String walletId, int amount) async {
-    final created = payee.next<InvoiceCreatedEvent>((e) => e.walletId == walletId);
-    payee.coordinator.tell(CreateInvoiceCommand(
+    final event = await payee.coordinator.ask(CreateInvoiceCommand(
       walletId: walletId,
       amount: BigInt.from(amount),
       description: 'localnet',
       expiresInSeconds: 3600,
     ));
-    final event = await created;
-    expect(event.success, isTrue, reason: event.error);
     return (event.invoiceId, event.addresses.first);
   }
 
+  /// [payee] validates [beef]. A payment refused is answered too: one test
+  /// expects it refused.
   Future<BEEFValidationResultEvent> receive(LocalnetNode payee, String walletId, String? invoiceId, List<int> beef,
-      {String? txid, List<Type42Derivation> type42 = const []}) {
-    final result = payee.next<BEEFValidationResultEvent>((e) => e.walletId == walletId && (txid == null || e.txid == txid));
-    payee.coordinator.tell(ValidateBEEFCommand(
-      walletId: walletId,
-      beefHex: hex.encode(beef),
-      invoiceId: invoiceId,
-      type42Derivations: type42,
-    ));
-    return result;
-  }
+          {List<Type42Derivation> type42 = const []}) =>
+      answer(payee.coordinator, ValidateBEEFCommand(
+        walletId: walletId,
+        beefHex: hex.encode(beef),
+        invoiceId: invoiceId,
+        type42Derivations: type42,
+      ));
 
   /// Carol spends [amount] of what she holds back to Alice, and the network
   /// takes her signature with the anchor key's type-42 child.
   Future<void> carolSpends(LocalnetNode carol, int amount) async {
     final (aliceInvoice, aliceAddress) = await invoice(alice, aliceWallet, amount);
     final spend = await pay(carol, carolWallet, aliceInvoice, aliceAddress, amount);
-    final back = await receive(alice, aliceWallet, aliceInvoice, spend.beefBytes, txid: spend.txid);
+    final back = await receive(alice, aliceWallet, aliceInvoice, spend.beefBytes);
     expect(back.valid, isTrue, reason: back.error);
     expect(back.broadcasted, isTrue, reason: back.broadcastError);
     await arcHolds(spend.txid);
@@ -180,12 +160,7 @@ void main() {
     final destination = await derive(anchor, context: carolIdentity);
     final payment = await pay(alice, aliceWallet, destination.derivation.invoiceNumber, destination.address, 40000);
     expect(await arcStatus(payment.txid), isNull, reason: 'nobody has broadcast it yet');
-    final broadcastId = 'broadcast-${requests++}';
-    final broadcast = alice.next<DeferredPaymentBroadcastEvent>((e) => e.requestId == broadcastId);
-    alice.coordinator
-        .tell(BroadcastDeferredPaymentCommand(walletId: aliceWallet, txid: payment.txid, requestId: broadcastId));
-    final sent = await broadcast;
-    expect(sent.success, isTrue, reason: sent.error);
+    await alice.coordinator.ask(BroadcastDeferredPaymentCommand(walletId: aliceWallet, txid: payment.txid));
     await arcHolds(payment.txid);
 
     final aliceConfirmed =
@@ -195,24 +170,18 @@ void main() {
     expect((await aliceConfirmed).blockHeight, minedIn);
 
     // Alice exports it: the proof, and the hand-off from her own journal.
-    final exported = alice.next<TransactionExportedEvent>((e) => e.walletId == aliceWallet && e.txid == payment.txid);
-    alice.coordinator.tell(ExportTransactionQuery(walletId: aliceWallet, txid: payment.txid));
-    final export = await exported;
-    expect(export.success, isTrue, reason: export.error);
+    final export = await alice.coordinator.ask(ExportTransactionQuery(walletId: aliceWallet, txid: payment.txid));
     expect(export.type42Derivations, [destination.derivation]);
 
     // Carol comes back on a new node, restored from her seed, and is handed
     // it: the context in the hand-off gives her anchor again.
     final carol = await carolOnline();
     await carol.headersAt(minedIn!);
-    final imported = carol.next<TransactionImportedEvent>((e) => e.walletId == carolWallet);
-    carol.coordinator.tell(ImportTransactionCommand(
+    final import = await carol.coordinator.ask(ImportTransactionCommand(
       walletId: carolWallet,
       beef: export.beef!,
       type42Derivations: export.type42Derivations,
     ));
-    final import = await imported;
-    expect(import.success, isTrue, reason: import.error);
     expect(import.transactionId, payment.txid);
     expect((await carol.balance(carolWallet)).confirmedBalance, BigInt.from(40000));
 
@@ -234,8 +203,7 @@ void main() {
     final unrelated = await receive(carol, carolWallet, null, payment.beefBytes);
     expect(unrelated.valid, isFalse);
 
-    final received = await receive(carol, carolWallet, null, payment.beefBytes,
-        txid: payment.txid, type42: [destination.derivation]);
+    final received = await receive(carol, carolWallet, null, payment.beefBytes, type42: [destination.derivation]);
     expect(received.valid, isTrue, reason: received.error);
     expect(received.broadcasted, isTrue, reason: received.broadcastError);
     await arcHolds(payment.txid);

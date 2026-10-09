@@ -9,7 +9,7 @@
 /// Arcade so that Arcade has their proofs. `LOCALNET_TERANODE` names
 /// another checkout. Tests that use it are tagged `localnet`, skipped by
 /// default (dart_test.yaml), and run with
-///   dart test -P localnet test/integration/localnet_<flow>_e2e_test.dart
+///   `dart test -P localnet test/integration/localnet_<flow>_e2e_test.dart`
 /// They mine blocks on the shared regtest chain, as its scripts do.
 library;
 
@@ -57,7 +57,7 @@ Map<String, String> _envFile(String name) {
   };
 }
 
-late final Map<String, String> _env = {..._envFile('.env'), ..._envFile('miner.env')};
+final Map<String, String> _env = {..._envFile('.env'), ..._envFile('miner.env')};
 
 /// Calls Teranode's JSON-RPC [method].
 Future<dynamic> rpc(String method, [List<dynamic> params = const []]) async {
@@ -285,6 +285,15 @@ Future<void> until(int unix) async {
   if (wait > 0) await Future<void>.delayed(Duration(milliseconds: wait));
 }
 
+/// [request]'s reply, also when it reports a failure: for a test that
+/// asserts on a refusal's fields. A failure reported by an [ErrorEvent], a
+/// coordinator that stopped, and a timeout still throw.
+Future<R> answer<R extends CoordinatorReply>(WalletCoordinator coordinator, CoordinatorRequest<R> request,
+        {Duration? timeout}) =>
+    coordinator.ask(request, timeout: timeout).catchError(
+        (Object failure) => (failure as CoordinatorFailure).event as R,
+        test: (failure) => failure is CoordinatorFailure && failure.event is R);
+
 // ---------------------------------------------------------------------------
 // A libspiffy node on the regtest network
 // ---------------------------------------------------------------------------
@@ -309,8 +318,6 @@ class LocalnetNode {
   /// Outgoing channel messages of these types are lost on the way (see
   /// [link]).
   final Set<String> drop = {};
-
-  var _queries = 0;
 
   LocalnetNode._(this.peerId, this.dir, this.isar, this.timing);
 
@@ -404,35 +411,23 @@ class LocalnetNode {
   }
 
   Future<void> createWallet(String walletId,
-      {String? xpriv, String? mnemonic, String? xpub}) async {
-    final created = next<WalletCreatedEvent>((e) => e.walletId == walletId);
-    coordinator.tell(CreateWalletCommand(
-      walletId: walletId,
-      name: walletId,
-      xpriv: xpriv,
-      mnemonic: mnemonic,
-      xpub: xpub,
-    ));
-    final event = await created;
-    expect(event.success, isTrue, reason: event.error);
-  }
+          {String? xpriv, String? mnemonic, String? xpub}) =>
+      coordinator.ask(CreateWalletCommand(
+        walletId: walletId,
+        name: walletId,
+        xpriv: xpriv,
+        mnemonic: mnemonic,
+        xpub: xpub,
+      ));
 
   /// [walletId]'s balance, as the coordinator answers it.
-  Future<BalanceResponse> balance(String walletId) {
-    final requestId = '$peerId-balance-${_queries++}';
-    final answer = next<BalanceResponse>((e) => e.requestId == requestId);
-    coordinator.tell(GetBalanceQuery(walletId: walletId, requestId: requestId));
-    return answer;
-  }
+  Future<BalanceResponse> balance(String walletId) =>
+      coordinator.ask(GetBalanceQuery(walletId: walletId));
 
   /// [txid] as [walletId]'s history holds it, or null when it does not.
-  Future<BitcoinTransaction?> transaction(String walletId, String txid) async {
-    final requestId = '$peerId-tx-${_queries++}';
-    final answer = next<TransactionDetailResponse>((e) => e.requestId == requestId);
-    coordinator.tell(GetTransactionDetailQuery(
-        walletId: walletId, txid: txid, requestId: requestId));
-    return (await answer).transaction;
-  }
+  Future<BitcoinTransaction?> transaction(String walletId, String txid) async =>
+      (await coordinator.ask(GetTransactionDetailQuery(walletId: walletId, txid: txid)))
+          .transaction;
 
   /// Sends [bsv] from the faucet to [address], mines it, and imports it
   /// into [walletId] with its merkle proof once this node holds the block's
@@ -446,12 +441,9 @@ class LocalnetNode {
     await arcHolds(txid);
     await headersAt(await mine());
     final beef = await minedBeef(txid, sent.rawHex);
-    final imported =
-        next<TransactionImportedEvent>((e) => e.walletId == walletId);
-    coordinator.tell(ImportTransactionCommand(walletId: walletId, beef: beef));
-    final event = await imported;
-    expect(event.success, isTrue, reason: event.error);
-    expect(event.transactionId, txid);
+    final imported = await coordinator
+        .ask(ImportTransactionCommand(walletId: walletId, beef: beef));
+    expect(imported.transactionId, txid);
     return txid;
   }
 

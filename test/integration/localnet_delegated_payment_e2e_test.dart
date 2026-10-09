@@ -72,47 +72,34 @@ void main() {
     carolNode = null;
   });
 
-  Future<InvoiceCreatedEvent> createInvoice(LocalnetNode payee, String walletId, int amount) async {
-    final created = payee.next<InvoiceCreatedEvent>((e) => e.walletId == walletId);
-    payee.coordinator.tell(CreateInvoiceCommand(
-      walletId: walletId,
-      amount: BigInt.from(amount),
-      description: 'localnet',
-      expiresInSeconds: 3600,
-    ));
-    final event = await created;
-    expect(event.success, isTrue, reason: event.error);
-    return event;
-  }
+  Future<InvoiceCreatedEvent> createInvoice(LocalnetNode payee, String walletId, int amount) =>
+      payee.coordinator.ask(CreateInvoiceCommand(
+        walletId: walletId,
+        amount: BigInt.from(amount),
+        description: 'localnet',
+        expiresInSeconds: 3600,
+      ));
 
   Future<(String, String)> invoice(LocalnetNode payee, String walletId, int amount) async {
     final event = await createInvoice(payee, walletId, amount);
     return (event.invoiceId, event.addresses.first);
   }
 
-  Future<PaymentReadyEvent> pay(LocalnetNode payer, String walletId, String invoiceId, String address, int amount) async {
-    final ready = payer.next<PaymentReadyEvent>((e) => e.invoiceId == invoiceId);
-    payer.coordinator.tell(PayInvoiceCommand(
-      walletId: walletId,
-      invoiceId: invoiceId,
-      addresses: [address],
-      amount: BigInt.from(amount),
-    ));
-    final payment = await ready;
-    expect(payment.success, isTrue, reason: payment.error);
-    return payment;
-  }
+  Future<PaymentReadyEvent> pay(LocalnetNode payer, String walletId, String invoiceId, String address, int amount) =>
+      payer.coordinator.ask(PayInvoiceCommand(
+        walletId: walletId,
+        invoiceId: invoiceId,
+        addresses: [address],
+        amount: BigInt.from(amount),
+      ));
 
   Future<BEEFValidationResultEvent> receive(
-      LocalnetNode payee, String walletId, String invoiceId, PaymentReadyEvent payment) {
-    final result = payee.next<BEEFValidationResultEvent>((e) => e.walletId == walletId && e.txid == payment.txid);
-    payee.coordinator.tell(ValidateBEEFCommand(
-      walletId: walletId,
-      beefHex: hex.encode(payment.beefBytes),
-      invoiceId: invoiceId,
-    ));
-    return result;
-  }
+      LocalnetNode payee, String walletId, String invoiceId, PaymentReadyEvent payment) =>
+      payee.coordinator.ask(ValidateBEEFCommand(
+        walletId: walletId,
+        beefHex: hex.encode(payment.beefBytes),
+        invoiceId: invoiceId,
+      ));
 
   test('the service takes Alice\'s payment for offline Carol on her delegated chain, and Carol, handed it '
       'with its proof and index, imports it and spends it', () async {
@@ -156,25 +143,19 @@ void main() {
     expect(held.totalBalance, BigInt.zero);
 
     // The service exports the payment with its proof.
-    final exported =
-        service.next<TransactionExportedEvent>((e) => e.walletId == serviceWallet && e.txid == payment.txid);
-    service.coordinator.tell(ExportTransactionQuery(walletId: serviceWallet, txid: payment.txid));
-    final export = await exported;
-    expect(export.success, isTrue, reason: export.error);
+    final export =
+        await service.coordinator.ask(ExportTransactionQuery(walletId: serviceWallet, txid: payment.txid));
     expect(export.delegatedIndices, [index]);
 
     // Carol comes online and is handed the payment and its index.
     final carol = carolNode = await LocalnetNode.start('carol-peer', timing);
     await carol.createWallet(carolWallet, mnemonic: bobMnemonic);
     await carol.headersAt(minedIn!);
-    final imported = carol.next<TransactionImportedEvent>((e) => e.walletId == carolWallet);
-    carol.coordinator.tell(ImportTransactionCommand(
+    final import = await carol.coordinator.ask(ImportTransactionCommand(
       walletId: carolWallet,
       beef: export.beef!,
       delegatedIndices: export.delegatedIndices,
     ));
-    final import = await imported;
-    expect(import.success, isTrue, reason: import.error);
     expect(import.transactionId, payment.txid);
     final carolHolds = await carol.balance(carolWallet);
     expect(carolHolds.confirmedBalance, BigInt.from(50000));

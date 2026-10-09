@@ -15,7 +15,6 @@
 library;
 
 import 'package:convert/convert.dart';
-import 'package:dactor/dactor.dart' show Message;
 import 'package:test/test.dart';
 
 import 'package:libspiffy/coordinator.dart';
@@ -31,7 +30,6 @@ void main() {
   late String aliceWallet;
   late String bobWallet;
   String? unavailable;
-  var requests = 0;
 
   final timing = ChannelTiming(
     settlementMargin: Duration(seconds: 30),
@@ -67,46 +65,35 @@ void main() {
   /// Bob invoices [amount] and Alice pays it: the payment she hands him,
   /// deferred until the network has it.
   Future<(String, PaymentReadyEvent)> handOver(int amount) async {
-    final created = bob.next<InvoiceCreatedEvent>((e) => e.walletId == bobWallet);
-    bob.coordinator.tell(CreateInvoiceCommand(
+    final invoice = await bob.coordinator.ask(CreateInvoiceCommand(
       walletId: bobWallet,
       amount: BigInt.from(amount),
       description: 'localnet deferred',
       expiresInSeconds: 3600,
     ));
-    final invoice = await created;
-    expect(invoice.success, isTrue, reason: invoice.error);
-    final ready = alice.next<PaymentReadyEvent>((e) => e.invoiceId == invoice.invoiceId);
-    alice.coordinator.tell(PayInvoiceCommand(
+    final payment = await alice.coordinator.ask(PayInvoiceCommand(
       walletId: aliceWallet,
       invoiceId: invoice.invoiceId,
       addresses: [invoice.addresses.first],
       amount: BigInt.from(amount),
     ));
-    final payment = await ready;
-    expect(payment.success, isTrue, reason: payment.error);
     return (invoice.invoiceId, payment);
   }
 
-  /// Bob validates the BEEF Alice handed him and submits it.
-  Future<BEEFValidationResultEvent> bobReceives(String invoiceId, PaymentReadyEvent payment) {
-    final result = bob.next<BEEFValidationResultEvent>(
-        (e) => e.walletId == bobWallet && e.txid == payment.txid);
-    bob.coordinator.tell(ValidateBEEFCommand(
-      walletId: bobWallet,
-      beefHex: hex.encode(payment.beefBytes),
-      invoiceId: invoiceId,
-    ));
-    return result;
-  }
+  /// Bob validates the BEEF Alice handed him and submits it. A payment that
+  /// does not validate is answered too: each test says what it expects.
+  Future<BEEFValidationResultEvent> bobReceives(String invoiceId, PaymentReadyEvent payment) =>
+      answer(bob.coordinator, ValidateBEEFCommand(
+        walletId: bobWallet,
+        beefHex: hex.encode(payment.beefBytes),
+        invoiceId: invoiceId,
+      ));
 
   /// Alice's deferred payments, every state.
   Future<Map<String, DeferredPaymentDetail>> deferred() async {
-    final requestId = 'deferred-${requests++}';
-    final answer = alice.next<DeferredPaymentsResponse>((e) => e.requestId == requestId);
-    alice.coordinator.tell(GetDeferredPaymentsQuery(
-        walletId: aliceWallet, includeResolved: true, includeBeef: false, requestId: requestId));
-    return {for (final p in (await answer).payments) p.txid: p};
+    final answer = await alice.coordinator.ask(
+        GetDeferredPaymentsQuery(walletId: aliceWallet, includeResolved: true, includeBeef: false));
+    return {for (final p in answer.payments) p.txid: p};
   }
 
   /// Alice's deferred payment [txid], which must be in [state] now: every
@@ -120,31 +107,18 @@ void main() {
     return payment;
   }
 
-  Future<T> ask<T extends CoordinatorEvent>(
-      Message Function(String requestId) command, String? Function(T) requestIdOf) {
-    final requestId = 'request-${requests++}';
-    final answer = alice.next<T>((e) => requestIdOf(e) == requestId);
-    alice.coordinator.tell(command(requestId));
-    return answer;
-  }
+  Future<DeferredPaymentStatusEvent> check(String txid) =>
+      alice.coordinator.ask(CheckDeferredPaymentStatusCommand(walletId: aliceWallet, txid: txid));
 
-  Future<DeferredPaymentStatusEvent> check(String txid) => ask<DeferredPaymentStatusEvent>(
-      (id) => CheckDeferredPaymentStatusCommand(walletId: aliceWallet, txid: txid, requestId: id),
-      (e) => e.requestId);
+  Future<DeferredPaymentBroadcastEvent> broadcast(String txid) =>
+      alice.coordinator.ask(BroadcastDeferredPaymentCommand(walletId: aliceWallet, txid: txid));
 
-  Future<DeferredPaymentBroadcastEvent> broadcast(String txid) => ask<DeferredPaymentBroadcastEvent>(
-      (id) => BroadcastDeferredPaymentCommand(walletId: aliceWallet, txid: txid, requestId: id),
-      (e) => e.requestId);
+  Future<DeferredPaymentCancelledEvent> cancel(String txid) => alice.coordinator
+      .ask(CancelDeferredPaymentCommand(walletId: aliceWallet, txid: txid, reason: 'Bob never took it'));
 
-  Future<DeferredPaymentCancelledEvent> cancel(String txid) => ask<DeferredPaymentCancelledEvent>(
-      (id) => CancelDeferredPaymentCommand(
-          walletId: aliceWallet, txid: txid, reason: 'Bob never took it', requestId: id),
-      (e) => e.requestId);
-
-  Future<DeferredPaymentReclaimedEvent> reclaim(String txid) => ask<DeferredPaymentReclaimedEvent>(
-      (id) => ReclaimDeferredPaymentCommand(
-          walletId: aliceWallet, txid: txid, reason: 'Bob never took it', requestId: id),
-      (e) => e.requestId);
+  /// A reclaim that fails is answered too: one test expects it to lose.
+  Future<DeferredPaymentReclaimedEvent> reclaim(String txid) => answer(alice.coordinator,
+      ReclaimDeferredPaymentCommand(walletId: aliceWallet, txid: txid, reason: 'Bob never took it'));
 
   /// Mines a block and waits until [node] confirms each of [txids], at the
   /// height the chain holds it at: ours, or an earlier block anything else
@@ -286,7 +260,7 @@ void main() {
     if (reclaimTxid == null) {
       // Alice's own status scan heard of Bob's copy first: the payment is
       // no longer outstanding, and no reclaim is built or submitted.
-      expect(reclaimed.error, contains('not outstanding'));
+      expect(reclaimed.error, contains('only an outstanding payment can be reclaimed'));
     } else {
       // Submitted, and refused: the network saw the input spent by Bob's
       // copy first.

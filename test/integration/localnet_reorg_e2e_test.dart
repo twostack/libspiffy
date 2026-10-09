@@ -68,35 +68,25 @@ void main() {
     await alice.receiveMined(aliceWallet, kTestRootAddress);
     await bob.headersAt(await tipHeight());
 
-    final created = bob.next<InvoiceCreatedEvent>((e) => e.walletId == bobWallet);
-    bob.coordinator.tell(CreateInvoiceCommand(
+    final invoice = await bob.coordinator.ask(CreateInvoiceCommand(
       walletId: bobWallet,
       amount: BigInt.from(amount),
       description: 'localnet reorg',
       expiresInSeconds: 3600,
     ));
-    final invoice = await created;
-    expect(invoice.success, isTrue, reason: invoice.error);
 
-    final ready = alice.next<PaymentReadyEvent>((e) => e.invoiceId == invoice.invoiceId);
-    alice.coordinator.tell(PayInvoiceCommand(
+    final payment = await alice.coordinator.ask(PayInvoiceCommand(
       walletId: aliceWallet,
       invoiceId: invoice.invoiceId,
       addresses: [invoice.addresses.first],
       amount: BigInt.from(amount),
     ));
-    final payment = await ready;
-    expect(payment.success, isTrue, reason: payment.error);
 
-    final validated = bob.next<BEEFValidationResultEvent>(
-        (e) => e.walletId == bobWallet && e.txid == payment.txid);
-    bob.coordinator.tell(ValidateBEEFCommand(
+    final received = await bob.coordinator.ask(ValidateBEEFCommand(
       walletId: bobWallet,
       beefHex: hex.encode(payment.beefBytes),
       invoiceId: invoice.invoiceId,
     ));
-    final received = await validated;
-    expect(received.valid, isTrue, reason: received.error);
     expect(received.broadcasted, isTrue, reason: received.broadcastError);
     return payment;
   }

@@ -97,9 +97,8 @@ void main() {
   /// id once both sides report it open.
   Future<String> openChannel(String aliceWallet, int amount,
       {int lockTimeDurationSeconds = 3600}) async {
-    final aliceOpened = alice.next<ChannelOpenedEvent>((_) => true);
     final bobOpened = bob.next<ChannelOpenedEvent>((_) => true);
-    alice.coordinator.tell(OpenChannelCommand(
+    final aliceOpened = alice.coordinator.ask(OpenChannelCommand(
       walletId: aliceWallet,
       serverPeerId: bob.peerId,
       fundingAmountSats: amount,
@@ -113,6 +112,9 @@ void main() {
     } on TimeoutException {
       fail('The open stalled.\nAlice:\n  ${alice.trace()}\n'
           'Bob:\n  ${bob.trace()}');
+    } on CoordinatorFailure catch (failure) {
+      fail('The open failed: ${failure.message}\nAlice:\n  ${alice.trace()}\n'
+          'Bob:\n  ${bob.trace()}');
     }
   }
 
@@ -120,17 +122,18 @@ void main() {
   /// recorded payment [sequence].
   Future<void> pay(String channelId, String aliceWallet, int amount,
       int sequence) async {
-    final alicePaid = alice.next<ChannelPaymentEvent>(
-        (e) => e.channelId == channelId && e.sequence == sequence);
     final bobPaid = bob.next<ChannelPaymentEvent>(
         (e) => e.channelId == channelId && e.sequence == sequence);
-    alice.coordinator.tell(ChannelPayCommand(
-        channelId: channelId, walletId: aliceWallet, amountSats: amount));
+    final alicePaid = alice.coordinator.ask(
+        ChannelPayCommand(channelId: channelId, walletId: aliceWallet, amountSats: amount));
     try {
-      await alicePaid;
+      expect((await alicePaid).sequence, sequence);
       await bobPaid;
     } on TimeoutException {
       fail('Payment $sequence stalled.\nAlice:\n  ${alice.trace()}\n'
+          'Bob:\n  ${bob.trace()}');
+    } on CoordinatorFailure catch (failure) {
+      fail('Payment $sequence failed: ${failure.message}\nAlice:\n  ${alice.trace()}\n'
           'Bob:\n  ${bob.trace()}');
     }
   }
@@ -160,14 +163,16 @@ void main() {
     await pay(channelId, aliceWallet, 5000, 2);
     await pay(channelId, aliceWallet, 2500, 3);
 
-    final aliceClosed = alice.next<ChannelClosedEvent>((e) => e.channelId == channelId);
     final bobClosed = bob.next<ChannelClosedEvent>((e) => e.channelId == channelId);
-    alice.coordinator.tell(CloseChannelCommand(channelId: channelId));
+    final aliceClosed = alice.coordinator.ask(CloseChannelCommand(channelId: channelId));
     final ChannelClosedEvent a, b;
     try {
       (a, b) = (await aliceClosed, await bobClosed);
     } on TimeoutException {
       fail('The close stalled.\nAlice:\n  ${alice.trace()}\n'
+          'Bob:\n  ${bob.trace()}');
+    } on CoordinatorFailure catch (failure) {
+      fail('The close failed: ${failure.message}\nAlice:\n  ${alice.trace()}\n'
           'Bob:\n  ${bob.trace()}');
     }
     final settlementTxId = b.settlementTxId!;
@@ -202,12 +207,9 @@ void main() {
     return (dartsv.Transaction.fromHex(row.refundTxHex!).id, row.lockTimeUnix);
   }
 
-  Future<ChannelRefundClaimedEvent> claimRefund(String channelId) {
-    final claimed =
-        alice.next<ChannelRefundClaimedEvent>((e) => e.channelId == channelId);
-    alice.coordinator.tell(ClaimChannelRefundCommand(channelId: channelId));
-    return claimed;
-  }
+  /// Alice claims her refund; a refused claim is answered too.
+  Future<ChannelRefundClaimedEvent> claimRefund(String channelId) =>
+      answer(alice.coordinator, ClaimChannelRefundCommand(channelId: channelId));
 
   test('Bob settles by himself at the margin before the lock time, and the settlement is mined',
       () async {
@@ -226,8 +228,11 @@ void main() {
     final bobClosed = bob.next<ChannelClosedEvent>(
         (e) => e.channelId == channelId, timeout: const Duration(minutes: 3));
     final (a, b) = (await aliceClosed, await bobClosed);
-    final settledAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    expect(settledAt, lessThan(lockTime - 20),
+    // When Bob's settlement was on the network and his channel closed: the
+    // event's own time, not when this test got round to both sides (Alice
+    // records it after Bob hands it over).
+    final settledAt = b.eventTimestamp.millisecondsSinceEpoch ~/ 1000;
+    expect(settledAt, lessThan(lockTime - 10),
         reason: 'settled ${lockTime - settledAt} s before the lock time');
     expect(a.settlementTxId, b.settlementTxId);
 
@@ -330,7 +335,10 @@ void main() {
     // (bead libspiffy-m715). Neither is a settlement the network holds, and
     // Bob records no close (bead libspiffy-jh6a).
     await bob.restart();
-    bob.coordinator.tell(CloseChannelCommand(channelId: channelId));
+    final close = expectLater(
+        bob.coordinator.ask(CloseChannelCommand(channelId: channelId)),
+        throwsA(isA<CoordinatorFailure>().having(
+            (f) => f.message, 'message', contains('already spent by tx $refundTxId'))));
     Iterable<ErrorEvent> refused() => bob.events
         .whereType<ErrorEvent>()
         .where((e) => e.message.contains('already spent by tx $refundTxId'));
@@ -339,6 +347,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
     expect(refused(), hasLength(2), reason: 'Bob:\n  ${bob.trace()}');
+    await close;
     expect(bob.events.whereType<ChannelClosedEvent>(), isEmpty,
         reason: 'Bob:\n  ${bob.trace()}');
     expect(bob.events.whereType<ErrorEvent>(), hasLength(2),

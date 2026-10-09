@@ -217,7 +217,8 @@ class WalletKeys {
       //Force the caller to provide the mnemonic. Mnemonic validation
       //is responsibility of the caller.
       if (mnemonic.isEmpty) {
-        throw ArgumentError('Invalid mnemonic phrase provided. Mnemonic is empty');
+        throw ArgumentError('No key material: create a wallet from a mnemonic, an xpriv, a WIF or an xpub. '
+            'libspiffy generates none; DartSVCryptoService.generateMnemonic makes a mnemonic, which the app backs up');
       }
 
       // Derive HD private key from mnemonic

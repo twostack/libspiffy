@@ -141,8 +141,8 @@ class ChannelP2PAdapter {
     _settlements[channelId] = Timer(wait.isNegative ? Duration.zero : wait, () {
       _settlements.remove(channelId);
       if (_disposed) return;
-      handleCloseChannel(coord.CloseChannelCommand(
-          channelId: channelId, reason: 'settling ${timing.settlementMargin.inSeconds} s before the lock time'));
+      // No app request: nothing waits for this close's answer.
+      _close(channelId, 'settling ${timing.settlementMargin.inSeconds} s before the lock time');
     });
   }
 
@@ -1047,15 +1047,14 @@ class ChannelP2PAdapter {
   /// [coord.ErrorEvent] naming the request when the close fails.
   void handleCloseChannel(coord.CloseChannelCommand command) {
     _awaiting(_Request.close, command.channelId, command.requestId);
-    _channelManager.tell(
-        CloseChannelMessage(
-          channelId: command.channelId,
-          reason: command.reason,
-        ),
-        // A close that fails — a settlement ARC did not take — is reported
-        // (bead libspiffy-u6q6); see [handleChannelCloseAnswered].
-        sender: _replyTo);
+    _close(command.channelId, command.reason);
   }
+
+  void _close(String channelId, String? reason) => _channelManager.tell(
+      CloseChannelMessage(channelId: channelId, reason: reason),
+      // A close that fails — a settlement ARC did not take — is reported
+      // (bead libspiffy-u6q6); see [handleChannelCloseAnswered].
+      sender: _replyTo);
 
   /// The manager's answer to a close, or to a settlement handed over: a
   /// failure is reported to the host, whose channel stays `closing` until

@@ -222,7 +222,7 @@ dependency_overrides:
 
 ### Basic Usage (Coordinator API - Recommended)
 
-The **WalletCoordinatorActor** is the canonical public interface for third-party apps. It provides a unified command/event API that handles all internal actor orchestration, correlation tracking, and async response routing.
+`libspiffy.coordinator` (a `WalletCoordinator`) is the canonical public interface for third-party apps. A command or query is a `CoordinatorRequest`: `ask` sends it and returns its own reply, whatever else is on the event stream, and throws `CoordinatorFailure` when it failed. `tell` sends without waiting, and `on<E>()` follows one kind of event: what happens without a request, such as a balance change or an incoming payment.
 
 ```dart
 import 'package:libspiffy/libspiffy.dart';
@@ -240,37 +240,43 @@ await libspiffy.initialize(
 // Use the coordinator - THE single entry point
 final coordinator = libspiffy.coordinator;
 
-// Subscribe to events
-libspiffy.coordinatorEvents?.listen((event) {
-  if (event is WalletCreatedEvent) {
-    print('Wallet created: ${event.walletId}');
-  } else if (event is PaymentReadyEvent) {
-    print('BEEF ready to send: ${event.txid}');
-  } else if (event is BalanceResponse) {
-    print('Balance: ${event.totalBalance} sats');
-  } else if (event is BalanceUpdatedEvent) {
-    // Announced when the balance changes; no need to poll GetBalanceQuery.
-    print('Balance now: ${event.totalBalance} sats');
-  }
-});
-
-// Send commands
-coordinator.tell(CreateWalletCommand(
+// A request returns its own reply. The app supplies the wallet's key
+// material (a mnemonic, xpriv, WIF or xpub) and backs it up.
+final mnemonic = await DartSVCryptoService().generateMnemonic();
+final wallet = await coordinator.ask(CreateWalletCommand(
   walletId: 'my-wallet',
   name: 'My Bitcoin Wallet',
+  mnemonic: mnemonic,
 ));
+print('Wallet created, root address ${wallet.rootAddress}');
 
-coordinator.tell(CreateInvoiceCommand(
+final invoice = await coordinator.ask(CreateInvoiceCommand(
   walletId: 'my-wallet',
   amount: BigInt.from(100000),
   description: 'Payment for services',
 ));
+print('Pay ${invoice.amount} sats to ${invoice.addresses.first}');
 
-coordinator.tell(GetBalanceQuery(walletId: 'my-wallet'));
+final balance = await coordinator.ask(GetBalanceQuery(walletId: 'my-wallet'));
+print('Balance: ${balance.totalBalance} sats');
+
+// A failure throws, carrying the reply (or ErrorEvent) that reported it.
+try {
+  await coordinator.ask(DeleteWalletCommand(walletId: 'no-such-wallet'));
+} on CoordinatorFailure catch (failure) {
+  print('Not deleted: ${failure.message}');
+}
+
+// What happens without a request is followed on the event stream.
+coordinator.on<BalanceUpdatedEvent>(walletId: 'my-wallet').listen((event) {
+  print('Balance now: ${event.totalBalance} sats');
+});
 
 // Cleanup
 await libspiffy.shutdown();
 ```
+
+`example/coordinator_example.dart` runs this offline: `dart run example/coordinator_example.dart`.
 
 ### Direct Actor Access (Advanced)
 
@@ -395,26 +401,19 @@ import 'package:libspiffy/coordinator.dart';
 // The coordinator IS the gateway - no custom actor needed
 final coordinator = getLibSpiffySystem().coordinator;
 
-// Send any command
-coordinator.tell(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet'));
-coordinator.tell(PayInvoiceCommand(
+// Ask, and get the request's own reply
+await coordinator.ask(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet', mnemonic: mnemonic));
+final payment = await coordinator.ask(PayInvoiceCommand(
   walletId: 'my-wallet',
   invoiceId: invoiceId,
   addresses: [paymentAddress],
   amount: BigInt.from(50000),
 ));
-coordinator.tell(GetBalanceQuery(walletId: 'my-wallet'));
+handlePaymentReady(payment);
 
-// Subscribe to all events
-getLibSpiffySystem().coordinatorEvents?.listen((event) {
-  switch (event) {
-    case WalletCreatedEvent e: handleWalletCreated(e);
-    case PaymentReadyEvent e: handlePaymentReady(e);
-    case BEEFValidationResultEvent e: handleBEEFValidated(e);
-    case ErrorEvent e: handleError(e);
-    default: break;
-  }
-});
+// Follow what arrives without a request
+coordinator.on<InvoicePaidEvent>().listen(handleInvoicePaid);
+coordinator.on<ErrorEvent>().listen(handleError);
 ```
 
 **Best for:** All third-party integrations. This is the recommended pattern for most applications.
@@ -703,36 +702,36 @@ LibSpiffy implements a streamlined SPV payment verification system using invoice
 
 ```dart
 // 1. Receiver creates an invoice with payment addresses
-bobCoordinator.tell(CreateInvoiceCommand(
+final invoice = await bobCoordinator.ask(CreateInvoiceCommand(
   walletId: 'bob-wallet',
   amount: BigInt.from(100000), // satoshis
   description: 'Payment for services',
   numberOfAddresses: 1, // Can request multiple addresses
 ));
 
-// -> InvoiceCreatedEvent (coordinator.dart) contains:
+// The InvoiceCreatedEvent carries:
 // - invoiceId: Unique identifier
 // - addresses: Pre-generated payment addresses
 // - amount: Expected payment amount
 // - expiresAt: Invoice expiration time
-// The receiver shares these with the sender (`invoice` below).
+// The receiver shares these with the sender.
 
 // 2. Sender builds and signs a transaction paying the invoice address(es)
-aliceCoordinator.tell(PayInvoiceCommand(
+final payment = await aliceCoordinator.ask(PayInvoiceCommand(
   walletId: 'alice-wallet',
   invoiceId: invoice.invoiceId, // Links tx to invoice
   addresses: [invoice.addresses.first],
   amount: invoice.amount,
 ));
 
-// -> PaymentReadyEvent: txid and beefBytes (tx + parent txs + merkle
-//    proofs). The payment is not broadcast; the sender hands the BEEF to the
-//    receiver over the app's own transport.
+// The PaymentReadyEvent carries txid and beefBytes (tx + parent txs +
+// merkle proofs). The payment is not broadcast; the sender hands the BEEF to
+// the receiver over the app's own transport.
 
 // 3. Receiver validates the BEEF it was handed
-bobCoordinator.tell(ValidateBEEFCommand(
+final verdict = await bobCoordinator.ask(ValidateBEEFCommand(
   walletId: 'bob-wallet',
-  beefHex: beefHex, // the sender's beefBytes, hex-encoded
+  beefHex: hex.encode(payment.beefBytes),
   invoiceId: invoice.invoiceId,
 ));
 
@@ -741,7 +740,8 @@ bobCoordinator.tell(ValidateBEEFCommand(
 //    - Confirms outputs match invoice addresses
 //    - Validates payment amount
 //    - Calculates transaction fee from BEEF data
-// -> BEEFValidationResultEvent (valid, broadcasted, networkStatus)
+// verdict: BEEFValidationResultEvent (broadcasted, networkStatus); an
+// invalid payment throws CoordinatorFailure
 
 // 5. Receiver's wallet is automatically updated with new UTXOs, and the
 //    invoice is marked paid (InvoicePaidEvent) once ARC says the network
@@ -799,30 +799,28 @@ rejected is reported unsuccessful with the reason.
 
 ```dart
 // Payments the recipient has not broadcast after an hour
-coordinator.tell(GetDeferredPaymentsQuery(
+final stale = await coordinator.ask(GetDeferredPaymentsQuery(
   walletId: 'alice-wallet',
   olderThan: const Duration(hours: 1),
-  queryId: 'stale',
 ));
-// -> DeferredPaymentsResponse: txid, invoice, recipients, amount, fee, held
-//    inputs, last network status and check time, state, raw tx, BEEF
+// stale.payments: txid, invoice, recipients, amount, fee, held inputs, last
+// network status and check time, state, raw tx, BEEF
 
 // Ask the network now (ARC; or via: DeferredPaymentNetworkSource.arcThenDataSource)
-coordinator.tell(CheckDeferredPaymentStatusCommand(walletId: 'alice-wallet', txid: txid));
-// -> DeferredPaymentStatusEvent (MINED confirms only when the merkle proof
-//    matches the local header chain)
+final status = await coordinator.ask(CheckDeferredPaymentStatusCommand(walletId: 'alice-wallet', txid: txid));
+// DeferredPaymentStatusEvent (MINED confirms only when the merkle proof
+// matches the local header chain)
 
 // Broadcast it yourself
-coordinator.tell(BroadcastDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid));
-// -> DeferredPaymentBroadcastEvent
+await coordinator.ask(BroadcastDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid));
 
-// Give up on it: refused if the network knows the transaction
-coordinator.tell(CancelDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid, reason: 'expired'));
-// -> DeferredPaymentCancelledEvent
+// Give up on it: refused (CoordinatorFailure) if the network knows the transaction
+await coordinator.ask(CancelDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid, reason: 'expired'));
 
 // Revoke it: spend its inputs back to the wallet at ARC's policy fee
-coordinator.tell(ReclaimDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid));
-// -> DeferredPaymentReclaimedEvent (reclaimTxid, fee, competing txids)
+final reclaim = await coordinator.ask(ReclaimDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid));
+// reclaim.reclaimTxid, .fee; a failure's DeferredPaymentReclaimedEvent names
+// the competing txids
 ```
 
 Cancelling does not revoke the signed transaction the recipient holds: if they
@@ -1191,13 +1189,10 @@ block header has not arrived yet waits for it. Whether the chain has caught
 up with its peers comes from the coordinator:
 
 ```dart
-libspiffy.coordinatorEvents!.listen((event) {
-  if (event is HeaderSyncStatusEvent) {
-    final status = event.status; // height, networkHeight, synced, peerCount
-  }
+libspiffy.coordinator.on<HeaderSyncStatusEvent>().listen((event) {
+  final status = event.status; // height, networkHeight, synced, peerCount
 });
-libspiffy.coordinator.tell(GetHeaderSyncStatusQuery(queryId: 'sync-1'));
-// -> HeaderSyncStatusResponse(queryId: 'sync-1', status: ...)
+final now = (await libspiffy.coordinator.ask(GetHeaderSyncStatusQuery())).status;
 ```
 
 `synced` turns true when a peer answers with less than a full batch of
@@ -1220,7 +1215,7 @@ registry.register(myTokenPlugin);
 // - Transaction builders: build complete multi-output protocol transactions
 
 // Send a plugin-based payment via coordinator
-coordinator.tell(PayInvoiceCommand(
+final tokenPayment = await coordinator.ask(PayInvoiceCommand(
   walletId: 'my-wallet',
   invoiceId: 'invoice-123',
   addresses: [],
@@ -1259,15 +1254,16 @@ await libspiffy.initialize(
   ),
 );
 
-// Client: open, pay, close.
-coordinator.tell(OpenChannelCommand(
+// Client: open, pay, close. Each returns once its step is done; the open
+// once the server has accepted and the funding is on the network.
+final channel = await coordinator.ask(OpenChannelCommand(
   walletId: 'my-wallet',
   serverPeerId: serverPeerId,
   fundingAmountSats: 1000000,
   lockTimeDurationSeconds: 7 * 24 * 3600,
 ));
-coordinator.tell(ChannelPayCommand(channelId: channelId, walletId: 'my-wallet', amountSats: 1000));
-coordinator.tell(CloseChannelCommand(channelId: channelId));
+await coordinator.ask(ChannelPayCommand(channelId: channel.channelId, walletId: 'my-wallet', amountSats: 1000));
+await coordinator.ask(CloseChannelCommand(channelId: channel.channelId));
 ```
 
 Peer messages travel over the app's own transport: deliver what arrives as

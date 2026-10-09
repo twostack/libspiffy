@@ -18,68 +18,63 @@ import 'package:libspiffy/coordinator.dart';
 import 'package:libspiffy/libspiffy.dart';
 ```
 
-The coordinator import gives you command classes (what you send), event classes (what you receive), and the coordinator actor itself. The names are clean: `CreateWalletCommand`, `WalletCreatedEvent`, `PayInvoiceCommand`, `PaymentReadyEvent`.
+The coordinator import gives you command classes (what you send), event classes (what you receive), and `WalletCoordinator`, which you send them with. The names are clean: `CreateWalletCommand`, `WalletCreatedEvent`, `PayInvoiceCommand`, `PaymentReadyEvent`.
 
 The internal import gives you everything else: storage interfaces, crypto services, the actor system class, domain models. There is no naming collision between the two imports because the coordinator uses `Command`/`Event` suffixes while the internals use `Message`/`Response` suffixes.
 
 ## The Programming Model
 
-Every interaction with LibSpiffy follows the same pattern:
+`libspiffy.coordinator` is a `WalletCoordinator`. It has three methods:
 
-1. **Send a command** to the coordinator via `tell()`
-2. **Receive an event** on the coordinator's broadcast stream
-
-There are no return values from `tell()`. There are no `Future`s to `await` on commands. There are no `Completer`s to wire up. You send a command, and sometime later — usually within milliseconds — an event appears on the stream.
+1. **`ask(request)`** sends a command or query and returns its own reply.
+2. **`tell(command)`** sends without waiting. The reply, if there is one, arrives on the event stream.
+3. **`on<E>()`** follows one kind of event: what happens without a request, such as a balance change, an invoice paid, or a channel request from a peer.
 
 ```dart
-// Send
-coordinator.tell(CreateWalletCommand(walletId: 'w1', name: 'My Wallet'));
+final created = await coordinator.ask(CreateWalletCommand(walletId: 'w1', name: 'My Wallet'));
+print('Created wallet ${created.walletId}, root address: ${created.rootAddress}');
 
-// Receive (sometime later)
-coordinatorEvents.listen((event) {
-  if (event is WalletCreatedEvent) {
-    print('Created wallet ${event.walletId}, root address: ${event.rootAddress}');
-  }
+coordinator.on<BalanceUpdatedEvent>(walletId: 'w1').listen((event) {
+  print('Balance now ${event.totalBalance} sats');
 });
 ```
 
-This is deliberate. Bitcoin wallet operations are inherently asynchronous — UTXO selection, ancestor chain collection, transaction signing, SPV validation, and network broadcasting all take variable time. The stream model matches the reality of the domain, and it eliminates the class of bugs that come from trying to make inherently async operations look synchronous.
+### Requests and Their Replies
 
-### Queries Are Events Too
+Every command or query with an answer is a `CoordinatorRequest<R>`. It names its reply type `R`, and the coordinator answers it with exactly one `R`, on success and on failure. The request's `requestId` is fixed when the request is made, generated unless you give one. The reply carries it back, and so does an `ErrorEvent` the request causes. `ask` returns the reply with that id, whatever else is on the stream, so two payments running at once each get their own.
 
-Even queries like "what is my balance" go through the same send-command/receive-event pattern. The coordinator reads directly from the CQRS read model (no actor routing for queries), so responses are fast — but they still arrive on the event stream.
+A returned reply is a success. A failure throws `CoordinatorFailure`:
 
 ```dart
-coordinator.tell(GetBalanceQuery(walletId: 'w1'));
-
-// On the stream:
-if (event is BalanceResponse) {
-  print('${event.confirmedBalance} confirmed, ${event.unconfirmedBalance} pending');
+try {
+  final payment = await coordinator.ask(PayInvoiceCommand(
+    walletId: 'w1',
+    invoiceId: invoice.invoiceId,
+    addresses: invoice.addresses,
+    amount: invoice.amount,
+  ));
+  send(payment.beefBytes);
+} on CoordinatorFailure catch (failure) {
+  // failure.message: why. failure.event: the reply that reported it
+  // (a PaymentReadyEvent with success false here) or an ErrorEvent.
+  // failure.closed: the coordinator stopped before it answered.
+  showError(failure.message);
 }
 ```
 
-If you need to correlate a query response with a specific request, use the `queryId` field. It flows through to the response unchanged.
+`ask` throws `TimeoutException` when no reply arrives within the request's `replyTimeout` (pass `timeout:` to change it). Each request has a default that covers its own work: a minute for most, longer for a payment, a receive, a broadcast, a split or an import. **A timeout does not cancel the request.** It may still finish (a payment it validated may already be broadcast), and its reply then arrives on the event stream only.
 
-### Filtering the Stream
+### The Event Stream
 
-The event stream is a broadcast stream. Every event from every wallet appears on it. Filter by wallet ID or event type as needed:
+Replies are published on the event stream too, with everything else the coordinator reports. `coordinator.on<E>({walletId})` gives the events of one type, of one wallet when you name it. `libspiffy.coordinatorEvents` is the whole stream:
 
 ```dart
-// All events for one wallet
-coordinatorEvents
-    .where((e) => e.walletId == 'w1')
-    .listen(handleWalletEvent);
-
-// Just payment events
-coordinatorEvents
-    .whereType<PaymentReadyEvent>()
-    .listen(handlePaymentReady);
-
-// Just errors
-coordinatorEvents
-    .whereType<ErrorEvent>()
-    .listen(handleError);
+coordinator.on<InvoicePaidEvent>(walletId: 'w1').listen(handleInvoicePaid);
+coordinator.on<ChannelRequestReceivedEvent>().listen(askTheUser);
+libspiffy.coordinatorEvents!.listen(logEverything);
 ```
+
+A reply type is also emitted without a request where something else caused it: a payment replayed when its block header arrived, a peer's batch of headers. Its `requestId` is null then.
 
 ## Initialization
 
@@ -100,7 +95,6 @@ await libspiffy.initialize(
 );
 
 final coordinator = libspiffy.coordinator;
-final events = libspiffy.coordinatorEvents;
 ```
 
 ### Ready Before the Headers Are
@@ -108,18 +102,15 @@ final events = libspiffy.coordinatorEvents;
 The coordinator takes commands before the block headers are synced: creating or importing a wallet needs no chain, and a received payment whose block header has not arrived yet waits for it, then completes. From far behind (a first start with no header CDN) the sync from peers can take minutes. To show it, or to wait for it, ask where it stands and listen for the change:
 
 ```dart
-events.listen((event) {
-  if (event is HeaderSyncStatusEvent) {
-    // event.status.synced: caught up with the peers, or fell behind them
-  }
-  if (event is BlockHeadersStoredEvent) {
-    // each batch stored: event.endHeight of event.source ('p2p' for peers)
-  }
+coordinator.on<HeaderSyncStatusEvent>().listen((event) {
+  // event.status.synced: caught up with the peers, or fell behind them
+});
+coordinator.on<BlockHeadersStoredEvent>().listen((event) {
+  // each batch stored: event.endHeight of event.source ('p2p' for peers)
 });
 
-coordinator.tell(GetHeaderSyncStatusQuery(queryId: 'sync-1'));
-// -> HeaderSyncStatusResponse(queryId: 'sync-1', status: HeaderSyncStatus(
-//      height, networkHeight, synced, peerCount))
+final status = (await coordinator.ask(GetHeaderSyncStatusQuery())).status;
+// HeaderSyncStatus(height, networkHeight, synced, peerCount)
 ```
 
 `synced` turns true when a peer answers header sync with less than a full batch: it had nothing more. `networkHeight` is the best height the connected peers reported, for a progress bar; 0 while no peer has reported one. `peerCount` is 0 when P2P is off or every peer has dropped.
@@ -173,45 +164,39 @@ await libspiffy.initialize(isar: isar, ...);
 ### Creating a Wallet
 
 ```dart
-coordinator.tell(CreateWalletCommand(
+final created = await coordinator.ask(CreateWalletCommand(
   walletId: 'primary',          // Your chosen ID (must be unique)
   name: 'Primary Wallet',
-  // Provide ONE of: mnemonic, xpriv, wif, or xpub (watch-only)
-  // If none provided, a new HD wallet is generated
+  mnemonic: mnemonic,           // ONE of: mnemonic, xpriv, wif, or xpub (watch-only)
 ));
 ```
 
-The coordinator emits `WalletCreatedEvent` with `success`, `walletId`, and `rootAddress`. If creation fails (duplicate ID, invalid key material), `success` is false and `error` explains why.
+libspiffy generates no keys: the app supplies the key material and backs it up. `DartSVCryptoService().generateMnemonic()` makes a new mnemonic.
+
+The reply, `WalletCreatedEvent`, comes once the read model holds the wallet, with its `rootAddress`. A creation that fails (duplicate ID, invalid key material) throws `CoordinatorFailure` saying why.
 
 ### Importing an Existing Wallet
 
 Import discovers addresses, fetches transaction history, and harvests UTXOs. It is a long-running operation.
 
 ```dart
-coordinator.tell(ImportWalletCommand(
+final progress = coordinator.on<ImportProgressEvent>(walletId: 'imported').listen((e) {
+  print('${e.phase}: ${(e.progress * 100).toInt()}%');
+});
+final imported = await coordinator.ask(ImportWalletCommand(
   walletId: 'imported',
   walletName: 'Restored Wallet',
-  xpriv: 'xprv9s21ZrQH143K...',
+  xpriv: 'xprv9s21ZrQH143K...',  // or mnemonic:, or wif:
   networkType: 'test',
   gapLimit: 20,                 // BIP44 gap limit for address discovery
 ));
+await progress.cancel();
+print('Imported ${imported.addressCount} addresses, ${imported.transactionCount} transactions');
 ```
 
-During import, the coordinator emits `ImportProgressEvent` with phase, progress percentage, and counts. When finished, it emits `ImportCompleteEvent`.
+The import ends with `ImportCompleteEvent`; `ImportProgressEvent` reports the phases on the way. A successful import with `transactionsFailed` above zero is incomplete: send it again with `resume: true`. A mnemonic wallet is created from the mnemonic and then imported, as an xpriv is.
 
-```dart
-events.listen((e) {
-  if (e is ImportProgressEvent) {
-    print('${e.phase}: ${(e.progress * 100).toInt()}%');
-  } else if (e is ImportCompleteEvent) {
-    if (e.success) {
-      print('Imported ${e.addressCount} addresses, ${e.transactionCount} transactions');
-    }
-  }
-});
-```
-
-Import requires a `blockchainDataSource` to be provided during initialization (e.g., `WhatsOnChainDataSource`). Without it, `ImportWalletCommand` will emit an error.
+Import requires a `blockchainDataSource` to be provided during initialization (e.g., `WhatsOnChainDataSource`). Without it, `ImportWalletCommand` fails.
 
 ## Receiving Payments
 
@@ -220,31 +205,27 @@ LibSpiffy uses an invoice-based payment model. The receiver creates an invoice, 
 ### Step 1: Create an Invoice
 
 ```dart
-coordinator.tell(CreateInvoiceCommand(
+final invoice = await coordinator.ask(CreateInvoiceCommand(
   walletId: 'primary',
   amount: BigInt.from(50000),       // 50,000 satoshis
   description: 'Coffee order #42',
   expiresInSeconds: 3600,           // 1 hour
 ));
+
+// Share these with the payer
+final paymentAddress = invoice.addresses.first;
+final amount = invoice.amount;
+final invoiceId = invoice.invoiceId;
 ```
 
-The coordinator generates a fresh address from the wallet, creates the invoice aggregate, and emits `InvoiceCreatedEvent`:
-
-```dart
-if (event is InvoiceCreatedEvent && event.success) {
-  // Share these with the payer
-  final paymentAddress = event.addresses.first;
-  final amount = event.amount;
-  final invoiceId = event.invoiceId;
-}
-```
+The coordinator generates a fresh address from the wallet and creates the invoice; the reply is `InvoiceCreatedEvent`.
 
 ### Step 2: Receive and Validate BEEF
 
 When the payer sends you a BEEF package, validate it:
 
 ```dart
-coordinator.tell(ValidateBEEFCommand(
+final verdict = await coordinator.ask(ValidateBEEFCommand(
   walletId: 'primary',
   beefHex: receivedBeefHexString,
   invoiceId: 'inv-123',            // Optional: correlate with invoice
@@ -257,15 +238,13 @@ This triggers a multi-step process that the coordinator manages internally:
 3. If valid, broadcast to the network via ARC
 4. Update wallet UTXOs with received funds
 
-You receive a single `BEEFValidationResultEvent`:
+The reply is one `BEEFValidationResultEvent`; an invalid payment throws `CoordinatorFailure` instead:
 
 ```dart
-if (event is BEEFValidationResultEvent) {
-  if (event.valid) {
-    print('Payment valid! TX: ${event.txid}, broadcasted: ${event.broadcasted}');
-  } else {
-    print('Payment invalid: ${event.error}');
-  }
+print('Payment valid! TX: ${verdict.txid}, broadcasted: ${verdict.broadcasted}');
+if (verdict.awaitingHeader) {
+  // Its block header has not arrived yet. The payment is decided when it
+  // does, announced as a BEEFValidationResultEvent with no request id.
 }
 ```
 
@@ -276,7 +255,7 @@ The coordinator tracks the correlation between BEEF data, wallet ID, invoice ID,
 A service can take payments for users who are offline (spv-understanding.md, "Payment modes"). The user registers their xpub, and the service keeps it as a watch-only wallet:
 
 ```dart
-coordinator.tell(CreateWalletCommand(walletId: 'carol-at-service', name: 'Carol', xpub: carolXpub));
+await coordinator.ask(CreateWalletCommand(walletId: 'carol-at-service', name: 'Carol', xpub: carolXpub));
 ```
 
 Invoices on that wallet get addresses on the user's **delegated chain** (`m/2/i`), never on the receive chain (`m/0/i`) the user's own wallet issues from. The invoice says which it is: `InvoiceCreatedEvent.issuedAddresses` gives each address with its chain and derivation index.
@@ -290,19 +269,20 @@ issued.derivationIndex;  // the index the user's wallet will need
 The service receives the payment with `ValidateBEEFCommand` as usual. The money appears as `watchOnlyBalance`: the service holds no key for it and can never spend it. Once the payment is mined, the service exports it with its proof and the delegated indices it pays:
 
 ```dart
-coordinator.tell(ExportTransactionQuery(walletId: 'carol-at-service', txid: txid));
-// → TransactionExportedEvent(success, beef, delegatedIndices, error)
+final exported = await coordinator.ask(ExportTransactionQuery(walletId: 'carol-at-service', txid: txid));
+// TransactionExportedEvent(beef, delegatedIndices); refused while the
+// transaction has no proof on our header chain
 ```
 
 It hands both to the user. The user's wallet imports the BEEF with those indices. It derives the addresses from its own key, records them, and can then spend the payment like any other:
 
 ```dart
-coordinator.tell(ImportTransactionCommand(
+await coordinator.ask(ImportTransactionCommand(
   walletId: 'carol',
   beef: exported.beef!,
   delegatedIndices: exported.delegatedIndices,
 ));
-// → TransactionImportedEvent
+// TransactionImportedEvent
 ```
 
 Without the index the import is refused: the payment pays none of the wallet's addresses, so it is not the wallet's transaction.
@@ -315,44 +295,42 @@ The payee's side, once per identity: issue the anchor for that identity and publ
 
 ```dart
 final context = [...identityKey, ...epochBytes];
-coordinator.tell(IssueAnchorKeyCommand(walletId: 'carol', anchorContext: context));
-// → AnchorPublicKeyEvent(publicKey, success, error); the same context always gives the same anchor
+final anchor = await coordinator.ask(IssueAnchorKeyCommand(walletId: 'carol', anchorContext: context));
+// anchor.publicKey; the same context always gives the same anchor
 
-coordinator.tell(SignWithAnchorKeyCommand(
+final signed = await coordinator.ask(SignWithAnchorKeyCommand(
   walletId: 'carol',
   anchorContext: context,
   message: utf8.encode('overmedia:register_payment_pubkey:$peerId:$anchorKey'),
 ));
-// → AnchorSignedEvent(publicKey, signatureDer, success, error): ECDSA over SHA-256(message)
+// signed.signatureDer: ECDSA over SHA-256(message) by signed.publicKey
 ```
 
 The payer's side: derive a destination, pay it, broadcast it yourself (the payee is not there to), and hand it over once it is mined.
 
 ```dart
-coordinator.tell(DeriveType42DestinationCommand(
+final destination = (await coordinator.ask(DeriveType42DestinationCommand(
   walletId: 'alice',
   anchorPublicKey: anchorKey,
   anchorContext: publishedContext, // the context published with the anchor, when there is one
-));
-// → Type42DestinationEvent(destination: Type42Destination(address, derivation, ...))
+))).destination!;
 
-coordinator.tell(PayInvoiceCommand(
+final payment = await coordinator.ask(PayInvoiceCommand(
   walletId: 'alice',
   invoiceId: destination.derivation.invoiceNumber,
   addresses: [destination.address],
   amount: BigInt.from(40000),
 ));
-// → PaymentReadyEvent(txid, ...)
-coordinator.tell(BroadcastDeferredPaymentCommand(walletId: 'alice', txid: txid));
+await coordinator.ask(BroadcastDeferredPaymentCommand(walletId: 'alice', txid: payment.txid));
 // ... TransactionConfirmedEvent once it is mined, then:
-coordinator.tell(ExportTransactionQuery(walletId: 'alice', txid: txid));
-// → TransactionExportedEvent(beef, type42Derivations)
+final exported = await coordinator.ask(ExportTransactionQuery(walletId: 'alice', txid: payment.txid));
+// exported.beef, exported.type42Derivations
 ```
 
 Hand `beef` and `type42Derivations` to the payee out of band. Each derivation names the anchor, its context (when the payer passed it), the payer key and the invoice number. The payee's wallet imports them. It finds the anchor among those it issued, or derives it from the context, and refuses a context that does not give that anchor. It then derives each address from its own anchor key, records the derivation (never a private key), and can spend the payment like any other:
 
 ```dart
-coordinator.tell(ImportTransactionCommand(
+await coordinator.ask(ImportTransactionCommand(
   walletId: 'carol',
   beef: exported.beef!,
   type42Derivations: exported.type42Derivations,
@@ -370,7 +348,7 @@ If the payee is online before the payment is mined, it can take it in unproven, 
 Given an invoice from a counterparty (their addresses and amount):
 
 ```dart
-coordinator.tell(PayInvoiceCommand(
+final payment = await coordinator.ask(PayInvoiceCommand(
   walletId: 'primary',
   invoiceId: 'their-invoice-id',
   addresses: ['mRecipientAddress1'],
@@ -390,18 +368,12 @@ The coordinator handles everything internally:
 5. Construct the BEEF package with ancestors and merkle proofs
 6. Record the outgoing transaction in the wallet
 
-You receive `PaymentReadyEvent` containing the BEEF bytes:
+The reply, `PaymentReadyEvent`, carries the BEEF bytes; a payment that could not be built throws `CoordinatorFailure` saying why:
 
 ```dart
-if (event is PaymentReadyEvent) {
-  if (event.success) {
-    // Send this BEEF to the counterparty via your P2P layer
-    final beefToSend = event.beefBytes;
-    print('BEEF ready: ${event.txid}, paid ${event.amountPaid} sats');
-  } else {
-    print('Payment failed: ${event.error}');
-  }
-}
+// Send this BEEF to the counterparty via your P2P layer
+final beefToSend = payment.beefBytes;
+print('BEEF ready: ${payment.txid}, paid ${payment.amountPaid} sats');
 ```
 
 **The coordinator does NOT broadcast the payment.** It returns the BEEF to you. You transmit it to the counterparty. The counterparty validates and broadcasts. This is the SPV payment model — the receiver broadcasts, not the sender.
@@ -450,7 +422,7 @@ The coordinator does not know how to send network messages. When it needs to sen
 
 ```dart
 // Outgoing: coordinator → your P2P layer → peer
-events.whereType<ChannelP2PMessageToSendEvent>().listen((msg) {
+coordinator.on<ChannelP2PMessageToSendEvent>().listen((msg) {
   myP2PLayer.send(msg.toPeerId, msg.messageType, msg.payload);
 });
 
@@ -469,7 +441,7 @@ That is the entire P2P contract. The coordinator handles the 11-message channel 
 ### Opening a Channel (Client Side)
 
 ```dart
-coordinator.tell(OpenChannelCommand(
+final channel = await coordinator.ask(OpenChannelCommand(
   walletId: 'primary',
   serverPeerId: 'peer-abc-123',
   fundingAmountSats: 100000,
@@ -486,12 +458,10 @@ This initiates a multi-step protocol. The coordinator:
 6. Exchanges refund signatures with the server
 7. Opens the channel
 
-You receive `ChannelOpenedEvent` when the channel is ready:
+The reply is the channel's `ChannelOpenedEvent`, once it is ready; a step that fails, or the server's refusal, throws `CoordinatorFailure`. The default timeout is five minutes, since the open waits for the server:
 
 ```dart
-if (event is ChannelOpenedEvent) {
-  print('Channel ${event.channelId} open, funded with ${event.fundingAmountSats} sats');
-}
+print('Channel ${channel.channelId} open, funded with ${channel.fundingAmountSats} sats');
 ```
 
 ### Accepting a Channel (Server Side)
@@ -499,10 +469,10 @@ if (event is ChannelOpenedEvent) {
 When someone requests a channel with you, the coordinator emits `ChannelRequestReceivedEvent`. Present this to the user for approval:
 
 ```dart
-if (event is ChannelRequestReceivedEvent) {
+coordinator.on<ChannelRequestReceivedEvent>().listen((event) async {
   // Show UI: "Peer ${event.clientPeerId} wants to open a channel for ${event.fundingAmountSats} sats"
-  if (userApproves) {
-    coordinator.tell(AcceptChannelCommand(
+  if (await userApproves(event)) {
+    await coordinator.ask(AcceptChannelCommand(
       channelId: event.channelId,
       walletId: 'primary',
       clientPeerId: event.clientPeerId,
@@ -511,35 +481,37 @@ if (event is ChannelRequestReceivedEvent) {
       fundingAmountSats: event.fundingAmountSats,
       lockTimeUnix: event.lockTimeUnix,
     ));
+    // ChannelAcceptedEvent: accepted; the channel opens when the client
+    // funds it (a ChannelOpenedEvent on this side too)
   } else {
-    coordinator.tell(RejectChannelCommand(
+    await coordinator.ask(RejectChannelCommand(
       channelId: event.channelId,
       reason: 'User declined',
     ));
   }
-}
+});
 ```
 
 ### Making Channel Payments
 
 ```dart
-coordinator.tell(ChannelPayCommand(
-  channelId: 'channel-abc',
+final paid = await coordinator.ask(ChannelPayCommand(
+  channelId: channel.channelId,
   walletId: 'primary',
   amountSats: 1000,
   purpose: 'Stream payment',
 ));
 ```
 
-Each payment emits `ChannelPaymentEvent` with updated balances.
+The reply is the payment's `ChannelPaymentEvent`, with the updated balances, once the channel has journaled it and handed `payment_update` to your transport. A payment the channel refuses (more than the client's balance) throws. The server's own payments arrive as `ChannelPaymentEvent`s on its stream.
 
 ### Closing a Channel
 
 ```dart
-coordinator.tell(CloseChannelCommand(channelId: 'channel-abc'));
+final closed = await coordinator.ask(CloseChannelCommand(channelId: channel.channelId));
 ```
 
-Emits `ChannelClosedEvent` with the settlement transaction ID.
+The reply is `ChannelClosedEvent`, with the settlement transaction ID, once the server's settlement is recorded.
 
 ## Utility Operations
 
@@ -548,17 +520,17 @@ Emits `ChannelClosedEvent` with the settlement transaction ID.
 Split large UTXOs into smaller ones following Benford's Law distribution for privacy:
 
 ```dart
-coordinator.tell(SplitUTXOsCommand(walletId: 'primary'));
+final split = await coordinator.ask(SplitUTXOsCommand(walletId: 'primary'));
 ```
 
-Emits `UTXOSplitStartedEvent` followed by `UTXOSplitCompleteEvent`.
+The reply is `UTXOSplitCompleteEvent`; `UTXOSplitStartedEvent` announces the start on the stream.
 
 ### Timestamp Archives
 
 Embed data hashes on-chain via OP_RETURN:
 
 ```dart
-coordinator.tell(TimestampCommand(
+final stamp = await coordinator.ask(TimestampCommand(
   archiveId: 'archive-001',
   walletId: 'primary',
   fileHashes: ['sha256-hash-of-document-1', 'sha256-hash-of-document-2'],
@@ -566,14 +538,14 @@ coordinator.tell(TimestampCommand(
 ));
 ```
 
-The coordinator creates an OP_RETURN transaction, broadcasts it, and emits `TimestampCompleteEvent` with the on-chain transaction ID.
+The coordinator creates an OP_RETURN transaction, broadcasts it, and answers with ARC's answer: `TimestampCompleteEvent` with the transaction ID, or a failure when ARC refused it.
 
 ### Watch Addresses
 
 Label outputs paying an address the wallet holds no key for. This is not monitoring: nothing is fetched from the network. It only changes how the wallet records outputs to that address in transactions it receives. They are kept, reported as `watchOnlyBalance`, and never spent:
 
 ```dart
-coordinator.tell(RegisterWatchAddressCommand(
+await coordinator.ask(RegisterWatchAddressCommand(
   walletId: 'primary',
   address: 'mExternalAddress',
   scriptType: 'p2pkh',
@@ -583,24 +555,14 @@ coordinator.tell(RegisterWatchAddressCommand(
 
 ## Error Handling
 
-All errors arrive as `ErrorEvent` on the coordinator stream. The `source` field tells you which operation failed, and `walletId` (when present) tells you which wallet was affected.
+A request's failure is its own: `ask` throws `CoordinatorFailure`, whose `event` is the reply that reported it or an `ErrorEvent` naming the request. With `tell`, the reply carries `success` and `error` (`valid` and `error` for `BEEFValidationResultEvent`); `CoordinatorReply.failure` gives the reason whatever the reply type.
+
+Failures no request caused (a channel step the counterparty started, a broadcast retried later) arrive as `ErrorEvent` with no `requestId`. The `source` field tells you what failed, and `walletId` (when present) which wallet:
 
 ```dart
-events.whereType<ErrorEvent>().listen((error) {
+coordinator.on<ErrorEvent>().listen((error) {
   log.severe('[${error.source}] ${error.message}', error.walletId);
 });
-```
-
-Additionally, most response events carry a `success` boolean and optional `error` string. Always check `success` before using the result:
-
-```dart
-if (event is PaymentReadyEvent) {
-  if (!event.success) {
-    showError('Payment failed: ${event.error}');
-    return;
-  }
-  // Use event.beefBytes...
-}
 ```
 
 ## Shutdown
@@ -608,11 +570,10 @@ if (event is PaymentReadyEvent) {
 Always shut down cleanly to flush pending operations and close storage:
 
 ```dart
-coordinator.tell(ShutdownCommand());
-
-// Then shut down the actor system
 await libspiffy.shutdown();
 ```
+
+A request still waiting when the coordinator stops fails with `CoordinatorFailure` (`closed`).
 
 ## What Not To Do
 
@@ -625,10 +586,10 @@ These are the patterns we see from developers who bypass the coordinator. Each o
 libspiffy.spvActor.tell(ValidateBEEFMessage(...));
 
 // RIGHT
-coordinator.tell(ValidateBEEFCommand(...));
+await coordinator.ask(ValidateBEEFCommand(...));
 ```
 
-**Do not spawn receiver actors for responses.** The old API required spawning a `TestReceiverActor` with a `Completer` for every single operation. The coordinator eliminates this entirely — responses come on the event stream.
+**Do not spawn receiver actors, or match replies on the stream yourself.** The old API required spawning a `TestReceiverActor` with a `Completer` for every single operation, and apps then wrote their own "send, then find the reply on the stream" helpers. `ask` does both.
 
 ```dart
 // WRONG (old pattern)
@@ -638,8 +599,7 @@ libspiffy.invoiceCoordinator.tell(CreateInvoiceMessage(...), sender: receiver);
 final result = await completer.future;
 
 // RIGHT (coordinator pattern)
-coordinator.tell(CreateInvoiceCommand(...));
-// Listen on events stream
+final invoice = await coordinator.ask(CreateInvoiceCommand(...));
 ```
 
 **Do not manage BEEF/SPV correlation yourself.** The multi-step validation flow (structural validation → SPV validation → broadcast) involves correlation maps that the coordinator maintains. If you try to manage this yourself, you will lose track of which BEEF data belongs to which invoice.
@@ -665,69 +625,101 @@ Key points for coordinator users:
 
 ## Complete Event Reference
 
+### Requests and Their Replies
+
+Every command and query below is answered with one reply of the type named, carrying its `requestId`: what `ask` returns.
+
+| Request | Reply |
+|---|---|
+| `CreateWalletCommand` | `WalletCreatedEvent` |
+| `DeleteWalletCommand` | `WalletDeletedEvent` |
+| `ImportWalletCommand` | `ImportCompleteEvent` (progress: `ImportProgressEvent`) |
+| `GetBalanceQuery` | `BalanceResponse` |
+| `GetTransactionsQuery` | `TransactionsResponse` |
+| `GetTransactionDetailQuery` | `TransactionDetailResponse` |
+| `ExportTransactionQuery` | `TransactionExportedEvent`: a proven transaction as BEEF, with its delegated indices and type-42 derivations |
+| `CreateInvoiceCommand` | `InvoiceCreatedEvent` |
+| `PayInvoiceCommand` | `PaymentReadyEvent` |
+| `ProvisionFundingCommand` | `ProvisioningCompleteEvent` |
+| `ValidateBEEFCommand` | `BEEFValidationResultEvent` |
+| `RecordOutgoingCommand` | `TransactionRecordedEvent` |
+| `ImportTransactionCommand` | `TransactionImportedEvent` |
+| `SettleBEEFCommand` | `BEEFSettledEvent` |
+| `IssueAnchorKeyCommand` | `AnchorPublicKeyEvent` |
+| `SignWithAnchorKeyCommand` | `AnchorSignedEvent` |
+| `Brc100KeyOperationCommand` | `Brc100KeyOperationEvent` |
+| `DeriveType42DestinationCommand` | `Type42DestinationEvent`: an address to pay and its hand-off |
+| `GenerateAddressCommand` | `AddressGeneratedEvent` |
+| `RegisterWatchAddressCommand` | `WatchAddressRegisteredEvent` |
+| `ReleaseUTXOsCommand` | `UTXOsReleasedEvent` |
+| `SplitUTXOsCommand` | `UTXOSplitCompleteEvent` |
+| `TimestampCommand` | `TimestampCompleteEvent` |
+| `StoreHeadersCommand` | `BlockHeadersStoredEvent` |
+| `GetHeaderSyncStatusQuery` | `HeaderSyncStatusResponse` |
+| `GetDeferredPaymentsQuery` | `DeferredPaymentsResponse` |
+| `BroadcastDeferredPaymentCommand` | `DeferredPaymentBroadcastEvent` |
+| `CheckDeferredPaymentStatusCommand` | `DeferredPaymentStatusEvent` |
+| `CancelDeferredPaymentCommand` | `DeferredPaymentCancelledEvent` |
+| `ReclaimDeferredPaymentCommand` | `DeferredPaymentReclaimedEvent` |
+| `CompleteDeferredPaymentCommand` | `DeferredPaymentCompletedEvent` |
+| `CheckForeignSpendsCommand` | `ForeignSpendsCheckedEvent` |
+| `RequestAncestorProofCommand` | `AncestorProofRequestedEvent` |
+| `OpenChannelCommand` | `ChannelOpenedEvent` |
+| `AcceptChannelCommand` | `ChannelAcceptedEvent` |
+| `RejectChannelCommand` | `ChannelRejectedEvent` |
+| `ChannelPayCommand` | `ChannelPaymentEvent` |
+| `CloseChannelCommand` | `ChannelClosedEvent` |
+| `ExpireChannelCommand` | `ChannelExpiredEvent` |
+| `ClaimChannelRefundCommand` | `ChannelRefundClaimedEvent` |
+| `RetryChannelFundingCommand` | `ChannelFundingRetriedEvent` |
+| `ResendChannelOpenCommand` | `ChannelOpenResentEvent` |
+
+`ShutdownCommand` and `ChannelP2PReceived` are told; they have no reply.
+
+The tables below are the events the coordinator emits without a request, and the replies' types when they are emitted that way.
+
 ### Wallet Events
 | Event | When Emitted |
 |---|---|
-| `WalletCreatedEvent` | Wallet creation completes (success or failure) |
 | `ImportProgressEvent` | During wallet import (address discovery, TX fetch) |
-| `ImportCompleteEvent` | Wallet import finishes |
-| `WalletStatusEvent` | Status changes (refreshed, shutdown) |
-
-### Query Responses
-| Event | When Emitted |
-|---|---|
-| `BalanceResponse` | In response to `GetBalanceQuery` |
-| `TransactionsResponse` | In response to `GetTransactionsQuery` |
-| `TransactionDetailResponse` | In response to `GetTransactionDetailQuery` |
-| `TransactionExportedEvent` | In response to `ExportTransactionQuery`: a proven transaction as BEEF, with its delegated indices and type-42 derivations |
-| `AnchorPublicKeyEvent` | In response to `IssueAnchorKeyCommand`: the wallet's anchor key for a context |
-| `AnchorSignedEvent` | In response to `SignWithAnchorKeyCommand` |
-| `Type42DestinationEvent` | In response to `DeriveType42DestinationCommand`: an address to pay and its hand-off |
-| `DeferredPaymentsResponse` | In response to `GetDeferredPaymentsQuery` |
-| `HeaderSyncStatusResponse` | In response to `GetHeaderSyncStatusQuery` |
+| `WalletStatusEvent` | The coordinator shut down |
 
 ### Transaction Events
 | Event | When Emitted |
 |---|---|
-| `TransactionRecordedEvent` | An outgoing transaction recorded via `RecordOutgoingCommand` |
 | `TransactionConfirmedEvent` | Transaction confirmed on-chain |
 | `TransactionConfirmationRevertedEvent` | A reorganization took the proof of a confirmation away |
-| `TransactionImportedEvent` | Transaction imported via `ImportTransactionCommand` |
+| `TransactionImportedEvent` | A transaction received that nobody requested: a proven foreign spender, a proof response |
 | `BalanceUpdatedEvent` | A wallet's balance changed |
 
 ### Payment Events
 | Event | When Emitted |
 |---|---|
-| `InvoiceCreatedEvent` | Invoice created with payment addresses |
 | `InvoicePaidEvent` | Invoice marked as paid |
-| `PaymentReadyEvent` | BEEF constructed, ready to send to counterparty |
 
 ### Validation Events
 | Event | When Emitted |
 |---|---|
-| `BEEFValidationResultEvent` | BEEF validation + SPV validation + broadcast complete |
+| `BEEFValidationResultEvent` | A payment that waited for its block header is decided |
 | `SPVValidationResultEvent` | Standalone SPV validation result (no BEEF correlation) |
 
 ### Channel Events
 | Event | When Emitted |
 |---|---|
 | `ChannelRequestReceivedEvent` | Peer wants to open a channel (show UI for approval) |
-| `ChannelOpenedEvent` | Channel is open and ready for payments |
-| `ChannelPaymentEvent` | Payment made or received on a channel |
-| `ChannelClosedEvent` | Channel closed with settlement |
+| `ChannelOpenedEvent` | A channel this node serves is open |
+| `ChannelPaymentEvent` | A payment received on a channel this node serves |
+| `ChannelClosedEvent` | A channel closed by the counterparty or the settlement timer |
 | `ChannelP2PMessageToSendEvent` | App must transmit this P2P message to a peer |
 
 ### Utility Events
 | Event | When Emitted |
 |---|---|
 | `UTXOSplitStartedEvent` | Benford split operation started |
-| `UTXOSplitCompleteEvent` | Benford split operation finished |
-| `TimestampCompleteEvent` | OP_RETURN timestamp archive committed on-chain |
-| `BlockHeadersStoredEvent` | A batch of block headers stored, from peers or a `StoreHeadersCommand` |
+| `BlockHeadersStoredEvent` | A batch of block headers a peer sent, stored |
 | `HeaderSyncStatusEvent` | Header sync caught up with its peers, or fell behind them |
-| `WatchAddressRegisteredEvent` | Watch address registered |
 
 ### Error Events
 | Event | When Emitted |
 |---|---|
-| `ErrorEvent` | Any unhandled error in the coordinator |
+| `ErrorEvent` | A failure with no reply of its own; `requestId` names the request that caused it, if one did |

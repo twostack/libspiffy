@@ -5,15 +5,15 @@
 /// ```dart
 /// import 'package:libspiffy/coordinator.dart';
 ///
-/// // Send commands
-/// libspiffy.coordinator.tell(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet'));
+/// // Send a request and get its own reply; a failure throws CoordinatorFailure
+/// final wallet = await libspiffy.coordinator
+///     .ask(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet', mnemonic: mnemonic));
 ///
-/// // Subscribe to events
-/// libspiffy.coordinatorEvents?.listen((event) {
-///   if (event is WalletCreatedEvent) { ... }
-///   if (event is PaymentReadyEvent) { ... }
-/// });
+/// // Follow what happens without a request
+/// libspiffy.coordinator.on<BalanceUpdatedEvent>(walletId: 'my-wallet').listen(render);
 /// ```
+///
+/// `example/coordinator_example.dart` runs this offline.
 ///
 /// This provides clean command/event names without collisions with internal domain types.
 /// For access to internal actors and domain types, use `package:libspiffy/libspiffy.dart`.

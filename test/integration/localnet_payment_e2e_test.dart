@@ -61,45 +61,33 @@ void main() {
   /// [payee] invoices [amount]; returns the invoice id and its address.
   Future<(String, String)> invoice(
       LocalnetNode payee, String walletId, int amount) async {
-    final created = payee.next<InvoiceCreatedEvent>((e) => e.walletId == walletId);
-    payee.coordinator.tell(CreateInvoiceCommand(
+    final event = await payee.coordinator.ask(CreateInvoiceCommand(
       walletId: walletId,
       amount: BigInt.from(amount),
       description: 'localnet',
       expiresInSeconds: 3600,
     ));
-    final event = await created;
-    expect(event.success, isTrue, reason: event.error);
     return (event.invoiceId, event.addresses.first);
   }
 
   /// [payer] pays the invoice; returns the payment it hands the payee.
   Future<PaymentReadyEvent> pay(LocalnetNode payer, String walletId,
-      String invoiceId, String address, int amount) async {
-    final ready = payer.next<PaymentReadyEvent>((e) => e.invoiceId == invoiceId);
-    payer.coordinator.tell(PayInvoiceCommand(
-      walletId: walletId,
-      invoiceId: invoiceId,
-      addresses: [address],
-      amount: BigInt.from(amount),
-    ));
-    final payment = await ready;
-    expect(payment.success, isTrue, reason: payment.error);
-    return payment;
-  }
+      String invoiceId, String address, int amount) =>
+      payer.coordinator.ask(PayInvoiceCommand(
+        walletId: walletId,
+        invoiceId: invoiceId,
+        addresses: [address],
+        amount: BigInt.from(amount),
+      ));
 
   /// [payee] validates the BEEF it was handed, and submits it.
   Future<BEEFValidationResultEvent> receive(LocalnetNode payee,
-      String walletId, String invoiceId, PaymentReadyEvent payment) async {
-    final result = payee.next<BEEFValidationResultEvent>(
-        (e) => e.walletId == walletId && e.txid == payment.txid);
-    payee.coordinator.tell(ValidateBEEFCommand(
-      walletId: walletId,
-      beefHex: hex.encode(payment.beefBytes),
-      invoiceId: invoiceId,
-    ));
-    return result;
-  }
+      String walletId, String invoiceId, PaymentReadyEvent payment) =>
+      payee.coordinator.ask(ValidateBEEFCommand(
+        walletId: walletId,
+        beefHex: hex.encode(payment.beefBytes),
+        invoiceId: invoiceId,
+      ));
 
   test('Alice pays Bob\'s invoice; Bob submits it, the node mines it, and both wallets confirm it',
       () async {
@@ -128,8 +116,9 @@ void main() {
         reason: 'ARC accepted the payment but the node does not hold it');
 
     // What each wallet holds before the block. Bob: the payment,
-    // unconfirmed. Alice: her input held for the payment, and no change
-    // yet, since her own node has not seen the network hold it.
+    // unconfirmed. Alice: her input held for the payment and no change yet,
+    // until her own status scan hears the network hold it; then her input
+    // is spent and her change available.
     final fee = aliceBefore.totalBalance -
         BigInt.from(50000) -
         payment.changeAmount;
@@ -139,8 +128,13 @@ void main() {
     expect(bobHeld.unconfirmedBalance, BigInt.from(50000));
     expect(bobHeld.confirmedBalance, BigInt.zero);
     final aliceHeld = await alice.balance(aliceWallet);
-    expect(aliceHeld.totalBalance, BigInt.zero);
-    expect(aliceHeld.reservedBalance, aliceBefore.confirmedBalance);
+    if (aliceHeld.reservedBalance > BigInt.zero) {
+      expect(aliceHeld.reservedBalance, aliceBefore.confirmedBalance);
+      expect(aliceHeld.totalBalance, BigInt.zero);
+    } else {
+      expect(aliceHeld.totalBalance, payment.changeAmount,
+          reason: 'her scan heard the network hold the payment: only the change is hers');
+    }
     expect((await bob.transaction(bobWallet, payment.txid))!.netAmount,
         BigInt.from(50000));
 

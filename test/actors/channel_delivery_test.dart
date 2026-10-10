@@ -219,6 +219,27 @@ void main() {
       expect(emittedOf<coord.ErrorEvent>().single.message, contains('settlement margin has begun'));
     });
 
+    // libspiffy-4kfq: a funding spending a coin already spent elsewhere sat
+    // at SENT_TO_NETWORK, and its channel_open went every resendAtMost for a
+    // day; the server spent each one asking ARC, and other channels waited.
+    test('a funding that can never be mined stops channel_open and fails the open for good', () async {
+      final id = await requestOpen('open-1');
+      fundingSent(id);
+      await settle(150);
+      expect(sent('channel_open'), isNotEmpty);
+
+      events.add(FundingFailedEvent(channelId: id, fundingTxId: 'f' * 64, reason: 'INPUT_SPENT'));
+      await settle();
+      final failed = emittedOf<coord.ErrorEvent>().single;
+      expect(failed.requestId, 'open-1');
+      expect(failed.stillSent, isFalse);
+      expect(failed.message, contains('can never be mined'));
+
+      final sends = sent('channel_open').length;
+      await settle(450);
+      expect(sent('channel_open'), hasLength(sends), reason: 'nothing more is sent for a funding that never opens');
+    });
+
     test('a channel_opened from anyone but the server is refused', () async {
       final id = await requestOpen('open-1');
       fundingSent(id);

@@ -444,6 +444,9 @@ class PaymentChannelManagerActor extends Actor {
         case final ResendChannelOpenMessage msg:
           await _handleResendChannelOpen(msg);
           break;
+        case final RecordFundingFailedMessage msg:
+          await _handleRecordFundingFailed(msg);
+          break;
         case final RecordServerOpenedMessage msg:
           await _handleRecordServerOpened(msg);
           break;
@@ -1609,7 +1612,8 @@ class PaymentChannelManagerActor extends Actor {
       }
       // Open, or funded and waiting for the server to open it (bead
       // libspiffy-jark).
-      final waiting = state.status == ChannelStatus.refundSigned.name && state.fundingSent;
+      final waiting =
+          state.status == ChannelStatus.refundSigned.name && state.fundingSent && !state.fundingFailed;
       if (state.status != ChannelStatus.open.name && !waiting) {
         throw StateError('Channel ${msg.channelId} is not open here '
             '(status=${state.status}): there is no channel_open to re-send'
@@ -2988,6 +2992,27 @@ class PaymentChannelManagerActor extends Actor {
   /// which picks between the two. The aggregate's own guard — it refuses to
   /// expire a channel that is already terminated — is what makes the
   /// recording happen once.
+  /// The wallet failed a client's sent funding: journal that the channel
+  /// never opens, so its `channel_open` is sent no more (bead
+  /// libspiffy-4kfq). A channel that already opened, or whose failure is
+  /// already journaled, is left as it is.
+  Future<void> _handleRecordFundingFailed(RecordFundingFailedMessage msg) async {
+    try {
+      final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
+      final state = _stateOrThrow(await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+      if (state.fundingFailed || state.status != ChannelStatus.refundSigned.name || !state.fundingSent) return;
+      _log.warning('Channel ${msg.channelId}: its funding ${msg.fundingTxId} can never be mined '
+          '(${msg.reason}); it will not open');
+      _broadcastEvents(await _askAggregate(
+        msg.channelId,
+        aggregateRef,
+        RecordFundingFailedCommand(channelId: msg.channelId, fundingTxId: msg.fundingTxId, reason: msg.reason),
+      ));
+    } catch (e, stackTrace) {
+      _log.warning('Recording the failed funding of channel ${msg.channelId} failed: $e', e, stackTrace);
+    }
+  }
+
   Future<void> _handleExpireChannel(ExpireChannelMessage msg) async {
     final originalSender = context.sender;
 

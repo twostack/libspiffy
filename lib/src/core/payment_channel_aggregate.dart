@@ -84,6 +84,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'fundingBroadcastError': s.fundingBroadcastError,
         'fundingRecordedInWallet': s.fundingRecordedInWallet,
         'fundingSent': s.fundingSent,
+        'fundingFailed': s.fundingFailed,
         'returnLegRecordedInWallet': s.returnLegRecordedInWallet,
         'lockTimeUnix': s.lockTimeUnix,
         'refundTxHex': s.refundTxHex,
@@ -141,6 +142,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingBroadcastError: map['fundingBroadcastError'] as String?,
       fundingRecordedInWallet: map['fundingRecordedInWallet'] as bool? ?? false,
       fundingSent: map['fundingSent'] as bool? ?? false,
+      fundingFailed: map['fundingFailed'] as bool? ?? false,
       returnLegRecordedInWallet:
           map['returnLegRecordedInWallet'] as bool? ?? false,
       lockTimeUnix: map['lockTimeUnix'] as int?,
@@ -272,6 +274,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingInputSats: currentState.fundingInputSats,
       fundingRecordedInWallet: currentState.fundingRecordedInWallet,
       fundingSent: currentState.fundingSent,
+      fundingFailed: currentState.fundingFailed,
       returnLegRecordedInWallet: currentState.returnLegRecordedInWallet,
       fundingBroadcastInFlight: currentState.fundingBroadcastInFlight,
       clientPeerId: currentState.clientPeerId,
@@ -338,6 +341,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       return _handleRecordFundingInWallet(currentState, command);
     } else if (command is RecordFundingSentCommand) {
       return _handleRecordFundingSent(currentState, command);
+    } else if (command is RecordFundingFailedCommand) {
+      return _handleRecordFundingFailed(currentState, command);
     } else if (command is RequestRefundSignatureCommand) {
       return _handleRequestRefundSignature(currentState, command);
     } else if (command is ProvideRefundSignatureCommand) {
@@ -383,6 +388,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       final FundingBroadcastFailedEvent evt => _applyFundingBroadcastFailed(state, evt),
       final FundingRecordedInWalletEvent evt => _applyFundingRecordedInWallet(state, evt),
       final FundingSentEvent evt => _applyFundingSent(state, evt),
+      final FundingFailedEvent evt => _applyFundingFailed(state, evt),
       final ChannelOpenedEvent evt => _applyChannelOpened(state, evt),
       final PaymentRecordedEvent evt => _applyPaymentRecorded(state, evt),
       final PaymentAcknowledgedEvent evt => _applyPaymentAcknowledged(state, evt),
@@ -925,6 +931,35 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ];
   }
 
+  /// The client's sent funding can never be mined (bead libspiffy-4kfq).
+  /// Only a funding that was sent and has not opened the channel; recorded
+  /// once.
+  List<Event> _handleRecordFundingFailed(
+    ChannelState currentState,
+    RecordFundingFailedCommand cmd,
+  ) {
+    if (currentState.role != ChannelRole.client) {
+      throw StateError('Only the client funds the channel');
+    }
+    if (cmd.fundingTxId != currentState.fundingTxId) {
+      throw StateError('Funding transaction ${cmd.fundingTxId} is not the funding of channel '
+          '${cmd.channelId} (${currentState.fundingTxId})');
+    }
+    if (currentState.fundingFailed) return const [];
+    if (currentState.status != ChannelStatus.refundSigned || !currentState.fundingSent) {
+      throw StateError('Channel ${cmd.channelId} has no sent funding waiting to open it '
+          '(status=${currentState.status.name})');
+    }
+    return [
+      FundingFailedEvent(
+        channelId: cmd.channelId,
+        fundingTxId: cmd.fundingTxId,
+        reason: cmd.reason,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
   /// The client wallet holds the funding transaction of the broadcast in
   /// progress (libspiffy-fsy).
   List<Event> _handleRecordFundingInWallet(
@@ -1003,6 +1038,10 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       if (!currentState.fundingSent) {
         throw StateError('Funding transaction ${cmd.fundingTxId} has not been '
             'sent');
+      }
+      if (currentState.fundingFailed) {
+        throw StateError('Funding transaction ${cmd.fundingTxId} can never be '
+            'mined (bead libspiffy-4kfq)');
       }
       fundingTxHex = currentState.fundingTxHex ?? fundingTxHex;
     } else {
@@ -1679,6 +1718,14 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingBroadcastInFlight: false,
       fundingBroadcastError: event.error,
       fundingRecordedInWallet: state.fundingRecordedInWallet || event.walletRecorded,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
+  }
+
+  ChannelState _applyFundingFailed(ChannelState state, FundingFailedEvent event) {
+    return state.copyWith(
+      fundingFailed: true,
       version: event.version,
       lastModified: event.timestamp,
     );

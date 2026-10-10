@@ -56,6 +56,10 @@ class ChannelState extends State {
   /// client sends `channel_open` and opens when the server says it has.
   final bool fundingSent;
 
+  /// The sent funding can never be mined (bead libspiffy-4kfq): the channel
+  /// never opens, and nothing more is sent for it.
+  final bool fundingFailed;
+
   // Refund (T2)
   final int? lockTimeUnix;
 
@@ -148,6 +152,7 @@ class ChannelState extends State {
     this.fundingBroadcastError,
     this.fundingRecordedInWallet = false,
     this.fundingSent = false,
+    this.fundingFailed = false,
     this.lockTimeUnix,
     this.refundTxHex,
     this.refundClientSigHex,
@@ -212,6 +217,7 @@ class ChannelState extends State {
     Object? fundingBroadcastError = _unset,
     bool? fundingRecordedInWallet,
     bool? fundingSent,
+    bool? fundingFailed,
     Object? lockTimeUnix = _unset,
     Object? refundTxHex = _unset,
     Object? refundClientSigHex = _unset,
@@ -255,6 +261,7 @@ class ChannelState extends State {
       fundingBroadcastError: pick<String>(fundingBroadcastError, this.fundingBroadcastError),
       fundingRecordedInWallet: fundingRecordedInWallet ?? this.fundingRecordedInWallet,
       fundingSent: fundingSent ?? this.fundingSent,
+      fundingFailed: fundingFailed ?? this.fundingFailed,
       lockTimeUnix: pick<int>(lockTimeUnix, this.lockTimeUnix),
       refundTxHex: pick<String>(refundTxHex, this.refundTxHex),
       refundClientSigHex: pick<String>(refundClientSigHex, this.refundClientSigHex),

@@ -51,6 +51,7 @@ class ChannelProjection extends Projection<void> {
         FundingBroadcastFailedEvent,
         FundingRecordedInWalletEvent,
         FundingSentEvent,
+        FundingFailedEvent,
         ChannelOpenedEvent,
         PaymentRecordedEvent,
         PaymentAcknowledgedEvent,
@@ -118,6 +119,9 @@ class ChannelProjection extends Projection<void> {
         return true;
       case final FundingSentEvent evt:
         await _handleFundingSent(evt);
+        return true;
+      case final FundingFailedEvent evt:
+        await _handleFundingFailed(evt);
         return true;
       case FundingRecordedInWalletEvent():
         // Channel-side bookkeeping only; the wallet read model holds the
@@ -319,6 +323,20 @@ class ChannelProjection extends Projection<void> {
     await _storage.storePaymentChannel(existing.copyWith(
       state: PaymentChannelState.funding,
       clearErrorMessage: true,
+    ));
+  }
+
+  /// The sent funding can never be mined: the channel never opens (bead
+  /// libspiffy-4kfq).
+  Future<void> _handleFundingFailed(FundingFailedEvent event) async {
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      return;
+    }
+
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.failed,
+      errorMessage: 'The funding can never be mined: ${event.reason}',
     ));
   }
 

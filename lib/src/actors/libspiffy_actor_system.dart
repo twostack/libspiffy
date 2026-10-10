@@ -722,6 +722,8 @@ class LibSpiffyActorSystem {
         aliases: const ['FundingRecordedInWalletEvent']);
     EventRegistry.register<FundingSentEvent>(FundingSentEvent.stableTypeName, FundingSentEvent.fromMap,
         aliases: const ['FundingSentEvent']);
+    EventRegistry.register<FundingFailedEvent>(FundingFailedEvent.stableTypeName, FundingFailedEvent.fromMap,
+        aliases: const ['FundingFailedEvent']);
     EventRegistry.register<ChannelOpenedEvent>(ChannelOpenedEvent.stableTypeName, ChannelOpenedEvent.fromMap,
         aliases: const ['ChannelOpenedEvent']);
     EventRegistry.register<PaymentRecordedEvent>(PaymentRecordedEvent.stableTypeName, PaymentRecordedEvent.fromMap,

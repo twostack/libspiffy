@@ -702,6 +702,57 @@ class FundingSentEvent extends ChannelEvent {
   }
 }
 
+/// The client's sent funding can never be mined (bead libspiffy-4kfq): the
+/// wallet failed it, because a coin it spends is already spent by a
+/// confirmed transaction or ARC rejected it. The server never opens the
+/// channel on it, so the client stops sending `channel_open`; the channel
+/// never opened and nothing is locked in it.
+class FundingFailedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.funding.failed';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String fundingTxId;
+  final String reason;
+
+  FundingFailedEvent({
+    required String channelId,
+    required this.fundingTxId,
+    required this.reason,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'fundingTxId': fundingTxId,
+        'reason': reason,
+      };
+
+  factory FundingFailedEvent.fromMap(Map<String, dynamic> map) {
+    return FundingFailedEvent(
+      channelId: map['channelId'] as String,
+      fundingTxId: map['fundingTxId'] as String,
+      reason: map['reason'] as String? ?? '',
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 /// Channel is now open (funding TX broadcast)
 ///
 /// [fundingBeefHex] is the BEEF of the funding transaction (its ancestors

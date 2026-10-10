@@ -280,6 +280,9 @@ void main() {
       'AcceptChannelMessage',
       // The manager's reply to its own signing round trip, not a request.
       'MultisigTransactionSignedResponse',
+      // Told, not asked: the coordinator reports a funding the wallet failed
+      // and waits for nothing (bead libspiffy-4kfq).
+      'RecordFundingFailedMessage',
     };
     expect(covered.intersection(notCovered), isEmpty,
         reason: 'a type cannot be both covered and excused');

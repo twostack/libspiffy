@@ -817,6 +817,7 @@ class ChannelP2PAdapter {
     final readsRecord = event is ch.ChannelRejectedEvent ||
         event is ch.RefundCountersignedEvent ||
         event is ch.FundingSentEvent ||
+        event is ch.FundingFailedEvent ||
         event is ch.ChannelOpenedEvent ||
         event is ch.PaymentRecordedEvent ||
         event is ch.PaymentAcknowledgedEvent ||
@@ -842,6 +843,8 @@ class ChannelP2PAdapter {
       _onRefundCountersigned(event);
     } else if (event is ch.FundingSentEvent) {
       _onFundingSent(event);
+    } else if (event is ch.FundingFailedEvent) {
+      _onFundingFailed(event);
     } else if (event is ch.ChannelOpenedEvent) {
       _onChannelOpened(event);
     } else if (event is ch.PaymentRecordedEvent) {
@@ -983,6 +986,24 @@ class ChannelP2PAdapter {
     outbox.open = open;
     _emitP2PMessage(serverPeerId, 'channel_open', open);
     _rearm(channelId, outbox, reset: true);
+  }
+
+  /// The client's funding can never be mined (bead libspiffy-4kfq): the
+  /// server never opens the channel on it, so `channel_open` is sent no
+  /// more, and an open the app is still waiting for fails for good.
+  void _onFundingFailed(ch.FundingFailedEvent event) {
+    final outbox = _outboxes[event.channelId];
+    if (outbox != null && outbox.open != null) {
+      outbox.open = null;
+      _rearm(event.channelId, outbox, reset: true);
+    }
+    _emitEvent(coord.ErrorEvent(
+      walletId: _walletFor(event.channelId),
+      source: 'ChannelP2PAdapter',
+      message: 'Channel ${event.channelId}: its funding ${event.fundingTxId} can never be mined '
+          '(${event.reason}); the channel will not open',
+      requestId: _answering(_Request.open, event.channelId),
+    ));
   }
 
   /// The server answered the client's `channel_open`: it is sent no more.

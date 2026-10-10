@@ -716,6 +716,21 @@ class ResendChannelOpenMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// The wallet failed the client's sent funding [fundingTxId] of
+/// [channelId]: it can never be mined (bead libspiffy-4kfq). The manager
+/// journals it ([RecordFundingFailedCommand]); nothing is answered.
+class RecordFundingFailedMessage extends LocalMessage {
+  final String channelId;
+  final String fundingTxId;
+  final String reason;
+
+  RecordFundingFailedMessage({required this.channelId, required this.fundingTxId, required this.reason})
+      : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 /// The server says it opened the channel on [fundingTxId]:[fundingOutputIndex]
 /// (`channel_opened`, bead libspiffy-jark): the client journals its open.
 /// Answered with [ServerOpenRecordedResponse].
@@ -954,6 +969,10 @@ class FullChannelStateResponse extends ActorResponse {
   /// (bead libspiffy-jark).
   final bool fundingSent;
 
+  /// The sent funding can never be mined; the channel never opens (bead
+  /// libspiffy-4kfq).
+  final bool fundingFailed;
+
   final String? clientPeerId;
   final String? serverPeerId;
   final String? context;
@@ -1029,6 +1048,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.fundingRecordedInWallet = false,
     this.fundingBroadcastInFlight = false,
     this.fundingSent = false,
+    this.fundingFailed = false,
     this.clientPeerId,
     this.serverPeerId,
     this.context,

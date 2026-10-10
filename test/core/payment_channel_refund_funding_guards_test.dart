@@ -448,6 +448,41 @@ void main() {
       expect(await ref.ask<dynamic>(open(), _ask), _applied);
     });
 
+    // libspiffy-4kfq: a funding the wallet failed (a coin it spends already
+    // spent elsewhere) never opens the channel.
+    test('client: a sent funding that can never be mined is recorded failed, once, and never opens', () async {
+      final ref = await spawn(f.openClientJournal().take(5).toList());
+      expect(
+          await ref.ask<dynamic>(RecordFundingSentCommand(channelId: _channelId, fundingTxId: f.fundingTxId), _ask),
+          _applied);
+
+      expectRejected(
+          await ref.ask<dynamic>(
+              RecordFundingFailedCommand(channelId: _channelId, fundingTxId: 'a' * 64, reason: 'INPUT_SPENT'), _ask),
+          'is not the funding');
+      expect(
+          await ref.ask<dynamic>(
+              RecordFundingFailedCommand(channelId: _channelId, fundingTxId: f.fundingTxId, reason: 'INPUT_SPENT'),
+              _ask),
+          _applied);
+      expect(journal().whereType<FundingFailedEvent>().single.reason, 'INPUT_SPENT');
+
+      await ref.ask<dynamic>(
+          RecordFundingFailedCommand(channelId: _channelId, fundingTxId: f.fundingTxId, reason: 'INPUT_SPENT'), _ask);
+      expect(journal().whereType<FundingFailedEvent>(), hasLength(1), reason: 'recorded once');
+
+      expectRejected(await ref.ask<dynamic>(open(), _ask), 'can never be mined');
+    });
+
+    test('client: a funding not yet sent is not recorded failed', () async {
+      final ref = await spawn(f.openClientJournal().take(5).toList());
+      expectRejected(
+          await ref.ask<dynamic>(
+              RecordFundingFailedCommand(channelId: _channelId, fundingTxId: f.fundingTxId, reason: 'INPUT_SPENT'),
+              _ask),
+          'no sent funding');
+    });
+
     test('client: funding is recorded sent only for the broadcast in flight', () async {
       final ref = await spawn(f.openClientJournal().take(4).toList());
 

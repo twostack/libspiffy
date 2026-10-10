@@ -73,6 +73,10 @@ class WalletCoordinatorActor extends Actor {
   final ActorRef _arcActor;
   final ActorRef _walletProjection;
 
+  /// The channel manager, told when the wallet fails a channel's funding
+  /// (bead libspiffy-4kfq).
+  final ActorRef _channelManager;
+
   /// Header sync: takes [StoreHeadersCommand]'s headers and
   /// [GetHeaderSyncStatusQuery], and reports every batch it processes
   /// ([HeaderSyncReport]).
@@ -137,6 +141,10 @@ class WalletCoordinatorActor extends Actor {
       // available as it hears so (bead libspiffy-vj4j).
       case domain_events.UTXOMarkedAvailableEvent(:final walletId, :final txid):
         unawaited(_payInvoiceOfHeldPayment(walletId, txid, DeferredNetworkStatus.seenOnNetwork));
+      // A channel's funding the wallet failed can never open the channel
+      // (bead libspiffy-4kfq).
+      case domain_events.DeferredTransactionFailedEvent(:final walletId, :final txid, :final networkStatus, :final reason):
+        unawaited(_failChannelOfFunding(walletId, txid, reason ?? networkStatus));
       case invoice_events.InvoicePaidEvent(:final walletId, :final invoiceId, :final txid, :final amountReceived):
         _emitEvent(InvoicePaidEvent(
             walletId: walletId, invoiceId: invoiceId, txid: txid, amountReceived: amountReceived));
@@ -446,6 +454,7 @@ class WalletCoordinatorActor extends Actor {
         _arcActor = arcActor,
         _headerSyncActor = headerSyncActor,
         _walletProjection = walletProjection,
+        _channelManager = channelManager,
         _benfordCoordinator = benfordCoordinator,
         _storage = storage,
         _deadlineSweepInterval = deadlineSweepInterval,
@@ -610,6 +619,22 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _reportUnfinishedChannels() async {
     try {
       for (final walletId in await _storage.listWallets()) {
+        // A funding the wallet failed before its channel heard of it (before
+        // bead libspiffy-4kfq, or while the coordinator was down): the
+        // channel is told now. A resolution the wallet already made, not a
+        // retry.
+        for (final channel in await _storage.getPaymentChannelsForWallet(walletId)) {
+          final fundingTxId = channel.fundingTxId;
+          if (channel.role != PaymentChannelRole.client ||
+              channel.state != PaymentChannelState.funding ||
+              fundingTxId == null) {
+            continue;
+          }
+          final payment = await _storage.getDeferredPayment(walletId, fundingTxId);
+          if (payment != null && payment.state == DeferredPaymentState.failed) {
+            await _failChannelOfFunding(walletId, fundingTxId, payment.lastNetworkStatus ?? 'failed');
+          }
+        }
         final unfinished = [
           for (final channel in await _storage.getPaymentChannelsForWallet(walletId))
             if (_isUnfinished(channel.state))
@@ -635,6 +660,28 @@ class WalletCoordinatorActor extends Actor {
     } catch (e, stackTrace) {
       _log.warning('Could not look for unfinished channels at startup: $e',
           e, stackTrace);
+    }
+  }
+
+  /// When [txid] of [walletId] is a channel's funding (a deferred payment
+  /// with purpose `channel-funding`, paid to `channel:<id>`), tells the
+  /// channel manager it can never be mined: the client stops sending its
+  /// `channel_open`, which the server would refuse for as long as it came
+  /// (bead libspiffy-4kfq). Anything else is left alone.
+  Future<void> _failChannelOfFunding(String walletId, String txid, String reason) async {
+    try {
+      final payment = await _storage.getDeferredPayment(walletId, txid);
+      if (payment == null || payment.purpose != 'channel-funding') return;
+      for (final recipient in payment.recipientAddresses) {
+        if (!recipient.startsWith('channel:')) continue;
+        _channelManager.tell(ch.RecordFundingFailedMessage(
+          channelId: recipient.substring('channel:'.length),
+          fundingTxId: txid,
+          reason: reason,
+        ));
+      }
+    } catch (e, stackTrace) {
+      _log.warning('Could not tell the channel of failed funding $txid: $e', e, stackTrace);
     }
   }
 

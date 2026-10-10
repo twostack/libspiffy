@@ -401,6 +401,32 @@ class RecordFundingSentCommand extends ChannelCommand {
   String get commandType => 'RecordFundingSentCommand';
 }
 
+/// Client records that its sent funding can never be mined: the wallet
+/// failed it (a coin it spends is already spent by a confirmed transaction,
+/// or ARC rejected it). Emits [FundingFailedEvent]; nothing more is sent
+/// for the channel (bead libspiffy-4kfq).
+class RecordFundingFailedCommand extends ChannelCommand {
+  final String fundingTxId;
+  final String reason;
+
+  RecordFundingFailedCommand({
+    required String channelId,
+    required this.fundingTxId,
+    required this.reason,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordFundingFailedCommand';
+}
+
 /// Client records that its wallet holds the funding transaction of the
 /// broadcast in progress; emits [FundingRecordedInWalletEvent]
 /// (libspiffy-fsy).

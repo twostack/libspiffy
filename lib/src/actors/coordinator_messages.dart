@@ -131,6 +131,13 @@ class CoordinatorFailure implements Exception {
   /// The coordinator stopped before it answered.
   bool get closed => event == null;
 
+  /// What failed is still being sent, and may yet land
+  /// ([ErrorEvent.stillSent]).
+  bool get stillSent => switch (event) {
+        ErrorEvent(:final stillSent) => stillSent,
+        _ => false,
+      };
+
   @override
   String toString() => 'CoordinatorFailure($requestId: $message)';
 }
@@ -3447,12 +3454,20 @@ class ErrorEvent extends CoordinatorEvent {
   /// when no request caused this.
   final String? requestId;
 
+  /// Whether what failed is still being sent: a channel payment the server
+  /// has not acknowledged in time, or a `channel_open` it refused or has
+  /// not answered, each of which the client keeps resending. A later event
+  /// that answers no request reports it if it lands (a [ChannelPaymentEvent],
+  /// a [ChannelOpenedEvent]). False for a failure that is final.
+  final bool stillSent;
+
   ErrorEvent({
     this.walletId,
     required this.source,
     required this.message,
     this.stackTrace,
     this.requestId,
+    this.stillSent = false,
   });
 }
 

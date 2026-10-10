@@ -194,6 +194,7 @@ void main() {
       final refused = emittedOf<coord.ErrorEvent>().single;
       expect(refused.requestId, 'open-1');
       expect(refused.message, contains('SENT_TO_NETWORK'));
+      expect(refused.stillSent, isTrue, reason: 'channel_open goes again');
       expect(emittedOf<coord.ChannelOpenedEvent>(), isEmpty);
 
       final sends = sent('channel_open').length;
@@ -332,6 +333,7 @@ void main() {
       final failed = emittedOf<coord.ErrorEvent>().single;
       expect(failed.requestId, 'r1');
       expect(failed.message, contains('not acknowledged'));
+      expect(failed.stillSent, isTrue);
       final sends = sent('payment_update').length;
       await settle(250);
       expect(sent('payment_update').length, greaterThan(sends), reason: 'a failed payment is kept and resent');
@@ -354,6 +356,7 @@ void main() {
       final refused = emittedOf<coord.ErrorEvent>().single;
       expect(refused.requestId, 'r1');
       expect(refused.message, contains('balances do not follow'));
+      expect(refused.stillSent, isFalse, reason: 'a refused payment is final');
       final sends = sent('payment_update').length;
       await settle(400);
       expect(sent('payment_update'), hasLength(sends));
@@ -427,6 +430,7 @@ void main() {
       final failed = emittedOf<coord.ErrorEvent>().single;
       expect(failed.requestId, 'r2');
       expect(failed.message, contains('closed without the payment of 500 sats'));
+      expect(failed.stillSent, isFalse);
     });
   });
 

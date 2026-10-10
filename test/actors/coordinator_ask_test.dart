@@ -173,6 +173,16 @@ void main() {
     failure as CoordinatorFailure;
     expect(failure.event, isA<ErrorEvent>().having((e) => e.requestId, 'requestId', query.requestId));
     expect(failure.message, contains('the UTXO table is unreadable'));
+    expect(failure.stillSent, isFalse);
+  });
+
+  test('a failure says whether what failed is still being sent', () {
+    ErrorEvent error({required bool stillSent}) =>
+        ErrorEvent(source: 'test', message: 'not acknowledged', requestId: 'r1', stillSent: stillSent);
+
+    expect(CoordinatorFailure('r1', 'x', event: error(stillSent: true)).stillSent, isTrue);
+    expect(CoordinatorFailure('r1', 'x', event: error(stillSent: false)).stillSent, isFalse);
+    expect(const CoordinatorFailure('r1', 'stopped').stillSent, isFalse);
   });
 
   test('a request still waiting when the coordinator stops fails as closed, and so does one sent after', () async {

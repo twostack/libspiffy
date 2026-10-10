@@ -1,3 +1,9 @@
+## 5.3.0
+
+A channel request's failure says whether what failed is still being sent (bead overnode_v2-0o5.3.4). A payment the server has not acknowledged within `ChannelTiming.confirmWithin` and an open the server refused are both answered with a `CoordinatorFailure`, and both are resent: the payment may still land, the open may still be taken. A refused payment, a rejected open or a payment a settlement left out are final. The app could tell them apart only by the failure's wording.
+
+- **`ErrorEvent.stillSent`**, and `CoordinatorFailure.stillSent` reading it: true when the client keeps resending what failed, so a later event that answers no request may report it landing (a `ChannelPaymentEvent`, a `ChannelOpenedEvent`). Set for an unacknowledged payment, for a `channel_error` refusing an open whose `channel_open` is still resent, and for a `channel_opened` the client failed to record while its `channel_open` is still resent. False everywhere else, and when no `ErrorEvent` reported the failure.
+
 ## 5.2.0
 
 A client's channel opens when its server has opened it (bead libspiffy-jark). The server opens a channel only once ARC reports the network holds its funding, `SEEN_ON_NETWORK` or `MINED`; the client opened as soon as ARC took the funding, which on testnet ARC can answer `SENT_TO_NETWORK` for minutes. The server refused, the client never heard, and it went on paying into a channel the server had never opened: its tab looked spent and the server's empty.

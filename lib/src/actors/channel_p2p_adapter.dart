@@ -772,8 +772,10 @@ class ChannelP2PAdapter {
     _emitEvent(coord.ErrorEvent(
       source: 'ChannelP2PAdapter',
       message: 'Channel error${channelId != null ? ' ($channelId)' : ''}: $error',
-      // The counterparty gave up on the open this side is waiting for.
+      // The counterparty refused the open this side is waiting for; while
+      // the funding is sent, channel_open goes again.
       requestId: channelId == null ? null : _answering(_Request.open, channelId),
+      stillSent: channelId != null && _resendingOpen(channelId),
     ));
   }
 
@@ -1081,6 +1083,7 @@ class ChannelP2PAdapter {
           '${payment.amountSats} sats within ${_confirmWithin.inSeconds} s. It is still sent, '
           'and goes with the close.',
       requestId: payment.requestId,
+      stillSent: true,
     ));
   }
 
@@ -1162,6 +1165,9 @@ class ChannelP2PAdapter {
 
   /// Whether [channelId]'s settlement margin has begun: a server would
   /// settle it as soon as it opened.
+  /// Whether `channel_open` for [channelId] is in the outbox.
+  bool _resendingOpen(String channelId) => _outboxes[channelId]?.open != null;
+
   bool _tooLateToOpen(String channelId) {
     final timing = _timing;
     final lockTimeUnix = _clientChannelInfo[channelId]?.lockTimeUnix;
@@ -1805,6 +1811,7 @@ class ChannelP2PAdapter {
         source: 'ChannelP2PAdapter',
         message: 'Channel ${response.channelId}: the server opened it, and opening it here failed: ${response.error}',
         requestId: _answering(_Request.open, response.channelId),
+        stillSent: _resendingOpen(response.channelId),
       ));
     });
   }

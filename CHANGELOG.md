@@ -1,3 +1,9 @@
+## 5.3.1
+
+A coin proven spent by a transaction from elsewhere stays spent when the payment stuck on it fails (bead libspiffy-4kfq). A payment that stays unsettled past `ARCActor.inFlightStuckAfter` has its inputs checked. When one is spent by a confirmed transaction proven against the local headers, the payment fails (`INPUT_SPENT`), and the failure releases its inputs. The proven-spent coin was released too, and became available again. When the spender was not one of the wallet's own transactions (sent from another wallet with the same keys), `SpentOutputRepair` never found it. Every later payment could take the coin up again, sit at `SENT_TO_NETWORK` and fail: on one phone the same coin was spent five times, two of them channel fundings the server rightly refused to open.
+
+- **After failing the payment, the ARC actor spends the coin** with `SpendUTXOCommand`, by the proven spender and at the block height of its proof, as `SpentOutputRepair` does for a spender of the wallet's own. Only for the wallet's own deferred payments: a transaction handed to the wallet is voided, as before, and spends none of its coins.
+
 ## 5.3.0
 
 A channel request's failure says whether what failed is still being sent (bead overnode_v2-0o5.3.4). A payment the server has not acknowledged within `ChannelTiming.confirmWithin` and an open the server refused are both answered with a `CoordinatorFailure`, and both are resent: the payment may still land, the open may still be taken. A refused payment, a rejected open or a payment a settlement left out are final. The app could tell them apart only by the failure's wording.

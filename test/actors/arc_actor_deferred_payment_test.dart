@@ -818,6 +818,30 @@ void main() {
       expect(walletManager.commands.whereType<VoidUnsettledTransactionCommand>(), isEmpty);
     });
 
+    // libspiffy-4kfq: the spender is no transaction of this wallet, so
+    // SpentOutputRepair never spends the coin; released by the failure, it
+    // was available again and the next payment took it up.
+    test('the coin it spent is spent by the proven spender, after the payment fails', () async {
+      await stuckFor(const Duration(hours: 2));
+      await scan();
+      final spend = walletManager.commands.whereType<SpendUTXOCommand>().single;
+      expect((spend.utxoKey, spend.spendingTxId, spend.blockHeight), (_inputKey, kFixtureTxid, kFixtureHeight));
+      final order = [
+        for (final c in walletManager.commands)
+          if (c is RecordTransactionNetworkStatusCommand && c.networkStatus == 'INPUT_SPENT')
+            'failed'
+          else if (c is SpendUTXOCommand)
+            'spent',
+      ];
+      expect(order, ['failed', 'spent'], reason: 'the failure releases the coin; the spend must come after it');
+    });
+
+    test('on the payee\'s side no coin of the wallet is spent', () async {
+      await stuckFor(const Duration(hours: 2), deferred: false);
+      await scan();
+      expect(walletManager.commands.whereType<SpendUTXOCommand>(), isEmpty);
+    });
+
     test('an explicit check of the payment answers INPUT_SPENT', () async {
       await stuckFor(const Duration(hours: 2));
       final result = await ask(CheckDeferredPaymentStatusMessage(walletId: _wallet, txid: stuck));

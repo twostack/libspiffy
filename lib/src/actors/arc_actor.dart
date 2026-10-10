@@ -65,7 +65,10 @@ enum _CheckOutcome { changed, unchanged, unknown }
 class _InputConflict {
   final String spentInput;
   final String spentBy;
-  const _InputConflict(this.spentInput, this.spentBy);
+
+  /// The block [spentBy] is in, as its proof showed.
+  final int blockHeight;
+  const _InputConflict(this.spentInput, this.spentBy, this.blockHeight);
 
   String get reason => 'Input $spentInput is already spent by $spentBy, a confirmed transaction';
 }
@@ -1410,9 +1413,11 @@ class ARCActor extends Actor {
   /// [inFlightStuckAfter]: if a coin it spends is already spent by another
   /// transaction, and that transaction's merkle proof checks out against the
   /// local header chain, [txid] can never be mined. Then a deferred payment
-  /// of the wallet fails (`INPUT_SPENT`, its inputs released), and a
-  /// transaction handed to the wallet is voided (its row failed, its pending
-  /// outputs voided). Returns the conflict, or null.
+  /// of the wallet fails (`INPUT_SPENT`, its inputs released) and the spent
+  /// coin is spent by its proven spender, so no later payment takes it up
+  /// again (bead libspiffy-4kfq); a transaction handed to the wallet is
+  /// voided (its row failed, its pending outputs voided). Returns the
+  /// conflict, or null.
   ///
   /// This is the case ARC does not resolve: a transaction double-spending a
   /// coin mined long ago can sit at SENT_TO_NETWORK for ever, and the wallet
@@ -1438,6 +1443,16 @@ class ARCActor extends Actor {
             source: 'dataSource', explicit: true, detail: '${conflict.reason}; this payment can never be mined');
         _walletManager.tell(WalletCommandMessage(walletId,
             UpdateTransactionStatusCommand(walletId: walletId, txid: txid, newStatus: TransactionStatus.failed)));
+        // Released, the coin would be available again although it is gone:
+        // the spender need not be a transaction of this wallet, so
+        // SpentOutputRepair never finds it.
+        _walletManager.tell(WalletCommandMessage(walletId, SpendUTXOCommand(
+          walletId: walletId,
+          utxoKey: conflict.spentInput,
+          spendingTxId: conflict.spentBy,
+          fee: BigInt.zero,
+          blockHeight: conflict.blockHeight,
+        )));
       }
     } else {
       _walletManager.tell(WalletCommandMessage(walletId, VoidUnsettledTransactionCommand(
@@ -1545,7 +1560,7 @@ class ARCActor extends Actor {
         final spends = proven.headerVerified &&
             proven.transaction.inputs
                 .any((i) => i.prevTxnId.toString() == prevTxid && i.prevTxnOutputIndex == vout);
-        if (spends) return _InputConflict('$prevTxid:$vout', spender.txid);
+        if (spends) return _InputConflict('$prevTxid:$vout', spender.txid, proven.blockHeight);
       } catch (e) {
         _log.fine('Could not check input $prevTxid:$vout of $txid for a spend elsewhere: $e');
       }

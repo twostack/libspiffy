@@ -126,7 +126,7 @@ void main() {
   group('retrying a failed funding broadcast', () {
     test(
         'the channel id alone re-broadcasts the same transaction, records the '
-        'funding once and opens', () async {
+        'funding once and records it sent', () async {
       await spawn(countersigned());
       arc.failWith = 'ARC unavailable';
 
@@ -160,7 +160,14 @@ void main() {
               .whereType<FundingBroadcastStartedEvent>()
               .map((e) => e.attempt),
           [1, 2]);
-      expect(journalTypes().last, ChannelOpenedEvent.stableTypeName);
+      // Open when the server says it is (bead libspiffy-jark).
+      expect(journalTypes().last, FundingSentEvent.stableTypeName);
+      expect(journal().whereType<ChannelOpenedEvent>(), isEmpty);
+
+      final again = await retryFunding();
+      expect(again.success, isFalse);
+      expect(again.error, contains('waits for the server to open it'));
+      expect(arc.broadcasts, hasLength(2), reason: 'a sent funding is not broadcast again');
     });
 
     test('an already-open channel is refused, and nothing is journaled or '
@@ -195,6 +202,27 @@ void main() {
   });
 
   group('re-sending channel_open', () {
+    test('a channel whose funding is sent re-sends it while it waits for the '
+        'server', () async {
+      await spawn([
+        ...countersigned(),
+        FundingBroadcastStartedEvent(channelId: _channelId, fundingTxId: f.fundingTxId, attempt: 1, version: 5),
+        FundingSentEvent(
+            channelId: _channelId,
+            fundingTxId: f.fundingTxId,
+            fundingOutputIndex: 0,
+            fundingTxHex: f.fundingTxHex,
+            fundingBeefHex: 'beef01',
+            version: 6),
+      ]);
+
+      final response = await resendOpen();
+
+      expect(response.success, isTrue, reason: response.error);
+      expect(response.fundingTxHex, f.fundingTxHex);
+      expect(response.fundingBeefHex, 'beef01');
+    });
+
     test('rebuilds the payload from the journal and journals nothing',
         () async {
       await spawn(opened());

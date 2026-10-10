@@ -52,6 +52,10 @@ class ChannelState extends State {
   /// The funding transaction is recorded in the client wallet.
   final bool fundingRecordedInWallet;
 
+  /// ARC took the client's funding broadcast (bead libspiffy-jark): the
+  /// client sends `channel_open` and opens when the server says it has.
+  final bool fundingSent;
+
   // Refund (T2)
   final int? lockTimeUnix;
 
@@ -143,6 +147,7 @@ class ChannelState extends State {
     this.fundingBroadcastInFlight = false,
     this.fundingBroadcastError,
     this.fundingRecordedInWallet = false,
+    this.fundingSent = false,
     this.lockTimeUnix,
     this.refundTxHex,
     this.refundClientSigHex,
@@ -206,6 +211,7 @@ class ChannelState extends State {
     bool? fundingBroadcastInFlight,
     Object? fundingBroadcastError = _unset,
     bool? fundingRecordedInWallet,
+    bool? fundingSent,
     Object? lockTimeUnix = _unset,
     Object? refundTxHex = _unset,
     Object? refundClientSigHex = _unset,
@@ -248,6 +254,7 @@ class ChannelState extends State {
       fundingBroadcastInFlight: fundingBroadcastInFlight ?? this.fundingBroadcastInFlight,
       fundingBroadcastError: pick<String>(fundingBroadcastError, this.fundingBroadcastError),
       fundingRecordedInWallet: fundingRecordedInWallet ?? this.fundingRecordedInWallet,
+      fundingSent: fundingSent ?? this.fundingSent,
       lockTimeUnix: pick<int>(lockTimeUnix, this.lockTimeUnix),
       refundTxHex: pick<String>(refundTxHex, this.refundTxHex),
       refundClientSigHex: pick<String>(refundClientSigHex, this.refundClientSigHex),

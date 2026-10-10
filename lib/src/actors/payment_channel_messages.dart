@@ -424,10 +424,17 @@ class ChannelOpenedResponse extends ActorResponse {
   @override
   final String? error;
 
+  /// The funding output the channel is open on, on success (bead
+  /// libspiffy-jark: the server names it in `channel_opened`).
+  final String? fundingTxId;
+  final int? fundingOutputIndex;
+
   ChannelOpenedResponse({
     required this.channelId,
     required this.success,
     this.error,
+    this.fundingTxId,
+    this.fundingOutputIndex,
   });
 }
 
@@ -709,6 +716,35 @@ class ResendChannelOpenMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// The server says it opened the channel on [fundingTxId]:[fundingOutputIndex]
+/// (`channel_opened`, bead libspiffy-jark): the client journals its open.
+/// Answered with [ServerOpenRecordedResponse].
+class RecordServerOpenedMessage extends LocalMessage {
+  final String channelId;
+  final String fundingTxId;
+  final int fundingOutputIndex;
+
+  RecordServerOpenedMessage({
+    required this.channelId,
+    required this.fundingTxId,
+    required this.fundingOutputIndex,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// Whether the client journaled its open on the server's word.
+class ServerOpenRecordedResponse extends ActorResponse {
+  final String channelId;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  ServerOpenRecordedResponse({required this.channelId, required this.success, this.error});
+}
+
 /// The `channel_open` payload of an open channel, rebuilt from its journaled
 /// state (bead libspiffy-1n3), or why there is none to send.
 class ChannelOpenResentResponse extends ActorResponse {
@@ -914,6 +950,10 @@ class FullChannelStateResponse extends ActorResponse {
   /// A funding broadcast was started and has neither failed nor opened.
   final bool fundingBroadcastInFlight;
 
+  /// ARC took the client's funding; the server has not opened yet, or has
+  /// (bead libspiffy-jark).
+  final bool fundingSent;
+
   final String? clientPeerId;
   final String? serverPeerId;
   final String? context;
@@ -988,6 +1028,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.fundingInputSats,
     this.fundingRecordedInWallet = false,
     this.fundingBroadcastInFlight = false,
+    this.fundingSent = false,
     this.clientPeerId,
     this.serverPeerId,
     this.context,

@@ -838,6 +838,8 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleChannelFundingRetried(message);
       } else if (message is ch.ChannelOpenResentResponse) {
         _channelAdapter?.handleChannelOpenResent(message);
+      } else if (message is ch.ServerOpenRecordedResponse) {
+        _channelAdapter?.handleServerOpenRecorded(message);
       } else if (message is wm.BroadcastSuccessMessage) {
         // Route to settlement tracking if this txid belongs to an in-flight
         // SettleBEEFCommand; otherwise ignore (e.g., retries from duraq).

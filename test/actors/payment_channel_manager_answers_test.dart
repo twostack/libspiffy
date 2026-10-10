@@ -169,6 +169,13 @@ void main() {
       );
     });
 
+    test('RecordServerOpenedMessage', () async {
+      await answersFailure<ServerOpenRecordedResponse>(
+        'RecordServerOpenedMessage',
+        RecordServerOpenedMessage(channelId: _ghost, fundingTxId: 'ab' * 32, fundingOutputIndex: 0),
+      );
+    });
+
     test('RecordPaymentMessage', () async {
       await answersFailure<PaymentRecordedResponse>(
         'RecordPaymentMessage',
@@ -254,6 +261,7 @@ void main() {
       'OpenChannelMessage',
       'RetryChannelFundingMessage',
       'ResendChannelOpenMessage',
+      'RecordServerOpenedMessage',
       'RecordPaymentMessage',
       'AcknowledgePaymentMessage',
       'CloseChannelMessage',

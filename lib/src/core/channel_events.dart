@@ -638,6 +638,70 @@ class FundingRecordedInWalletEvent extends ChannelEvent {
   }
 }
 
+/// ARC took the client's funding broadcast (bead libspiffy-jark).
+///
+/// The channel is not open yet: the server opens it only once ARC reports
+/// the network holds the funding (libspiffy-3nje), which can be later than
+/// ARC takes it, or never. The client sends `channel_open` with what this
+/// event carries, until the server's `channel_opened`, and then journals
+/// [ChannelOpenedEvent].
+class FundingSentEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.funding.sent';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String fundingTxId;
+  final int fundingOutputIndex;
+  final String fundingTxHex;
+
+  /// The funding transaction with its ancestors and their merkle proofs,
+  /// for the server to SPV-validate (libspiffy-fsy).
+  final String? fundingBeefHex;
+
+  FundingSentEvent({
+    required String channelId,
+    required this.fundingTxId,
+    required this.fundingOutputIndex,
+    required this.fundingTxHex,
+    this.fundingBeefHex,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'fundingTxId': fundingTxId,
+        'fundingOutputIndex': fundingOutputIndex,
+        'fundingTxHex': fundingTxHex,
+        'fundingBeefHex': fundingBeefHex,
+      };
+
+  factory FundingSentEvent.fromMap(Map<String, dynamic> map) {
+    return FundingSentEvent(
+      channelId: map['channelId'] as String,
+      fundingTxId: map['fundingTxId'] as String,
+      fundingOutputIndex: map['fundingOutputIndex'] as int,
+      fundingTxHex: map['fundingTxHex'] as String,
+      fundingBeefHex: map['fundingBeefHex'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 /// Channel is now open (funding TX broadcast)
 ///
 /// [fundingBeefHex] is the BEEF of the funding transaction (its ancestors

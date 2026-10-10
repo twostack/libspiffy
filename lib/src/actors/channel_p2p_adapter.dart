@@ -323,6 +323,7 @@ class ChannelP2PAdapter {
     'channel_accept',
     'channel_reject',
     'refund_signed',
+    'channel_opened',
     'payment_ack',
   };
 
@@ -385,6 +386,9 @@ class ChannelP2PAdapter {
         break;
       case 'channel_open':
         _handleChannelOpen(fromPeerId, payload);
+        break;
+      case 'channel_opened':
+        _handleChannelOpenedByServer(payload);
         break;
       case 'payment_update':
         _handlePaymentUpdate(fromPeerId, payload);
@@ -634,6 +638,16 @@ class ChannelP2PAdapter {
     ), sender: _replyTo);
   }
 
+  /// The server opened the channel (bead libspiffy-jark): the client opens
+  /// it too, answered in [handleServerOpenRecorded].
+  void _handleChannelOpenedByServer(Map<String, dynamic> payload) {
+    _channelManager.tell(RecordServerOpenedMessage(
+      channelId: payload['channelId'] as String,
+      fundingTxId: payload['fundingTxId'] as String,
+      fundingOutputIndex: payload['fundingOutputIndex'] as int,
+    ), sender: _replyTo);
+  }
+
   void _handlePaymentUpdate(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final amountSats = payload['amountSats'] as int;
@@ -800,6 +814,7 @@ class ChannelP2PAdapter {
         event is ch.ChannelRequestedEvent || event is ch.ChannelAcceptedEvent;
     final readsRecord = event is ch.ChannelRejectedEvent ||
         event is ch.RefundCountersignedEvent ||
+        event is ch.FundingSentEvent ||
         event is ch.ChannelOpenedEvent ||
         event is ch.PaymentRecordedEvent ||
         event is ch.PaymentAcknowledgedEvent ||
@@ -823,6 +838,8 @@ class ChannelP2PAdapter {
       _onRefundBuilt(event);
     } else if (event is ch.RefundCountersignedEvent) {
       _onRefundCountersigned(event);
+    } else if (event is ch.FundingSentEvent) {
+      _onFundingSent(event);
     } else if (event is ch.ChannelOpenedEvent) {
       _onChannelOpened(event);
     } else if (event is ch.PaymentRecordedEvent) {
@@ -940,9 +957,42 @@ class ChannelP2PAdapter {
     }
   }
 
+  /// ARC took the client's funding: `channel_open` goes to the server, and
+  /// again until it answers `channel_opened` (bead libspiffy-jark). The
+  /// server opens only on a funding the network holds, and refuses until
+  /// then; each `channel_open` has it look again.
+  void _onFundingSent(ch.FundingSentEvent event) {
+    final peers = _channelPeers[event.channelId];
+    if (!_clientChannelInfo.containsKey(event.channelId) || peers == null) return;
+    final open = {
+      'channelId': event.channelId,
+      'fundingTxId': event.fundingTxId,
+      'fundingOutputIndex': event.fundingOutputIndex,
+      'fundingTxHex': event.fundingTxHex,
+      // The funding transaction with its ancestors and their merkle
+      // proofs, for the server to SPV-validate (libspiffy-fsy).
+      'fundingBeef': event.fundingBeefHex,
+    };
+    _sendOpen(event.channelId, peers.serverPeerId, open);
+  }
+
+  void _sendOpen(String channelId, String serverPeerId, Map<String, dynamic> open) {
+    final outbox = _outboxes[channelId] ??= _Outbox(serverPeerId, _resendAfter);
+    outbox.open = open;
+    _emitP2PMessage(serverPeerId, 'channel_open', open);
+    _rearm(channelId, outbox, reset: true);
+  }
+
+  /// The server answered the client's `channel_open`: it is sent no more.
+  void _openAnswered(String channelId) {
+    final outbox = _outboxes[channelId];
+    if (outbox == null || outbox.open == null) return;
+    outbox.open = null;
+    _rearm(channelId, outbox, reset: true);
+  }
+
   void _onChannelOpened(ch.ChannelOpenedEvent event) {
     final clientInfo = _clientChannelInfo[event.channelId];
-    final peers = _channelPeers[event.channelId];
 
     // The server settles by itself when the margin begins (bead
     // libspiffy-ywbk).
@@ -951,18 +1001,8 @@ class ChannelP2PAdapter {
       settleBeforeLockTime(event.channelId, serverInfo.lockTimeUnix);
     }
 
-    if (clientInfo != null && peers != null) {
-      // We are the client - notify server that channel is open
-      _emitP2PMessage(peers.serverPeerId, 'channel_open', {
-        'channelId': event.channelId,
-        'fundingTxId': event.fundingTxId,
-        'fundingOutputIndex': event.fundingOutputIndex,
-        'fundingTxHex': event.fundingTxHex,
-        // The funding transaction with its ancestors and their merkle
-        // proofs, for the server to SPV-validate (libspiffy-fsy).
-        'fundingBeef': event.fundingBeefHex,
-      });
-    }
+    // The client opens on the server's channel_opened (bead libspiffy-jark).
+    if (clientInfo != null) _openAnswered(event.channelId);
 
     // Emit coordinator event for both client and server
     _emitEvent(coord.ChannelOpenedEvent(
@@ -1077,7 +1117,7 @@ class ChannelP2PAdapter {
     outbox.timer?.cancel();
     outbox.timer = null;
     if (reset) outbox.wait = _resendAfter;
-    if (outbox.payment == null && outbox.close == null) {
+    if (outbox.open == null && outbox.payment == null && outbox.close == null) {
       _outboxes.remove(channelId);
       return;
     }
@@ -1088,8 +1128,24 @@ class ChannelP2PAdapter {
   void _resend(String channelId) {
     final outbox = _outboxes[channelId];
     if (outbox == null || _disposed) return;
+    final open = outbox.open;
     final payment = outbox.payment;
     final close = outbox.close;
+    if (open != null && _tooLateToOpen(channelId)) {
+      // The server would settle the channel as it opened it: the client's
+      // refund is the way back (bead libspiffy-jark).
+      outbox.open = null;
+      _emitEvent(coord.ErrorEvent(
+        walletId: _walletFor(channelId),
+        source: 'ChannelP2PAdapter',
+        message: 'Channel $channelId: the server has not opened it, and its settlement '
+            'margin has begun. channel_open is sent no more; the refund returns the funding '
+            'after the lock time.',
+      ));
+    } else if (open != null) {
+      _log.fine('Channel $channelId: resending channel_open');
+      _emitP2PMessage(outbox.peerId, 'channel_open', open);
+    }
     // The close carries the latest payment: sending both would only make
     // the server take it twice.
     if (close != null) {
@@ -1102,6 +1158,15 @@ class ChannelP2PAdapter {
     final doubled = outbox.wait * 2;
     outbox.wait = doubled > _resendAtMost ? _resendAtMost : doubled;
     _rearm(channelId, outbox);
+  }
+
+  /// Whether [channelId]'s settlement margin has begun: a server would
+  /// settle it as soon as it opened.
+  bool _tooLateToOpen(String channelId) {
+    final timing = _timing;
+    final lockTimeUnix = _clientChannelInfo[channelId]?.lockTimeUnix;
+    if (timing == null || lockTimeUnix == null || lockTimeUnix == 0) return false;
+    return DateTime.now().millisecondsSinceEpoch ~/ 1000 >= timing.settleByUnix(lockTimeUnix);
   }
 
   void _stopResending(String channelId) {
@@ -1694,19 +1759,54 @@ class ChannelP2PAdapter {
 
   /// The manager's answer to opening a channel: on the client a failed
   /// funding broadcast (the channel stays unopened, awaiting funding), on
-  /// the server a funding transaction that was refused.
+  /// the server a funding transaction that was refused, or opened on, which
+  /// it tells the client with `channel_opened`.
   void handleChannelOpenedResponse(ChannelOpenedResponse response) {
-    if (!response.success) {
-      _sequenced(
-          response.channelId,
-          () => _reportFailure(
-              response.channelId, 'opening the channel', response.error,
-              // The server refused the funding transaction, or the client
-              // could not broadcast it: either way the counterparty is
-              // waiting for a channel that is not coming (libspiffy-kyw).
-              tellPeer: true,
-              answers: _Request.open));
+    if (response.success) {
+      // The server opened, on this channel_open or an earlier one: the
+      // client opens when it hears so (bead libspiffy-jark).
+      final fundingTxId = response.fundingTxId;
+      if (fundingTxId == null) return;
+      _sequenced(response.channelId, () {
+        if (!_serverChannelInfo.containsKey(response.channelId)) return;
+        final peer = _counterpartyPeer(response.channelId);
+        if (peer == null) return;
+        _emitP2PMessage(peer, 'channel_opened', {
+          'channelId': response.channelId,
+          'fundingTxId': fundingTxId,
+          'fundingOutputIndex': response.fundingOutputIndex ?? 0,
+        });
+      });
+      return;
     }
+    _sequenced(
+        response.channelId,
+        () => _reportFailure(
+            response.channelId, 'opening the channel', response.error,
+            // The server refused the funding transaction, or the client
+            // could not broadcast it: either way the counterparty is
+            // waiting for a channel that is not coming (libspiffy-kyw).
+            tellPeer: true,
+            answers: _Request.open));
+  }
+
+
+  /// The client's open on the server's word (bead libspiffy-jark). A
+  /// failure answers the app's open; `channel_open` is still resent.
+  void handleServerOpenRecorded(ServerOpenRecordedResponse response) {
+    _sequenced(response.channelId, () {
+      if (response.success) {
+        _openAnswered(response.channelId);
+        return;
+      }
+      _log.warning('Channel ${response.channelId}: opening on the server\'s word failed: ${response.error}');
+      _emitEvent(coord.ErrorEvent(
+        walletId: _walletFor(response.channelId),
+        source: 'ChannelP2PAdapter',
+        message: 'Channel ${response.channelId}: the server opened it, and opening it here failed: ${response.error}',
+        requestId: _answering(_Request.open, response.channelId),
+      ));
+    });
   }
 
   /// The manager's answer to a funding retry (bead libspiffy-1n3), reported
@@ -1771,7 +1871,8 @@ class ChannelP2PAdapter {
       return;
     }
 
-    _emitP2PMessage(peerId, 'channel_open', {
+    // Resent until the server answers channel_opened (bead libspiffy-jark).
+    _sendOpen(channelId, peerId, {
       'channelId': channelId,
       'fundingTxId': response.fundingTxId,
       'fundingOutputIndex': response.fundingOutputIndex,
@@ -1909,6 +2010,10 @@ enum _Request { open, pay, close, expire, refund, retry, resend }
 /// What a client channel still has to get to its server.
 class _Outbox {
   final String peerId;
+
+  /// `channel_open`, until the server answers `channel_opened` (bead
+  /// libspiffy-jark).
+  Map<String, dynamic>? open;
 
   /// The latest payment not yet acknowledged, as `payment_update` sends it.
   Map<String, dynamic>? payment;

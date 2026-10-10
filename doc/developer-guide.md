@@ -453,9 +453,9 @@ myP2PLayer.onMessage((fromPeerId, messageType, payload) {
 });
 ```
 
-That is the entire P2P contract. The coordinator routes each incoming message by `messageType` and handles the 11-message channel protocol and the proof protocol internally.
+That is the entire P2P contract. The coordinator routes each incoming message by `messageType` and handles the 12-message channel protocol and the proof protocol internally.
 
-Your transport may lose a message, as a phone's connection does when it changes. A client resends its latest unacknowledged payment, and its close, until the server answers, waiting `ChannelTiming.resendAfter` and then twice as long each time, up to `resendAtMost`. The server answers a repeat as it answered the first. Telling the coordinator `P2PSendFailed` makes the next resend come sooner; without it the resend still comes.
+Your transport may lose a message, as a phone's connection does when it changes. A client resends its `channel_open` until the server answers `channel_opened`, and its latest unacknowledged payment and its close until the server answers them, waiting `ChannelTiming.resendAfter` and then twice as long each time, up to `resendAtMost`. The server answers a repeat as it answered the first. Telling the coordinator `P2PSendFailed` makes the next resend come sooner; without it the resend still comes.
 
 A node takes part in channels only when `initialize()` is given `channelTiming` (when a channel stops taking payments and settles, and how long it must run; the library supplies no default) and `channelPeerId` (this node's own peer id on your transport):
 
@@ -488,9 +488,12 @@ This initiates a multi-step protocol. The coordinator:
 4. Builds the funding transaction
 5. Builds the refund transaction (safety net)
 6. Exchanges refund signatures with the server
-7. Opens the channel
+7. Broadcasts the funding transaction and sends `channel_open`
+8. Opens the channel when the server answers `channel_opened`
 
-The reply is the channel's `ChannelOpenedEvent`, once it is ready; a step that fails, or the server's refusal, throws `CoordinatorFailure`. The default timeout is five minutes, since the open waits for the server:
+The server opens only once ARC reports the network holds the funding (`SEEN_ON_NETWORK` or `MINED`), which can be well after ARC takes it. Until then it refuses with `channel_error`, and the client keeps resending `channel_open` (each one has the server look again) until the server opens or the channel's settlement margin begins; after that the refund returns the funding at the lock time. No payment can be made before the channel opens.
+
+The reply is the channel's `ChannelOpenedEvent`, once the server has opened it; a step that fails, or the server's refusal, throws `CoordinatorFailure`. A refusal leaves the channel waiting: if the server opens it later, a `ChannelOpenedEvent` that answers no request says so. The default timeout is five minutes, since the open waits for the server:
 
 ```dart
 print('Channel ${channel.channelId} open, funded with ${channel.fundingAmountSats} sats');
@@ -732,7 +735,7 @@ The tables below are the events the coordinator emits without a request, and the
 | Event | When Emitted |
 |---|---|
 | `ChannelRequestReceivedEvent` | Peer wants to open a channel (show UI for approval) |
-| `ChannelOpenedEvent` | A channel this node serves is open |
+| `ChannelOpenedEvent` | A channel this node serves is open; on a client, one the server opened after the app was told the open failed |
 | `ChannelPaymentEvent` | A payment received on a channel this node serves; on a client, one the server acknowledged after the app was told it failed |
 | `ChannelPaymentPendingEvent` | A client's payment is signed and sent, not yet acknowledged |
 | `ChannelClosedEvent` | A channel closed by the counterparty or the settlement timer |

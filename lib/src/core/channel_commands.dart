@@ -377,6 +377,30 @@ class StartFundingBroadcastCommand extends ChannelCommand {
   String get commandType => 'StartFundingBroadcastCommand';
 }
 
+/// Client records that ARC took its funding broadcast; emits
+/// [FundingSentEvent] (bead libspiffy-jark).
+class RecordFundingSentCommand extends ChannelCommand {
+  final String fundingTxId;
+  final String? fundingBeefHex;
+
+  RecordFundingSentCommand({
+    required String channelId,
+    required this.fundingTxId,
+    this.fundingBeefHex,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordFundingSentCommand';
+}
+
 /// Client records that its wallet holds the funding transaction of the
 /// broadcast in progress; emits [FundingRecordedInWalletEvent]
 /// (libspiffy-fsy).

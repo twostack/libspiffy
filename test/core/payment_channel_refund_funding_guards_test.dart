@@ -406,7 +406,7 @@ void main() {
       final ref = await spawn(f.openClientJournal().take(4).toList());
 
       expectRejected(
-          await ref.ask<dynamic>(open(), _ask), 'has not been broadcast');
+          await ref.ask<dynamic>(open(), _ask), 'has not been sent');
     });
 
     test('client: refused after the funding broadcast failed', () async {
@@ -421,13 +421,40 @@ void main() {
       ]);
 
       expectRejected(
-          await ref.ask<dynamic>(open(), _ask), 'has not been broadcast');
+          await ref.ask<dynamic>(open(), _ask), 'has not been sent');
     });
 
-    test('client: opens once the funding broadcast started', () async {
+    // The client opens on the server's word, once ARC took its funding
+    // (bead libspiffy-jark): a broadcast in flight is not enough.
+    test('client: refused while the funding broadcast is in flight', () async {
       final ref = await spawn(f.openClientJournal().take(5).toList());
 
+      expectRejected(
+          await ref.ask<dynamic>(open(), _ask), 'has not been sent');
+    });
+
+    test('client: opens once its funding is sent', () async {
+      final ref = await spawn(f.openClientJournal().take(5).toList());
+
+      expect(
+          await ref.ask<dynamic>(
+              RecordFundingSentCommand(
+                  channelId: _channelId, fundingTxId: f.fundingTxId, fundingBeefHex: beefOf(f.fundingTxHex)),
+              _ask),
+          _applied);
+      final sent = journal().whereType<FundingSentEvent>().single;
+      expect(sent.fundingTxHex, f.fundingTxHex);
+      expect(sent.fundingBeefHex, beefOf(f.fundingTxHex));
       expect(await ref.ask<dynamic>(open(), _ask), _applied);
+    });
+
+    test('client: funding is recorded sent only for the broadcast in flight', () async {
+      final ref = await spawn(f.openClientJournal().take(4).toList());
+
+      expectRejected(
+          await ref.ask<dynamic>(
+              RecordFundingSentCommand(channelId: _channelId, fundingTxId: f.fundingTxId), _ask),
+          'No funding broadcast');
     });
 
     test(

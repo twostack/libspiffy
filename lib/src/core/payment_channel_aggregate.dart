@@ -83,6 +83,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'fundingBroadcastInFlight': s.fundingBroadcastInFlight,
         'fundingBroadcastError': s.fundingBroadcastError,
         'fundingRecordedInWallet': s.fundingRecordedInWallet,
+        'fundingSent': s.fundingSent,
         'returnLegRecordedInWallet': s.returnLegRecordedInWallet,
         'lockTimeUnix': s.lockTimeUnix,
         'refundTxHex': s.refundTxHex,
@@ -139,6 +140,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingBroadcastInFlight: map['fundingBroadcastInFlight'] as bool? ?? false,
       fundingBroadcastError: map['fundingBroadcastError'] as String?,
       fundingRecordedInWallet: map['fundingRecordedInWallet'] as bool? ?? false,
+      fundingSent: map['fundingSent'] as bool? ?? false,
       returnLegRecordedInWallet:
           map['returnLegRecordedInWallet'] as bool? ?? false,
       lockTimeUnix: map['lockTimeUnix'] as int?,
@@ -269,6 +271,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       signedRefundTxHex: currentState.signedRefundTxHex,
       fundingInputSats: currentState.fundingInputSats,
       fundingRecordedInWallet: currentState.fundingRecordedInWallet,
+      fundingSent: currentState.fundingSent,
       returnLegRecordedInWallet: currentState.returnLegRecordedInWallet,
       fundingBroadcastInFlight: currentState.fundingBroadcastInFlight,
       clientPeerId: currentState.clientPeerId,
@@ -333,6 +336,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       return _handleRecordFundingBroadcastFailed(currentState, command);
     } else if (command is RecordFundingInWalletCommand) {
       return _handleRecordFundingInWallet(currentState, command);
+    } else if (command is RecordFundingSentCommand) {
+      return _handleRecordFundingSent(currentState, command);
     } else if (command is RequestRefundSignatureCommand) {
       return _handleRequestRefundSignature(currentState, command);
     } else if (command is ProvideRefundSignatureCommand) {
@@ -377,6 +382,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       final FundingBroadcastStartedEvent evt => _applyFundingBroadcastStarted(state, evt),
       final FundingBroadcastFailedEvent evt => _applyFundingBroadcastFailed(state, evt),
       final FundingRecordedInWalletEvent evt => _applyFundingRecordedInWallet(state, evt),
+      final FundingSentEvent evt => _applyFundingSent(state, evt),
       final ChannelOpenedEvent evt => _applyChannelOpened(state, evt),
       final PaymentRecordedEvent evt => _applyPaymentRecorded(state, evt),
       final PaymentAcknowledgedEvent evt => _applyPaymentAcknowledged(state, evt),
@@ -947,6 +953,31 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ];
   }
 
+  List<Event> _handleRecordFundingSent(
+    ChannelState currentState,
+    RecordFundingSentCommand cmd,
+  ) {
+    if (currentState.role != ChannelRole.client) {
+      throw StateError('Only the client sends the funding transaction');
+    }
+    if (currentState.status != ChannelStatus.refundSigned ||
+        !currentState.fundingBroadcastInFlight ||
+        cmd.fundingTxId != currentState.fundingTxId) {
+      throw StateError('No funding broadcast of ${cmd.fundingTxId} in progress '
+          '(status=${currentState.status.name})');
+    }
+    return [
+      FundingSentEvent(
+        channelId: cmd.channelId,
+        fundingTxId: cmd.fundingTxId,
+        fundingOutputIndex: currentState.fundingOutputIndex ?? 0,
+        fundingTxHex: currentState.fundingTxHex ?? '',
+        fundingBeefHex: cmd.fundingBeefHex,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
   List<Event> _handleOpenChannel(
     ChannelState currentState,
     OpenChannelCommand cmd,
@@ -959,8 +990,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     var fundingTxHex = cmd.fundingTxHex;
     if (currentState.role == ChannelRole.client) {
       // The client opens only a channel whose verified refund it holds and
-      // whose funding broadcast it started and did not see fail
-      // (libspiffy-b83, libspiffy-9f7).
+      // whose funding ARC took (libspiffy-b83, libspiffy-9f7), when the
+      // server says it has opened it (libspiffy-jark).
       if (currentState.signedRefundTxHex == null) {
         throw StateError('No fully signed refund retained for channel '
             '${cmd.channelId}');
@@ -969,9 +1000,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         throw StateError('Funding transaction ${cmd.fundingTxId} is not the one '
             'the refund spends (${currentState.fundingTxId})');
       }
-      if (!currentState.fundingBroadcastInFlight) {
+      if (!currentState.fundingSent) {
         throw StateError('Funding transaction ${cmd.fundingTxId} has not been '
-            'broadcast');
+            'sent');
       }
       fundingTxHex = currentState.fundingTxHex ?? fundingTxHex;
     } else {
@@ -1656,6 +1687,17 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
   ChannelState _applyFundingRecordedInWallet(ChannelState state, FundingRecordedInWalletEvent event) {
     return state.copyWith(
       fundingRecordedInWallet: true,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
+  }
+
+  ChannelState _applyFundingSent(ChannelState state, FundingSentEvent event) {
+    return state.copyWith(
+      fundingSent: true,
+      fundingBroadcastInFlight: false,
+      fundingBroadcastError: null,
+      fundingBeefHex: event.fundingBeefHex ?? state.fundingBeefHex,
       version: event.version,
       lastModified: event.timestamp,
     );

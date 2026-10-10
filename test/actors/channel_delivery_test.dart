@@ -111,6 +111,171 @@ void main() {
   void ack(int sequence) =>
       adapter.handleP2PMessage(_server, 'payment_ack', {'channelId': _channelId, 'sequenceNumber': sequence});
 
+  /// The app asks for a channel as request [requestId]; the channel's id,
+  /// which the adapter makes.
+  Future<String> requestOpen(String requestId, {int? lockTimeUnix}) async {
+    await spawn(_client);
+    adapter.handleOpenChannel(coord.OpenChannelCommand(
+        walletId: 'w', serverPeerId: _server, fundingAmountSats: 100000,
+        lockTimeDurationSeconds: 3600, requestId: requestId));
+    await settle();
+    final id = manager.received.whereType<InitiateChannelMessage>().single.channelId;
+    events.add(ChannelRequestedEvent(
+      channelId: id,
+      walletId: 'w',
+      clientPeerId: _client,
+      serverPeerId: _server,
+      clientPubKeyHex: '02' * 33,
+      clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+      derivationIndex: 7,
+      fundingAmountSats: BigInt.from(100000),
+      lockTimeUnix: lockTimeUnix ?? 1900000000,
+    ));
+    await settle();
+    return id;
+  }
+
+  void fundingSent(String id) => events.add(FundingSentEvent(
+      channelId: id, fundingTxId: 'f' * 64, fundingOutputIndex: 1, fundingTxHex: '0100', fundingBeefHex: 'beef'));
+
+  /// The client's channel opens: the manager journaled it on the server's
+  /// word, and answers.
+  Future<void> openedHere(String id) async {
+    events.add(ChannelOpenedEvent(
+      channelId: id,
+      fundingTxId: 'f' * 64,
+      fundingOutputIndex: 1,
+      fundingTxHex: '0100',
+      fundingAncestorTxids: const [],
+      initialClientBalanceSats: BigInt.from(100000),
+      initialServerBalanceSats: BigInt.zero,
+    ));
+    adapter.handleServerOpenRecorded(ServerOpenRecordedResponse(channelId: id, success: true));
+    await settle();
+  }
+
+  group('bead libspiffy-jark: opening', () {
+    test('channel_open is resent until the server answers channel_opened, and the channel opens only then', () async {
+      final id = await requestOpen('open-1');
+      fundingSent(id);
+      await settle();
+
+      final first = sent('channel_open').single.payload;
+      expect(first['fundingTxId'], 'f' * 64);
+      expect(first['fundingOutputIndex'], 1);
+      expect(first['fundingBeef'], 'beef');
+      await settle(450);
+      expect(sent('channel_open').length, greaterThanOrEqualTo(3), reason: 'resent while the server is silent');
+      // Old code: open as soon as ARC took the funding.
+      expect(emittedOf<coord.ChannelOpenedEvent>(), isEmpty);
+
+      adapter.handleP2PMessage(_server, 'channel_opened', {'channelId': id, 'fundingTxId': 'f' * 64, 'fundingOutputIndex': 1});
+      await settle();
+      final told = manager.received.whereType<RecordServerOpenedMessage>().single;
+      expect((told.channelId, told.fundingTxId, told.fundingOutputIndex), (id, 'f' * 64, 1));
+
+      await openedHere(id);
+      expect(emittedOf<coord.ChannelOpenedEvent>().single.requestId, 'open-1');
+      final sends = sent('channel_open').length;
+      await settle(400);
+      expect(sent('channel_open'), hasLength(sends), reason: 'an answered channel_open is not resent');
+    });
+
+    test('a refused open answers the app with the reason, and channel_open is still resent', () async {
+      final id = await requestOpen('open-1');
+      fundingSent(id);
+      await settle();
+
+      adapter.handleP2PMessage(_server, 'channel_error', {
+        'channelId': id,
+        'error': 'ARC does not report the network holding the funding transaction yet (status SENT_TO_NETWORK)',
+      });
+      await settle();
+      final refused = emittedOf<coord.ErrorEvent>().single;
+      expect(refused.requestId, 'open-1');
+      expect(refused.message, contains('SENT_TO_NETWORK'));
+      expect(emittedOf<coord.ChannelOpenedEvent>(), isEmpty);
+
+      final sends = sent('channel_open').length;
+      await settle(450);
+      expect(sent('channel_open').length, greaterThan(sends), reason: 'the server looks at the network again each time');
+
+      // The network catches up: the server opens on a later channel_open.
+      adapter.handleP2PMessage(_server, 'channel_opened', {'channelId': id, 'fundingTxId': 'f' * 64, 'fundingOutputIndex': 1});
+      await openedHere(id);
+      final opened = emittedOf<coord.ChannelOpenedEvent>().single;
+      expect(opened.channelId, id);
+      expect(opened.requestId, isNull, reason: 'the request was answered by the refusal');
+    });
+
+    test('channel_open is sent no more once the settlement margin begins', () async {
+      final soon = DateTime.now().add(const Duration(minutes: 5)).millisecondsSinceEpoch ~/ 1000;
+      final id = await requestOpen('open-1', lockTimeUnix: soon);
+      fundingSent(id);
+      await settle(450);
+
+      expect(sent('channel_open'), hasLength(1));
+      expect(emittedOf<coord.ErrorEvent>().single.message, contains('settlement margin has begun'));
+    });
+
+    test('a channel_opened from anyone but the server is refused', () async {
+      final id = await requestOpen('open-1');
+      fundingSent(id);
+      await settle();
+
+      adapter.handleP2PMessage('someone-else', 'channel_opened', {'channelId': id, 'fundingTxId': 'f' * 64, 'fundingOutputIndex': 1});
+      await settle();
+
+      expect(manager.received.whereType<RecordServerOpenedMessage>(), isEmpty);
+    });
+
+    group('on the server', () {
+      Future<void> serverChannel() async {
+        await spawn(_server);
+        events.add(ChannelAcceptedEvent(
+          channelId: _channelId,
+          walletId: 'w',
+          clientPeerId: _client,
+          clientPubKeyHex: '02' * 33,
+          clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+          serverPubKeyHex: '03' * 33,
+          serverAddressB58: 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+          derivationIndex: 3,
+          fundingAmountSats: BigInt.from(100000),
+          lockTimeUnix: 1900000000,
+          serverPeerId: _server,
+        ));
+        await settle();
+      }
+
+      test('every channel_open it opens on is answered channel_opened, a repeat too', () async {
+        await serverChannel();
+
+        for (var i = 0; i < 2; i++) {
+          adapter.handleChannelOpenedResponse(
+              ChannelOpenedResponse(channelId: _channelId, success: true, fundingTxId: 'f' * 64, fundingOutputIndex: 1));
+        }
+        await settle();
+
+        final answers = sent('channel_opened');
+        expect(answers, hasLength(2));
+        expect(answers.first.toPeerId, _client);
+        expect(answers.first.payload, {'channelId': _channelId, 'fundingTxId': 'f' * 64, 'fundingOutputIndex': 1});
+      });
+
+      test('a refused channel_open is answered channel_error, not channel_opened', () async {
+        await serverChannel();
+
+        adapter.handleChannelOpenedResponse(ChannelOpenedResponse(
+            channelId: _channelId, success: false, error: 'ARC does not report the network holding it yet'));
+        await settle();
+
+        expect(sent('channel_opened'), isEmpty);
+        expect(sent('channel_error').single.payload['error'], contains('does not report the network'));
+      });
+    });
+  });
+
   group('a payment', () {
     test('is answered when the server acknowledges it, and not before', () async {
       await clientChannel();

@@ -448,6 +448,22 @@ void main() {
       expect(aliceArc.broadcasts.map((b) => b.txHex), [funding.hex],
           reason: 'the funding transaction is broadcast once, before open');
 
+      // The funding is sent; the channel opens when Bob says he opened it
+      // (`channel_opened`, bead libspiffy-jark).
+      await Future.delayed(Duration(milliseconds: 500));
+      expect((await aliceEventStore.getEvents('PaymentChannel_$channelId')).map((e) => e.runtimeType.toString()),
+          isNot(contains('ChannelOpenedEvent')));
+
+      final aliceServerOpenedProbe = await aliceActorSystem.createProbe();
+      aliceChannelManager.tell(
+        RecordServerOpenedMessage(channelId: channelId, fundingTxId: funding.txid, fundingOutputIndex: 0),
+        sender: aliceServerOpenedProbe.ref,
+      );
+      final aliceServerOpened = await aliceServerOpenedProbe.expectMsgType<ServerOpenRecordedResponse>(
+        timeout: Duration(seconds: 10),
+      );
+      expect(aliceServerOpened.success, isTrue, reason: aliceServerOpened.error);
+
       print('✓ Alice opened channel: $channelId');
       print('  Funding TX ID: ${funding.txid}');
 
@@ -470,6 +486,7 @@ void main() {
         'RefundCountersignedEvent',
         'FundingBroadcastStartedEvent',
         'FundingRecordedInWalletEvent',
+        'FundingSentEvent',
         'ChannelOpenedEvent',
       ]);
 

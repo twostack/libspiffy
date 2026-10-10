@@ -1,3 +1,13 @@
+## 5.2.0
+
+A client's channel opens when its server has opened it (bead libspiffy-jark). The server opens a channel only once ARC reports the network holds its funding, `SEEN_ON_NETWORK` or `MINED`; the client opened as soon as ARC took the funding, which on testnet ARC can answer `SENT_TO_NETWORK` for minutes. The server refused, the client never heard, and it went on paying into a channel the server had never opened: its tab looked spent and the server's empty.
+
+- **The client opens on the server's `channel_opened`.** A new message: the server sends it for every `channel_open` it opens on, a repeat included. The client journals the new `FundingSentEvent` when ARC takes its funding (the channel stays `refundSigned`, its row `funding`, with `fundingSent` in its state) and its `ChannelOpenedEvent` only when `channel_opened` arrives. No payment can be made before.
+- **`channel_open` is resent until the server answers.** As a payment and a close are, waiting `ChannelTiming.resendAfter`, then twice as long, up to `resendAtMost`. Each one has the server submit the funding and look at the network again, so a funding the network takes late still opens the channel. Resending stops when the settlement margin begins, with an `ErrorEvent`: the server would settle the channel as it opened it, and the refund returns the funding at the lock time.
+- **A refused open answers the app, and the open goes on.** The server's `channel_error` answers `OpenChannelCommand` with a `CoordinatorFailure` carrying its reason, and `channel_open` is still resent; if the server opens later, a `ChannelOpenedEvent` that answers no request says so.
+- `ResendChannelOpenCommand` resends a funded channel's `channel_open` while it waits for the server, and keeps resending it until `channel_opened`. `RetryChannelFundingCommand` refuses a channel whose funding is already sent.
+- **Breaking for mixed versions:** a 5.2 client waits for a `channel_opened` a 5.1 server never sends. A 5.1 client ignores it and opens on its own, as before.
+
 ## 5.1.0
 
 A channel message the app's transport loses is sent again, and a payment is answered when the server has it (bead overnode_v2-0o5.3.2). On a phone's connection a `payment_update` or `channel_close` was lost as often as not when the connection changed, and the adapter handed each message to the transport once. A lost payment was reported sent. Every payment carries the channel's balances, so the server refused every later one, and at close the client refused the server's settlement because it was not its latest payment: the channel stayed `closing` until the refund lock time.

@@ -94,10 +94,63 @@ void main() {
   List<Event> countersigned() =>
       f.openClientJournal(walletId: _walletId).take(4).toList();
 
+  group('libspiffy-jark: the client opens on the server\'s word', () {
+    Future<ServerOpenRecordedResponse> serverOpened({String? txid, int vout = 0}) =>
+        managerRef.ask<ServerOpenRecordedResponse>(
+          RecordServerOpenedMessage(channelId: _channelId, fundingTxId: txid ?? f.fundingTxId, fundingOutputIndex: vout),
+          _timeout,
+        );
+
+    test('a sent funding opens when the server says so, once', () async {
+      await spawn(countersigned());
+      expect((await open()).success, isTrue);
+      expect(journal().whereType<ChannelOpenedEvent>(), isEmpty, reason: 'not before the server opens');
+
+      final first = await serverOpened();
+      expect(first.success, isTrue, reason: first.error);
+      final opened = journal().whereType<ChannelOpenedEvent>().single;
+      expect(opened.fundingTxId, f.fundingTxId);
+      expect(opened.fundingBeefHex, journal().whereType<FundingSentEvent>().single.fundingBeefHex);
+
+      // A repeated channel_opened journals nothing.
+      expect((await serverOpened()).success, isTrue);
+      expect(journal().whereType<ChannelOpenedEvent>(), hasLength(1));
+    });
+
+    test('an open on another funding output is refused', () async {
+      await spawn(countersigned());
+      await open();
+
+      final wrong = await serverOpened(vout: 1);
+
+      expect(wrong.success, isFalse);
+      expect(wrong.error, contains('not on its funding'));
+      expect(journal().whereType<ChannelOpenedEvent>(), isEmpty);
+    });
+
+    test('an open before the funding is sent is refused', () async {
+      await spawn(countersigned());
+
+      final early = await serverOpened();
+
+      expect(early.success, isFalse);
+      expect(early.error, contains('has not sent its funding'));
+    });
+
+    test('a sent funding is not broadcast again', () async {
+      await spawn(countersigned());
+      await open();
+
+      expect((await open()).success, isTrue);
+      expect(arc.broadcasts, hasLength(1));
+    });
+  });
+
   group('libspiffy-9f7: funding broadcast', () {
     test(
-        'records the funding in the wallet, broadcasts it once, then opens; '
-        'the spend of its inputs is left to the deferred spend', () async {
+        'records the funding in the wallet, broadcasts it once, then records '
+        'it sent, not open; the spend of its inputs is left to the deferred '
+        'spend', () async {
       await spawn(countersigned());
 
       final opened = await open();
@@ -110,7 +163,7 @@ void main() {
       expect(arc.broadcasts.single.retryOnFailure, isFalse,
           reason: 'the channel retries its funding itself; ARC must not queue a second retry (r56l)');
       expect(arc.broadcasts.single.beefHex,
-          journal().whereType<ChannelOpenedEvent>().single.fundingBeefHex,
+          journal().whereType<FundingSentEvent>().single.fundingBeefHex,
           reason: 'the funding goes to ARC with the BEEF the channel built, '
               'so its unproven ancestors are submitted first');
       expect(log, [
@@ -121,7 +174,8 @@ void main() {
         RefundCountersignedEvent.stableTypeName,
         FundingBroadcastStartedEvent.stableTypeName,
         FundingRecordedInWalletEvent.stableTypeName,
-        ChannelOpenedEvent.stableTypeName,
+        // Open when the server says it is (bead libspiffy-jark).
+        FundingSentEvent.stableTypeName,
       ]);
 
       final record =
@@ -216,7 +270,7 @@ void main() {
               .whereType<FundingBroadcastStartedEvent>()
               .map((e) => e.attempt),
           [1, 2]);
-      expect(journalTypes().last, ChannelOpenedEvent.stableTypeName);
+      expect(journalTypes().last, FundingSentEvent.stableTypeName);
     });
 
     group('libspiffy-fsy: a broadcast interrupted by a restart', () {
@@ -246,7 +300,7 @@ void main() {
             reason: 'the wallet already recorded the funding transaction');
         expect(arc.broadcasts.map((b) => b.txHex), [f.fundingTxHex]);
         expect(journal().whereType<FundingRecordedInWalletEvent>(), hasLength(1));
-        expect(journalTypes().last, ChannelOpenedEvent.stableTypeName);
+        expect(journalTypes().last, FundingSentEvent.stableTypeName);
       });
 
       test('does not record the funding again when only the wallet read '

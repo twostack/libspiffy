@@ -444,6 +444,9 @@ class PaymentChannelManagerActor extends Actor {
         case final ResendChannelOpenMessage msg:
           await _handleResendChannelOpen(msg);
           break;
+        case final RecordServerOpenedMessage msg:
+          await _handleRecordServerOpened(msg);
+          break;
         case final RecordPaymentMessage msg:
           await _handleRecordPayment(msg);
           break;
@@ -1290,6 +1293,8 @@ class PaymentChannelManagerActor extends Actor {
       originalSender?.tell(ChannelOpenedResponse(
         channelId: msg.channelId,
         success: true,
+        fundingTxId: msg.fundingTxId,
+        fundingOutputIndex: msg.fundingOutputIndex,
       ));
     } catch (e, stackTrace) {
       _log.warning('Opening channel ${msg.channelId} failed: $e', e, stackTrace);
@@ -1301,91 +1306,113 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Funds (client) or verifies (server) the channel's funding transaction
-  /// and journals [ChannelOpenedEvent], throwing whatever went wrong.
+  /// Funds the channel's funding transaction and journals [FundingSentEvent]
+  /// (client), or verifies it and journals [ChannelOpenedEvent] (server),
+  /// throwing whatever went wrong.
   ///
   /// Split out of [_handleOpenChannel] so a retried funding (bead
   /// libspiffy-1n3) runs exactly this and answers in its own words: the
   /// caller decides what to tell whom, and a retry tells the counterparty
   /// nothing.
   Future<void> _openChannelFlow(OpenChannelMessage msg) async {
+    final aggregateRef = await _channelAggregate(msg.channelId);
+
+    // Client: the funding transaction reaches the network (and the wallet)
+    // before the channel is open, and only once the verified refund is
+    // journaled (libspiffy-9f7). A failure is journaled and rethrown.
+    // Server: the funding transaction's BEEF must pass SPV validation
+    // (libspiffy-fsy).
+    final state = _stateOrThrow(await aggregateRef
+        .ask(ChannelStateQuery(channelId: msg.channelId)));
+
+    // This channel is already open on this funding output: the message is
+    // a repeat, not a second open (bead libspiffy-1n3). A `channel_open`
+    // the client re-sends because the first one was lost arrives here on
+    // the server, and the server may well have got the first one after
+    // all. Journaling nothing and answering success is the honest
+    // response — the fact is already recorded, and opening twice is not a
+    // thing that happened.
+    //
+    // Without this the aggregate throws 'Refund not signed yet' (its
+    // guard is `status == refundSigned`), the failure comes back as a
+    // failed open, and the adapter tells the *client* its channel failed:
+    // a repair would be answered by the very message that says the
+    // channel was abandoned. A repeat naming a DIFFERENT funding output
+    // is not a repeat and still goes to the aggregate, which refuses it.
+    if (state.status == ChannelStatus.open.name &&
+        state.fundingTxId == msg.fundingTxId &&
+        (state.fundingOutputIndex ?? 0) == msg.fundingOutputIndex) {
+      _log.info('Channel ${msg.channelId} is already open on funding '
+          'output ${msg.fundingTxId}:${msg.fundingOutputIndex}: the open '
+          'is a repeat and nothing is journaled again');
+      return;
+    }
+
+    // The client funds the channel here and opens it when the server says
+    // it has (bead libspiffy-jark): the server opens only on a funding the
+    // network holds, which can come later than ARC takes it, or never. A
+    // client that opened on its own paid into a channel the server never
+    // opened.
+    if (state.role == 'client') {
+      if (state.fundingSent) {
+        _log.info('Channel ${msg.channelId}: its funding is already sent; '
+            'it opens when the server says it has');
+        return;
+      }
+      final fundingBeefHex = await _fundClientChannel(msg, aggregateRef, state);
+      _broadcastEvents(await _askAggregate(
+        msg.channelId,
+        aggregateRef,
+        RecordFundingSentCommand(
+            channelId: msg.channelId, fundingTxId: msg.fundingTxId, fundingBeefHex: fundingBeefHex),
+      ));
+      return;
+    }
+
+    final fundingBeefHex = msg.fundingBeefHex;
+    await _verifyFundingBeef(msg, state);
+    // SPV proves the funding's ancestry, not that the network has it: a
+    // client could send a funding it never broadcast, or double-spends,
+    // and every payment would be against an output that never exists.
+    // The receiver submits what it receives (bead libspiffy-3nje), and
+    // opens only on a funding ARC holds uncontested. The client
+    // broadcast it first, so ARC knows it; one ARC refuses is refused
+    // here, and a re-sent channel_open submits it again.
+    await _submitUncontested(state.walletId, msg.fundingTxHex, msg.fundingTxId,
+        'funding transaction ${msg.fundingTxId} of channel ${msg.channelId}',
+        beefHex: fundingBeefHex);
+
+    final openCmd = OpenChannelCommand(
+      channelId: msg.channelId,
+      fundingTxId: msg.fundingTxId,
+      fundingOutputIndex: msg.fundingOutputIndex,
+      fundingTxHex: msg.fundingTxHex,
+      fundingAncestorTxids:
+          _beefAncestorTxids(fundingBeefHex, msg.fundingTxId),
+      fundingBeefHex: fundingBeefHex,
+    );
+
+    await _journalOpen(msg.channelId, aggregateRef, openCmd);
+  }
+
+  /// Journals [openCmd] and waits until the channel projection has applied
+  /// the [ChannelOpenedEvent].
+  Future<void> _journalOpen(String channelId, ActorRef aggregateRef, OpenChannelCommand openCmd) async {
     // Declared out here so the catch below can abandon it (bead
     // libspiffy-kyw): a registration nobody will await is a closure, a reply
     // target and a timer the projection holds for the full window.
     ({Future<dynamic> done, void Function() cancel})? applied;
-
     try {
-      final aggregateRef = await _channelAggregate(msg.channelId);
-
-      // Client: the funding transaction reaches the network (and the wallet)
-      // before the channel is open, and only once the verified refund is
-      // journaled (libspiffy-9f7). A failure is journaled and rethrown.
-      // Server: the funding transaction's BEEF must pass SPV validation
-      // (libspiffy-fsy).
-      final state = _stateOrThrow(await aggregateRef
-          .ask(ChannelStateQuery(channelId: msg.channelId)));
-
-      // This channel is already open on this funding output: the message is
-      // a repeat, not a second open (bead libspiffy-1n3). A `channel_open`
-      // the client re-sends because the first one was lost arrives here on
-      // the server, and the server may well have got the first one after
-      // all. Journaling nothing and answering success is the honest
-      // response — the fact is already recorded, and opening twice is not a
-      // thing that happened.
-      //
-      // Without this the aggregate throws 'Refund not signed yet' (its
-      // guard is `status == refundSigned`), the failure comes back as a
-      // failed open, and the adapter tells the *client* its channel failed:
-      // a repair would be answered by the very message that says the
-      // channel was abandoned. A repeat naming a DIFFERENT funding output
-      // is not a repeat and still goes to the aggregate, which refuses it.
-      if (state.status == ChannelStatus.open.name &&
-          state.fundingTxId == msg.fundingTxId &&
-          (state.fundingOutputIndex ?? 0) == msg.fundingOutputIndex) {
-        _log.info('Channel ${msg.channelId} is already open on funding '
-            'output ${msg.fundingTxId}:${msg.fundingOutputIndex}: the open '
-            'is a repeat and nothing is journaled again');
-        return;
-      }
-
-      final String? fundingBeefHex;
-      if (state.role == 'client') {
-        fundingBeefHex = await _fundClientChannel(msg, aggregateRef, state);
-      } else {
-        fundingBeefHex = msg.fundingBeefHex;
-        await _verifyFundingBeef(msg, state);
-        // SPV proves the funding's ancestry, not that the network has it: a
-        // client could send a funding it never broadcast, or double-spends,
-        // and every payment would be against an output that never exists.
-        // The receiver submits what it receives (bead libspiffy-3nje), and
-        // opens only on a funding ARC holds uncontested. The client
-        // broadcast it first, so ARC knows it; one ARC refuses is refused
-        // here, and a re-sent channel_open submits it again.
-        await _submitUncontested(state.walletId, msg.fundingTxHex, msg.fundingTxId,
-            'funding transaction ${msg.fundingTxId} of channel ${msg.channelId}',
-            beefHex: fundingBeefHex);
-      }
-
-      final openCmd = OpenChannelCommand(
-        channelId: msg.channelId,
-        fundingTxId: msg.fundingTxId,
-        fundingOutputIndex: msg.fundingOutputIndex,
-        fundingTxHex: msg.fundingTxHex,
-        fundingAncestorTxids:
-            _beefAncestorTxids(fundingBeefHex, msg.fundingTxId),
-        fundingBeefHex: fundingBeefHex,
-      );
-
       // Register projection-applied awaiter BEFORE telling the aggregate.
       // Same pattern as PaymentCoordinatorActor._recordOutgoingTransaction:
       // if the projection processes the event very fast, registering after
       // would miss the resolution window.
       applied = _awaitApplied(_channelProjection,
-          (e) => e is ChannelOpenedEvent && e.channelId == msg.channelId,
+          (e) => e is ChannelOpenedEvent && e.channelId == channelId,
           const Duration(seconds: 10));
 
       // Send command and wait for its events (a rejection throws)
-      final response = await _askAggregate(msg.channelId, aggregateRef, openCmd);
+      final response = await _askAggregate(channelId, aggregateRef, openCmd);
 
       // Broadcast events to external subscribers (P2P adapter).
       // In production wiring this is a no-op (eventBroadcaster is null —
@@ -1402,7 +1429,7 @@ class PaymentChannelManagerActor extends Actor {
         final result = await applied.done;
         if (result is AwaitFailed) {
           _log.warning(
-              'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
+              'ChannelProjection apply timeout for $channelId: ${result.reason}');
         }
         // Awaited: the catch below must not also cancel it.
         applied = null;
@@ -1413,6 +1440,49 @@ class PaymentChannelManagerActor extends Actor {
       rethrow;
     }
   }
+
+  /// The server opened the channel (`channel_opened`, bead libspiffy-jark):
+  /// the client journals its open on the funding it sent. A channel already
+  /// open on that funding is a repeat and journals nothing.
+  Future<void> _handleRecordServerOpened(RecordServerOpenedMessage msg) async {
+    final originalSender = context.sender;
+    try {
+      final aggregateRef = await _channelAggregate(msg.channelId, notFound: 'Channel not found');
+      final state = _stateOrThrow(await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+      if (state.role != 'client') {
+        throw StateError('Only the client of channel ${msg.channelId} waits for the server to open it');
+      }
+      if (state.fundingTxId != msg.fundingTxId || (state.fundingOutputIndex ?? 0) != msg.fundingOutputIndex) {
+        throw StateError('The server opened channel ${msg.channelId} on '
+            '${msg.fundingTxId}:${msg.fundingOutputIndex}, not on its funding '
+            '${state.fundingTxId}:${state.fundingOutputIndex}');
+      }
+      if (state.status != ChannelStatus.open.name) {
+        if (!state.fundingSent) {
+          throw StateError('Channel ${msg.channelId} has not sent its funding '
+              '(status=${state.status})');
+        }
+        final fundingBeefHex = state.fundingBeefHex;
+        await _journalOpen(
+          msg.channelId,
+          aggregateRef,
+          OpenChannelCommand(
+            channelId: msg.channelId,
+            fundingTxId: msg.fundingTxId,
+            fundingOutputIndex: msg.fundingOutputIndex,
+            fundingTxHex: state.fundingTxHex ?? '',
+            fundingAncestorTxids: _beefAncestorTxids(fundingBeefHex, msg.fundingTxId),
+            fundingBeefHex: fundingBeefHex,
+          ),
+        );
+      }
+      originalSender?.tell(ServerOpenRecordedResponse(channelId: msg.channelId, success: true));
+    } catch (e, stackTrace) {
+      _log.warning('Recording the server\'s open of ${msg.channelId} failed: $e', e, stackTrace);
+      originalSender?.tell(ServerOpenRecordedResponse(channelId: msg.channelId, success: false, error: e.toString()));
+    }
+  }
+
 
   /// Broadcast the funding transaction of a channel whose funding broadcast
   /// failed, so the open can finish (bead libspiffy-1n3).
@@ -1467,6 +1537,11 @@ class PaymentChannelManagerActor extends Actor {
             'Channel ${msg.channelId} is not waiting for its funding '
             'broadcast (status=${state.status}): there is nothing to retry'
             '${state.status == ChannelStatus.open.name ? '. The channel is already open here; ResendChannelOpenCommand re-sends the channel_open the server may have missed' : ''}');
+      }
+      if (state.fundingSent) {
+        throw StateError('Channel ${msg.channelId} has sent its funding and '
+            'waits for the server to open it: there is nothing to retry. '
+            'ResendChannelOpenCommand re-sends the channel_open');
       }
       fundingTxId = state.fundingTxId;
       final fundingTxHex = state.fundingTxHex;
@@ -1532,7 +1607,10 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError('Only the client of channel ${msg.channelId} sends '
             'channel_open; this node is its ${state.role ?? 'unknown role'}');
       }
-      if (state.status != ChannelStatus.open.name) {
+      // Open, or funded and waiting for the server to open it (bead
+      // libspiffy-jark).
+      final waiting = state.status == ChannelStatus.refundSigned.name && state.fundingSent;
+      if (state.status != ChannelStatus.open.name && !waiting) {
         throw StateError('Channel ${msg.channelId} is not open here '
             '(status=${state.status}): there is no channel_open to re-send'
             '${state.status == ChannelStatus.refundSigned.name ? '. Its funding has not reached the network; RetryChannelFundingCommand broadcasts it again' : ''}');

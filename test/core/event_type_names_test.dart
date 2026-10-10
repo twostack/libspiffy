@@ -72,6 +72,7 @@ const goldenTypeNames = <String, String>{
   'FundingBroadcastStartedEvent': 'channel.funding.broadcast_started',
   'FundingBroadcastFailedEvent': 'channel.funding.broadcast_failed',
   'FundingRecordedInWalletEvent': 'channel.funding.wallet_recorded',
+  'FundingSentEvent': 'channel.funding.sent',
   'ChannelOpenedEvent': 'channel.opened',
   'PaymentRecordedEvent': 'channel.payment.recorded',
   'PaymentAcknowledgedEvent': 'channel.payment.acknowledged',
@@ -303,6 +304,9 @@ Map<String, Event> sampleEvents() => <String, Event>{
           timestamp: _t, version: 6),
       'FundingRecordedInWalletEvent': FundingRecordedInWalletEvent(
           channelId: _c, fundingTxId: _txid, timestamp: _t, version: 6),
+      'FundingSentEvent': FundingSentEvent(
+          channelId: _c, fundingTxId: _txid, fundingOutputIndex: 0, fundingTxHex: '01',
+          fundingBeefHex: 'beef', timestamp: _t, version: 6),
       'ChannelOpenedEvent': ChannelOpenedEvent(
           channelId: _c, fundingTxId: _txid, fundingOutputIndex: 0,
           fundingTxHex: '01', fundingAncestorTxids: [_txid],

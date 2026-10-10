@@ -734,7 +734,9 @@ void main() {
         .toList();
     expect(sent(alice),
         ['channel_request', 'refund_sign_request', 'channel_open']);
-    expect(sent(bob), ['channel_accept', 'refund_signed']);
+    // The server tells the client it opened, and the client opens only then
+    // (bead libspiffy-jark).
+    expect(sent(bob), ['channel_accept', 'refund_signed', 'channel_opened']);
     expect(alice.events.whereType<ErrorEvent>(), isEmpty,
         reason: alice.trace());
     expect(bob.events.whereType<ErrorEvent>(), isEmpty, reason: bob.trace());

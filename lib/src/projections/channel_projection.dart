@@ -50,6 +50,7 @@ class ChannelProjection extends Projection<void> {
         FundingBroadcastStartedEvent,
         FundingBroadcastFailedEvent,
         FundingRecordedInWalletEvent,
+        FundingSentEvent,
         ChannelOpenedEvent,
         PaymentRecordedEvent,
         PaymentAcknowledgedEvent,
@@ -114,6 +115,9 @@ class ChannelProjection extends Projection<void> {
         return true;
       case final FundingBroadcastFailedEvent evt:
         await _handleFundingBroadcastFailed(evt);
+        return true;
+      case final FundingSentEvent evt:
+        await _handleFundingSent(evt);
         return true;
       case FundingRecordedInWalletEvent():
         // Channel-side bookkeeping only; the wallet read model holds the
@@ -301,6 +305,20 @@ class ChannelProjection extends Projection<void> {
     await _storage.storePaymentChannel(existing.copyWith(
       state: PaymentChannelState.funding,
       errorMessage: 'Funding broadcast failed: ${event.error}',
+    ));
+  }
+
+  /// The client's funding is sent; the row stays `funding` until the
+  /// server opens the channel (bead libspiffy-jark).
+  Future<void> _handleFundingSent(FundingSentEvent event) async {
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      return;
+    }
+
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.funding,
+      clearErrorMessage: true,
     ));
   }
 

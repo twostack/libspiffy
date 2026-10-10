@@ -412,6 +412,8 @@ void main() {
           RefundCountersignedEvent(
               channelId: channelId, serverSignatureHex: '3045', signedRefundTxHex: '0201', version: 4),
           FundingBroadcastStartedEvent(channelId: channelId, fundingTxId: 'cd' * 32, attempt: 1, version: 5),
+          FundingSentEvent(
+              channelId: channelId, fundingTxId: 'cd' * 32, fundingOutputIndex: 0, fundingTxHex: '0100', version: 6),
         ];
 
     Future<(PaymentChannelAggregate, List<String>)> opened() async {

@@ -159,13 +159,22 @@ class Type42Derivation {
 /// wallet, whose recipient takes B to be the sender's identity key), the
 /// wallet's anchor key for [payerAnchorContext] (hex). Exactly one of the
 /// two is set.
+///
+/// [tweak] is t, `HMAC-SHA256(ECDH(b, A), invoiceNumber)` as 32 bytes of
+/// lower-case hex: the destination's key is `A + t·G`, so whoever holds A
+/// and t can check a payment reached it without either private key (a
+/// broker verifying a purchase, bead overnode_v2-93y.1). It discloses this
+/// one destination and nothing else. Null on a destination derived before
+/// 5.4.0.
 class Type42Destination {
   final String address;
   final Type42Derivation derivation;
   final int? payerKeyIndex;
   final String? payerAnchorContext;
+  final String? tweak;
 
-  Type42Destination({required this.address, required this.derivation, this.payerKeyIndex, this.payerAnchorContext}) {
+  Type42Destination(
+      {required this.address, required this.derivation, this.payerKeyIndex, this.payerAnchorContext, this.tweak}) {
     if ((payerKeyIndex == null) == (payerAnchorContext == null)) {
       throw ArgumentError('A type-42 destination names a payer key index or a payer anchor context, not '
           '${payerKeyIndex == null ? 'neither' : 'both'}');
@@ -177,6 +186,7 @@ class Type42Destination {
         ...derivation.toMap(),
         if (payerKeyIndex != null) 'payerKeyIndex': payerKeyIndex!,
         if (payerAnchorContext != null) 'payerAnchorContext': payerAnchorContext!,
+        if (tweak != null) 'tweak': tweak!,
       };
 
   /// Reads [toMap]'s output; null for anything else.
@@ -186,7 +196,8 @@ class Type42Destination {
     final address = map['address'];
     final index = map['payerKeyIndex'];
     final anchorContext = map['payerAnchorContext'];
-    if (derivation == null || address is! String) return null;
+    final tweak = map['tweak'];
+    if (derivation == null || address is! String || (tweak != null && tweak is! String)) return null;
     if ((index is int) == (anchorContext is String) || (index != null && index is! int) ||
         (anchorContext != null && anchorContext is! String)) {
       return null;
@@ -195,7 +206,8 @@ class Type42Destination {
         address: address,
         derivation: derivation,
         payerKeyIndex: index as int?,
-        payerAnchorContext: anchorContext as String?);
+        payerAnchorContext: anchorContext as String?,
+        tweak: tweak as String?);
   }
 
   @override
@@ -204,10 +216,11 @@ class Type42Destination {
       other.address == address &&
       other.derivation == derivation &&
       other.payerKeyIndex == payerKeyIndex &&
-      other.payerAnchorContext == payerAnchorContext;
+      other.payerAnchorContext == payerAnchorContext &&
+      other.tweak == tweak;
 
   @override
-  int get hashCode => Object.hash(address, derivation, payerKeyIndex, payerAnchorContext);
+  int get hashCode => Object.hash(address, derivation, payerKeyIndex, payerAnchorContext, tweak);
 
   @override
   String toString() => '$address <- $derivation';

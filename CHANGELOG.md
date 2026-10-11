@@ -1,3 +1,9 @@
+## 5.4.0
+
+A type-42 destination carries its tweak t (bead overnode_v2-93y.1). A broker that sells access to a recording checks that the buyer paid the creator without holding either private key: it recomputes the destination as `A + t·G` from the creator's anchor key A and the tweak t. The wallet computed t to derive the destination and dropped it, so a buyer could not give it.
+
+- **`Type42Destination.tweak`:** t, `HMAC-SHA256(ECDH(b, A), invoiceNumber)`, as 32 bytes of lower-case hex. It discloses the one destination and nothing else. `DeriveType42DestinationCommand` sets it, and it is journaled with the destination; one journaled before 5.4.0 reads with none.
+
 ## 5.3.3
 
 A client whose server cannot be reached no longer sends to it every two seconds (bead overnode_v2-7pf). Two tabs were still closing when a phone started, and neither host could be found ("No addresses found for peer"): every send failed at once. Each failure brought the next resend forward to `resendAfter`, so the close went every two seconds for as long as the host stayed away. Some hosts never come back.

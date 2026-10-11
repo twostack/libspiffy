@@ -20,6 +20,7 @@ import 'dart:convert';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
+import 'package:pointycastle/ecc/curves/secp256k1.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
@@ -281,6 +282,27 @@ void main() {
         RecordType42AddressesCommand(walletId: 'payee', derivations: [for (final d in derived) d.derivation]));
     expect(journal(payee).whereType<Type42AddressRecordedEvent>().map((e) => e.address),
         [for (final d in derived) d.address]);
+  });
+
+  test('a destination carries its tweak t: the payee\'s child key is a + t, so A and t check the address '
+      'without a private key; one journaled before t was kept reads without it', () async {
+    final payer = await created('payer', mnemonic: _payerMnemonic);
+    final anchorKey = keyAt(payeeRoot, WalletKeys.anchorPath(_identityA));
+    await payer.commandHandler(DeriveType42DestinationCommand(
+        walletId: 'payer', anchorPublicKey: anchorKey.publicKey.toHex(), invoiceNumber: _invoice));
+    final d = journal(payer).whereType<Type42DestinationDerivedEvent>().single.destination;
+
+    expect(d.tweak, matches(RegExp(r'^[0-9a-f]{64}$')));
+    final n = ECCurve_secp256k1().n;
+    final child = Type42.deriveChildPrivate(
+        anchorKey, dartsv.SVPublicKey.fromHex(d.derivation.senderPublicKey), _invoice);
+    expect(child.privateKey, (anchorKey.privateKey + BigInt.parse(d.tweak!, radix: 16)) % n);
+
+    final reread = Type42Destination.fromMap(d.toMap());
+    expect(reread, d);
+    final before = Map<String, Object>.from(d.toMap())..remove('tweak');
+    expect(Type42Destination.fromMap(before)!.tweak, isNull);
+    expect(Type42Destination.fromMap({...d.toMap(), 'tweak': 7}), isNull);
   });
 
   test('a restarted payer never reuses a payer key', () async {

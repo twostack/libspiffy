@@ -582,8 +582,9 @@ class WalletKeys {
       throw StateError('Wallet ${command.walletId} would pay its own anchor ${derivation.anchorPublicKey} with that '
           'anchor as payer key');
     }
-    final destination = Type42.deriveChildPublic(
-        dartsv.SVPublicKey.fromHex(derivation.anchorPublicKey), payer, derivation.invoiceNumber);
+    final anchor = dartsv.SVPublicKey.fromHex(derivation.anchorPublicKey);
+    final destination = Type42.deriveChildPublic(anchor, payer, derivation.invoiceNumber);
+    final tweak = Type42.tweak(Type42.sharedSecret(payer, anchor), derivation.invoiceNumber);
     return Type42DestinationDerivedEvent(
       walletId: command.walletId,
       destination: Type42Destination(
@@ -591,6 +592,7 @@ class WalletKeys {
         derivation: derivation,
         payerKeyIndex: index,
         payerAnchorContext: payerContext,
+        tweak: tweak.toRadixString(16).padLeft(64, '0'),
       ),
       version: currentState.version + 1,
     );

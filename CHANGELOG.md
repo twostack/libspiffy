@@ -1,3 +1,10 @@
+## 5.3.2
+
+A tab with nothing paid closes when both sides close at once (bead overnode_v2-7pf). The host ended a room and closed its side first. The client had paid nothing, so the host held no payment to settle with. A minute later the client closed with its payment of nothing (bead libspiffy-w4l2). The host refused it because its channel was no longer `open`. The client resent its close every two seconds for hours, and its 1000 sats stayed locked until the refund lock time.
+
+- **A server that is already closing takes the client's payment of nothing** and settles with it, paying the client back. The aggregate and the channel manager allow it only for the closing payment of nothing (`closing`, sequence 0). A channel that is `closing` still refuses every payment of money.
+- **A refused payment no longer restarts the resend wait.** The close carries the latest payment, and the server answered each resend with a `channel_error` refusing it. Each refusal reset the wait to `resendAfter`, so the close went every two seconds instead of backing off to `resendAtMost`. A refusal now clears the payment once and leaves the wait as it was.
+
 ## 5.3.1
 
 A coin proven spent by a transaction from elsewhere stays spent when the payment stuck on it fails (bead libspiffy-4kfq). A payment that stays unsettled past `ARCActor.inFlightStuckAfter` has its inputs checked. When one is spent by a confirmed transaction proven against the local headers, the payment fails (`INPUT_SPENT`), and the failure releases its inputs. The proven-spent coin was released too, and became available again. When the spender was not one of the wallet's own transactions (sent from another wallet with the same keys), `SpentOutputRepair` never found it. Every later payment could take the coin up again, sit at `SENT_TO_NETWORK` and fail: on one phone the same coin was spent five times, two of them channel fundings the server rightly refused to open.

@@ -1010,6 +1010,45 @@ void main() {
       expect(ended.finalClientBalanceSats, f.amountSats);
     });
 
+    // Bead overnode_v2-7pf: the server ended the room and closed first,
+    // holding no payment; the client's payment of nothing came with its own
+    // close and was refused because the channel was no longer open.
+    List<Event> closingServerJournal() => [
+          ...openServerJournal(),
+          ChannelClosingEvent(
+            channelId: _channelId,
+            reason: 'the space ended',
+            initiator: 'server',
+            clientBalanceSats: f.amountSats,
+            serverBalanceSats: BigInt.zero,
+            version: 4,
+          ),
+        ];
+
+    test('7pf: a server that closed first settles with the payment of nothing', () async {
+      await spawn(closingServerJournal(), key: f.serverKey);
+      final acked = await acknowledge(await payment(0, 1, serverBefore: BigInt.zero, closing: true));
+      expect(acked.success, isTrue, reason: acked.error);
+
+      final closed = await managerRef.ask<ChannelClosedResponse>(CloseChannelMessage(channelId: _channelId), _timeout);
+
+      expect(closed.finalized, isTrue, reason: closed.error);
+      expect(arc.broadcasts.single.txid, closed.settlementTxId);
+      final ended = journal().whereType<ChannelClosedEvent>().single;
+      expect(ended.finalServerBalanceSats, BigInt.zero);
+      expect(ended.finalClientBalanceSats, f.amountSats);
+    });
+
+    test('7pf: a channel the server is closing takes no payment of money', () async {
+      await spawn(closingServerJournal(), key: f.serverKey);
+
+      final refused = await acknowledge(await payment(30000, 1, serverBefore: BigInt.zero));
+
+      expect(refused.success, isFalse);
+      expect(refused.error, contains('not open'));
+      expect(journal().whereType<PaymentAcknowledgedEvent>(), isEmpty);
+    });
+
     test('w4l2: a payment of nothing is refused on a channel with a payment', () async {
       await spawn(openServerJournal(), key: f.serverKey);
       await acknowledge(await payment(30000, 1, serverBefore: BigInt.zero));

@@ -1347,8 +1347,14 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ChannelState currentState,
     AcknowledgePaymentCommand cmd,
   ) {
-    // Business rule: Channel must be open
-    if (currentState.status != ChannelStatus.open) {
+    // Business rule: Channel must be open. The one exception is the
+    // client's payment of nothing on a channel the server is already
+    // closing: the closes crossed, and without it the server holds nothing
+    // to settle with, and the client's funds wait for the refund lock time
+    // (bead overnode_v2-7pf). It pays the server nothing, so taking it
+    // after the close costs the server nothing.
+    if (currentState.status != ChannelStatus.open &&
+        !(cmd.closing && currentState.status == ChannelStatus.closing)) {
       throw StateError('Channel not open');
     }
 

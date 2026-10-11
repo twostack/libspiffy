@@ -2354,8 +2354,10 @@ class PaymentChannelManagerActor extends Actor {
       final stateResponse = _stateOrThrow(
           await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
 
-      // Validate channel is open
-      if (stateResponse.status != 'open') {
+      // Validate channel is open, or closing for the client's payment of
+      // nothing: the closes crossed, and the server settles with it (bead
+      // overnode_v2-7pf). The aggregate holds the same rule.
+      if (stateResponse.status != 'open' && !(msg.closing && stateResponse.status == 'closing')) {
         throw StateError('Channel not open: ${stateResponse.status}');
       }
       
@@ -2510,8 +2512,10 @@ class PaymentChannelManagerActor extends Actor {
         return;
       }
 
-      // Validate channel is open
-      if (stateResponse.status != 'open') {
+      // Validate channel is open, or closing for the client's payment of
+      // nothing: the closes crossed, and the server settles with it (bead
+      // overnode_v2-7pf). The aggregate holds the same rule.
+      if (stateResponse.status != 'open' && !(msg.closing && stateResponse.status == 'closing')) {
         throw StateError('Channel not open: ${stateResponse.status}');
       }
 

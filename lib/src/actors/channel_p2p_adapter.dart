@@ -785,9 +785,13 @@ class ChannelP2PAdapter {
   /// waiting at that sequence.
   bool _refusedPayment(String channelId, int sequence, String error) {
     final outbox = _outboxes[channelId];
-    if (outbox != null && outbox.paymentSequence == sequence) {
+    if (outbox != null && outbox.payment != null && outbox.paymentSequence == sequence) {
       outbox.payment = null;
-      _rearm(channelId, outbox, reset: true);
+      // Without starting the wait again: a close still in the outbox
+      // carries the refused payment, and each refusal of it restarting the
+      // wait resent the close every resendAfter, forever (bead
+      // overnode_v2-7pf).
+      _rearm(channelId, outbox);
     }
     final payment = _unconfirmed[channelId]?.remove(sequence);
     if (payment == null) return false;

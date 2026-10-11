@@ -431,6 +431,33 @@ void main() {
       expect(manager.received.whereType<RecordSettlementMessage>().single.settlementTxHex, 'cafe');
     });
 
+    // Bead overnode_v2-7pf: a server that refused the payment the close
+    // carries answered every resend with channel_error, and each answer
+    // started the wait again: the close went every resendAfter, forever.
+    test('the payment it carries refused, it is resent waiting longer each time', () async {
+      await clientChannel();
+      await pay('r1', 1000, 1, 1000);
+      closing();
+      await settle();
+
+      // The server answers each close at once, refusing its payment.
+      var answered = 0;
+      final until = DateTime.now().add(const Duration(milliseconds: 1000));
+      while (DateTime.now().isBefore(until)) {
+        final closes = sent('channel_close').length;
+        while (answered < closes) {
+          answered++;
+          adapter.handleP2PMessage(_server, 'channel_error',
+              {'channelId': _channelId, 'error': 'Channel not open: closing', 'sequenceNumber': 1});
+        }
+        await settle(10);
+      }
+
+      // At 0, 100, 300, 500, 700 and 900 ms; restarting the wait on each
+      // refusal sent it every 100 ms.
+      expect(sent('channel_close').length, inInclusiveRange(5, 7));
+    });
+
     test("confirms a payment the settlement paid, and fails one it did not", () async {
       await clientChannel();
       await pay('r1', 1000, 1, 1000);

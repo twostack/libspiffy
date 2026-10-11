@@ -905,6 +905,8 @@ class WalletCoordinatorActor extends Actor {
         }
       } else if (message is P2PSendFailed) {
         _channelAdapter?.handleSendFailed(message);
+      } else if (message is ChannelPeerReachable) {
+        _channelAdapter?.handlePeerReachable(message.peerId);
       } else if (message is RequestAncestorProofCommand) {
         unawaited(_proofAdapter.handleRequestProof(message));
       }

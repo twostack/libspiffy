@@ -462,6 +462,115 @@ void main() {
       expect(sent('channel_close').length, inInclusiveRange(5, 7));
     });
 
+    // Bead overnode_v2-7pf: a server that cannot be reached failed every
+    // send at once, and each failure brought the next resend forward: the
+    // close went every resendAfter for as long as it stayed away, and it
+    // may never come back.
+    group('to a server that cannot be reached', () {
+      /// Fails every channel_close as the app's transport does when it
+      /// finds no address for the server, for [ms].
+      Future<void> unreachableFor(int ms) async {
+        var failed = 0;
+        final until = DateTime.now().add(Duration(milliseconds: ms));
+        while (DateTime.now().isBefore(until)) {
+          final closes = sent('channel_close');
+          while (failed < closes.length) {
+            adapter.handleSendFailed(coord.P2PSendFailed(
+                toPeerId: _server,
+                messageType: 'channel_close',
+                payload: closes[failed].payload,
+                error: 'No addresses found for peer'));
+            failed++;
+          }
+          await settle(10);
+        }
+      }
+
+      test('backs off, then stops resending and tells the app the server is away', () async {
+        await clientChannel();
+        await pay('r1', 1000, 1, 1000);
+        closing();
+        await settle(10);
+
+        await unreachableFor(1200);
+
+        // At 0, at 100 ms, at 200 ms (the one failure brought forward);
+        // then at the longest wait, the last send failed, it waits for the
+        // server instead. Bringing every resend forward sent it every
+        // 100 ms, about a dozen times.
+        expect(sent('channel_close').length, 3);
+        final away = emittedOf<coord.ChannelPeerAwayEvent>().single;
+        expect((away.channelId, away.peerId, away.walletId), (_channelId, _server, 'w'));
+      });
+
+      test('the server back, the close goes at once and stops on channel_closed', () async {
+        await clientChannel();
+        await pay('r1', 1000, 1, 1000);
+        closing();
+        await settle(10);
+        await unreachableFor(600);
+        final before = sent('channel_close').length;
+
+        adapter.handlePeerReachable(_server);
+        await settle(10);
+        expect(sent('channel_close').length, before + 1);
+        expect((sent('channel_close').last.payload['payment'] as Map)['proposedSequence'], 1,
+            reason: 'the close kept its payment while it waited');
+
+        adapter.handleP2PMessage(_server, 'channel_closed',
+            {'channelId': _channelId, 'settlementTxId': 'ab' * 32, 'settlementTxHex': 'cafe'});
+        await settle();
+        final closes = sent('channel_close').length;
+        await settle(400);
+        expect(sent('channel_close'), hasLength(closes));
+      });
+
+      test('a message from the server resumes the close too', () async {
+        await clientChannel();
+        await pay('r1', 1000, 1, 1000);
+        closing();
+        await settle(10);
+        await unreachableFor(600);
+        final before = sent('channel_close').length;
+
+        adapter.handleP2PMessage(_server, 'channel_error',
+            {'channelId': _channelId, 'error': 'Channel not open: closing', 'sequenceNumber': 1});
+        await settle(10);
+
+        expect(sent('channel_close').length, greaterThan(before));
+      });
+
+      test('another peer back resumes nothing', () async {
+        await clientChannel();
+        await pay('r1', 1000, 1, 1000);
+        closing();
+        await settle(10);
+        await unreachableFor(600);
+        final before = sent('channel_close').length;
+
+        adapter.handlePeerReachable('someone-else');
+        await settle(300);
+
+        expect(sent('channel_close'), hasLength(before));
+      });
+    });
+
+    test('ended past its lock time, nothing more is sent', () async {
+      await clientChannel();
+      await pay('r1', 1000, 1, 1000);
+      closing();
+      await settle();
+
+      events.add(ChannelExpiredEvent(channelId: _channelId, observedBy: 'client'));
+      await settle();
+      final closes = sent('channel_close').length;
+      await settle(500);
+
+      expect(sent('channel_close'), hasLength(closes),
+          reason: 'only a close or a reject stopped the resends: an expired channel '
+              'sent its close for ever, after the refund too');
+    });
+
     test("confirms a payment the settlement paid, and fails one it did not", () async {
       await clientChannel();
       await pay('r1', 1000, 1, 1000);

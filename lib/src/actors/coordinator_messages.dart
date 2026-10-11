@@ -3120,6 +3120,39 @@ class P2PSendFailed implements Message {
   final DateTime timestamp = DateTime.now();
 }
 
+/// A channel's peer cannot be reached (bead overnode_v2-7pf): its channel
+/// messages backed off to `resendAtMost` and the last send failed, so they
+/// are kept and no longer resent. The app watches for [peerId] (its
+/// presence, say) and says when it is back with [ChannelPeerReachable]; a
+/// message from the peer resumes them too. A peer that never comes back
+/// leaves the channel to its lock time: the client's refund.
+class ChannelPeerAwayEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String channelId;
+  final String peerId;
+
+  ChannelPeerAwayEvent({this.walletId, required this.channelId, required this.peerId});
+}
+
+/// The app has seen [peerId] come back: every channel message kept for it
+/// since it went away ([ChannelPeerAwayEvent]) is sent again, the wait
+/// starting over.
+class ChannelPeerReachable implements Message {
+  final String peerId;
+
+  ChannelPeerReachable({required this.peerId});
+
+  @override
+  final String correlationId = uniqueId('peer-reachable');
+  @override
+  Map<String, dynamic> get metadata => {'peerId': peerId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  final DateTime timestamp = DateTime.now();
+}
+
 /// What became of a [RequestAncestorProofCommand] (bead libspiffy-a2v3).
 ///
 /// [success] only says the request went out (as a [P2PMessageToSendEvent] to

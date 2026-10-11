@@ -1,3 +1,12 @@
+## 5.3.3
+
+A client whose server cannot be reached no longer sends to it every two seconds (bead overnode_v2-7pf). Two tabs were still closing when a phone started, and neither host could be found ("No addresses found for peer"): every send failed at once. Each failure brought the next resend forward to `resendAfter`, so the close went every two seconds for as long as the host stayed away. Some hosts never come back.
+
+- **A failed send brings forward one resend per wait.** After that the resends back off as usual, up to `resendAtMost`.
+- **At the longest wait, with the last send failed, the resends stop.** The messages are kept. The new `ChannelPeerAwayEvent` (channel, peer) tells the app, which can watch for the peer.
+- **The peer back, the kept messages go at once.** The app says so with the new `ChannelPeerReachable` message. Any message from the peer does the same.
+- **A channel that ends past its lock time sends nothing more.** Before, only a close or a reject stopped the resends, so an expired channel, or one whose refund was claimed, went on sending its close for ever.
+
 ## 5.3.2
 
 A tab with nothing paid closes when both sides close at once (bead overnode_v2-7pf). The host ended a room and closed its side first. The client had paid nothing, so the host held no payment to settle with. A minute later the client closed with its payment of nothing (bead libspiffy-w4l2). The host refused it because its channel was no longer `open`. The client resent its close every two seconds for hours, and its 1000 sats stayed locked until the refund lock time.

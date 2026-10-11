@@ -417,6 +417,8 @@ class ChannelP2PAdapter {
   /// Handle an incoming P2P message from a peer.
   void handleP2PMessage(String fromPeerId, String messageType, Map<String, dynamic> payload) {
     _log.fine('Received P2P message: $messageType from $fromPeerId');
+    // A peer that sends something is back.
+    handlePeerReachable(fromPeerId);
 
     // Every message but a request is about an existing channel, and is
     // checked against this adapter's record of it (bead libspiffy-i0e6).
@@ -939,7 +941,9 @@ class ChannelP2PAdapter {
         event is ch.PaymentRecordedEvent ||
         event is ch.PaymentAcknowledgedEvent ||
         event is ch.ChannelClosingEvent ||
-        event is ch.ChannelClosedEvent;
+        event is ch.ChannelClosedEvent ||
+        event is ch.ChannelExpiredEvent ||
+        event is ch.RefundClaimedEvent;
     if (!createsRecord && !readsRecord) {
       _log.fine('Unhandled channel event type: ${event.runtimeType}');
       return;
@@ -972,9 +976,20 @@ class ChannelP2PAdapter {
       _onChannelClosing(event);
     } else if (event is ch.ChannelClosedEvent) {
       _onChannelClosed(event);
+    } else if (event is ch.ChannelExpiredEvent || event is ch.RefundClaimedEvent) {
+      _onChannelEnded(event);
     } else {
       _log.fine('Unhandled channel event type: ${event.runtimeType}');
     }
+  }
+
+  /// The channel ended past its lock time: expired, or its refund claimed.
+  /// Nothing more goes to its peer. Before, only a close or a reject stopped
+  /// the resends, so a client whose server never came back sent its close
+  /// for ever, after the refund too (bead overnode_v2-7pf).
+  void _onChannelEnded(ch.ChannelEvent event) {
+    _log.info('Channel ${event.channelId} ended past its lock time; nothing more is sent to its peer');
+    _cleanupChannel(event.channelId);
   }
 
   void _onChannelRequested(ch.ChannelRequestedEvent event) {
@@ -1257,7 +1272,12 @@ class ChannelP2PAdapter {
   void _rearm(String channelId, _Outbox outbox, {bool reset = false}) {
     outbox.timer?.cancel();
     outbox.timer = null;
-    if (reset) outbox.wait = _resendAfter;
+    if (reset) {
+      outbox.wait = _resendAfter;
+      outbox.hastened = false;
+      outbox.lastSendFailed = false;
+      outbox.parked = false;
+    }
     if (outbox.open == null && outbox.payment == null && outbox.close == null) {
       _outboxes.remove(channelId);
       return;
@@ -1266,9 +1286,15 @@ class ChannelP2PAdapter {
     outbox.timer = Timer(outbox.wait, () => _resend(channelId));
   }
 
-  void _resend(String channelId) {
+  /// [early] is the retry a failed send brought forward: it always goes.
+  void _resend(String channelId, {bool early = false}) {
     final outbox = _outboxes[channelId];
     if (outbox == null || _disposed) return;
+    if (!early && outbox.wait >= _resendAtMost && outbox.lastSendFailed) {
+      _park(channelId, outbox);
+      return;
+    }
+    outbox.lastSendFailed = false;
     final open = outbox.open;
     final payment = outbox.payment;
     final close = outbox.close;
@@ -1301,6 +1327,43 @@ class ChannelP2PAdapter {
     _rearm(channelId, outbox);
   }
 
+  /// Stops resending [outbox] to a peer that cannot be reached, keeping its
+  /// messages for when the peer is back ([handlePeerReachable]). Resending at
+  /// `resendAtMost` for ever was a send, and its failure, every half minute
+  /// to a peer that may never return (bead overnode_v2-7pf).
+  void _park(String channelId, _Outbox outbox) {
+    outbox.timer?.cancel();
+    outbox.timer = null;
+    outbox.parked = true;
+    _log.info('Channel $channelId: ${outbox.peerId} cannot be reached; '
+        'its messages wait until it is back');
+    _emitEvent(coord.ChannelPeerAwayEvent(
+      walletId: _walletFor(channelId),
+      channelId: channelId,
+      peerId: outbox.peerId,
+    ));
+  }
+
+  /// [peerId] is back (bead overnode_v2-7pf): the app saw it come online, or
+  /// it sent something. Every channel message kept for it goes again now,
+  /// the wait starting over.
+  void handlePeerReachable(String peerId) {
+    final parked = [
+      for (final e in _outboxes.entries)
+        if (e.value.parked && e.value.peerId == peerId) e.key,
+    ];
+    for (final channelId in parked) {
+      final outbox = _outboxes[channelId]!;
+      outbox
+        ..parked = false
+        ..wait = _resendAfter
+        ..hastened = false
+        ..lastSendFailed = false;
+      _log.info('Channel $channelId: $peerId is back; resending');
+      _resend(channelId);
+    }
+  }
+
   /// Whether [channelId]'s settlement margin has begun: a server would
   /// settle it as soon as it opened.
   /// Whether `channel_open` for [channelId] is in the outbox.
@@ -1321,15 +1384,22 @@ class ChannelP2PAdapter {
   /// The app's transport could not deliver [failed] (bead
   /// overnode_v2-0o5.3.2): a channel message still waiting for its answer
   /// is sent again after `resendAfter`, sooner than its resend would come.
+  ///
+  /// Once per wait started: a peer that cannot be reached fails every send
+  /// at once, and bringing each resend forward kept the wait at
+  /// `resendAfter` for ever, a send every two seconds while it stayed away
+  /// (bead overnode_v2-7pf). The resends after that one back off as usual.
   void handleSendFailed(coord.P2PSendFailed failed) {
     final channelId = failed.payload['channelId'];
     if (channelId is! String) return;
     final outbox = _outboxes[channelId];
     if (outbox == null) return;
     _log.fine('Channel $channelId: sending ${failed.messageType} to ${failed.toPeerId} failed: ${failed.error}');
-    if (outbox.wait > _resendAfter) {
+    outbox.lastSendFailed = true;
+    if (outbox.wait > _resendAfter && !outbox.hastened) {
+      outbox.hastened = true;
       outbox.timer?.cancel();
-      outbox.timer = Timer(_resendAfter, () => _resend(channelId));
+      outbox.timer = Timer(_resendAfter, () => _resend(channelId, early: true));
     }
   }
 
@@ -2169,6 +2239,17 @@ class _Outbox {
 
   Duration wait;
   Timer? timer;
+
+  /// A failed send has already brought the next resend forward since the
+  /// wait last started from `resendAfter`.
+  bool hastened = false;
+
+  /// The last send could not reach the peer.
+  bool lastSendFailed = false;
+
+  /// Not resent: the peer could not be reached at the longest wait, and the
+  /// messages wait for it to come back.
+  bool parked = false;
 
   _Outbox(this.peerId, this.wait);
 }

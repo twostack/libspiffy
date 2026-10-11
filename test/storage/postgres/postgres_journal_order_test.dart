@@ -129,6 +129,21 @@ void main() {
       await store.close();
     });
 
+    // Bead overnode_v2-7pf: libspiffy reads the journal head at start, and
+    // an applied event at or before it is replayed. The head must be the
+    // sequence the event stream reports.
+    test('highestJournalId is the sequence the stream reports for the last event', () async {
+      final stamp = _stamp();
+      final from = await store.highestJournalId();
+      await store.persistEvent('7pf-$stamp', OrderEvent('h-$stamp'), 0);
+
+      final head = await store.highestJournalId();
+      final rows = mine(await store.allEventsWithSequence(fromSequence: from, live: false).toList(), stamp);
+
+      expect(rows.single.$2, head);
+      expect(head, greaterThan(from));
+    });
+
     test(
         'a replay run while a lower journal id is uncommitted, resumed from its '
         'checkpoint after that commit, delivers both events in id order',

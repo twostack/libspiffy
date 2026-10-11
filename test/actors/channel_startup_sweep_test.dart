@@ -22,7 +22,9 @@ import 'package:test/test.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
+import 'package:eventador/eventador.dart' show Event;
 import 'package:libspiffy/src/core/channel_events.dart';
+import 'package:libspiffy/src/core/wallet_events.dart' as domain;
 import 'package:libspiffy/src/models/payment_channel.dart';
 
 import '../mocks/test_channel_timing.dart';
@@ -325,6 +327,91 @@ void main() {
           unorderedEquals(['due', 'interrupted']));
     });
   });
+
+  // Bead overnode_v2-7pf: a client's close, and a funding's channel_open,
+  // went again after a restart only when the channel projection happened to
+  // apply their events again; now the coordinator hands the adapter every
+  // client channel the read model shows closing or funding.
+  group('7pf: client channels are resumed at startup', () {
+    test('a client channel closing or funding is looked at; the rest are not', () async {
+      final channelManager = _StatelessManager();
+      final managerRef = await system.spawn('channel-manager', () => channelManager);
+      final channelEvents = StreamController<ChannelEvent>.broadcast();
+      addTearDown(channelEvents.close);
+      await storage.storeWallet(_wallet, 'Sweep');
+      await storage.storePaymentChannel(channel('closing', PaymentChannelState.closing));
+      await storage.storePaymentChannel(channel('funding', PaymentChannelState.funding));
+      await storage.storePaymentChannel(channel('open', PaymentChannelState.open));
+      await storage.storePaymentChannel(channel('closed', PaymentChannelState.closed));
+      await storage.storePaymentChannel(
+          channel('served-closing', PaymentChannelState.closing, role: PaymentChannelRole.server));
+
+      final coordinator = WalletCoordinatorActor(
+        walletManager: noop,
+        invoiceCoordinator: noop,
+        paymentCoordinator: noop,
+        spvActor: noop,
+        arcActor: noop,
+        headerSyncActor: noop,
+        benfordCoordinator: noop,
+        channelManager: managerRef,
+        walletProjection: noop,
+        storage: storage,
+        channelEvents: channelEvents.stream,
+      );
+      await system.spawn('coordinator-${DateTime.now().microsecondsSinceEpoch}', () => coordinator);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      // The adapter reads each one's journaled state, and acts on it.
+      expect(channelManager.received.whereType<ChannelDetailsQueryMessage>().map((q) => q.channelId),
+          unorderedEquals(['closing', 'funding']));
+    });
+  });
+
+  // Bead overnode_v2-7pf: a restore applies every copied event again, and
+  // the app was told of every confirmation of the past once more.
+  group('7pf: replayed read-model events', () {
+    Future<List<coord.CoordinatorEvent>> announce(Event event, {required bool replayed}) async {
+      final readModel = StreamController<Event>.broadcast();
+      addTearDown(readModel.close);
+      final coordinator = WalletCoordinatorActor(
+        walletManager: noop,
+        invoiceCoordinator: noop,
+        paymentCoordinator: noop,
+        spvActor: noop,
+        arcActor: noop,
+        headerSyncActor: noop,
+        benfordCoordinator: noop,
+        channelManager: noop,
+        walletProjection: noop,
+        storage: storage,
+        readModelEvents: readModel.stream,
+        isReplayed: (e) => replayed && identical(e, event),
+      );
+      final events = <coord.CoordinatorEvent>[];
+      final sub = coordinator.events.listen(events.add);
+      addTearDown(sub.cancel);
+      await system.spawn('coordinator-${DateTime.now().microsecondsSinceEpoch}', () => coordinator);
+      readModel.add(event);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      return events;
+    }
+
+    domain.TransactionConfirmedEvent confirmed() =>
+        domain.TransactionConfirmedEvent(walletId: _wallet, txid: 'ab' * 32, blockHeight: 100);
+
+    test('a confirmation journaled now is announced', () async {
+      final events = await announce(confirmed(), replayed: false);
+
+      expect(events.whereType<coord.TransactionConfirmedEvent>().single.txid, 'ab' * 32);
+    });
+
+    test('a confirmation applied again at start is not', () async {
+      final events = await announce(confirmed(), replayed: true);
+
+      expect(events.whereType<coord.TransactionConfirmedEvent>(), isEmpty);
+    });
+  });
 }
 
 class _Noop extends Actor {
@@ -344,4 +431,26 @@ class _Recorder extends Actor {
   final List<dynamic> received = [];
   @override
   Future<void> onMessage(dynamic message) async => received.add(message);
+}
+
+/// A channel manager that journals no channel: each state query is answered
+/// that there is none.
+class _StatelessManager extends Actor {
+  final List<dynamic> received = [];
+  @override
+  Future<void> onMessage(dynamic message) async {
+    received.add(message);
+    if (message is ChannelDetailsQueryMessage) {
+      context.sender?.tell(FullChannelStateResponse(
+        channelId: message.channelId,
+        walletId: _wallet,
+        status: 'unknown',
+        clientBalanceSats: BigInt.zero,
+        serverBalanceSats: BigInt.zero,
+        latestSequenceNumber: 0,
+        fundingAmountSats: BigInt.zero,
+        success: false,
+      ));
+    }
+  }
 }

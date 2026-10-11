@@ -38,6 +38,7 @@ void main() {
   late _Manager manager;
   late List<coord.CoordinatorEvent> emitted;
   late StreamController<ChannelEvent> events;
+  late StreamController<ChannelEvent> replayed;
   late ChannelP2PAdapter adapter;
 
   Future<void> spawn(String myPeerId) async {
@@ -47,6 +48,7 @@ void main() {
       arcActor: await system.spawn('arc', () => PolicyRateArc(const FeeRate(satoshis: 100, bytes: 1000))),
       emitEvent: emitted.add,
       channelEvents: events.stream,
+      replayedChannelEvents: replayed.stream,
       walletId: 'w',
       myPeerId: myPeerId,
       timing: _timing,
@@ -59,10 +61,12 @@ void main() {
     manager = _Manager();
     emitted = [];
     events = StreamController<ChannelEvent>.broadcast();
+    replayed = StreamController<ChannelEvent>.broadcast();
   });
   tearDown(() async {
     adapter.dispose();
     await events.close();
+    await replayed.close();
     await system.shutdown();
   });
 
@@ -482,6 +486,186 @@ void main() {
     });
   });
 
+  // Bead overnode_v2-7pf: the channel projection applies events again at
+  // start (catching up from its checkpoint, or the events a restore copied
+  // in). Handled as live, a restore re-sent every channel message of the
+  // past to its peer and told the app of every channel again.
+  group('replayed at start', () {
+    FullChannelStateResponse state(String status, {required String role, bool fundingSent = false}) =>
+        FullChannelStateResponse(
+          channelId: _channelId,
+          walletId: 'w',
+          status: status,
+          role: role,
+          clientBalanceSats: BigInt.from(100000),
+          serverBalanceSats: BigInt.zero,
+          latestSequenceNumber: 1,
+          fundingAmountSats: BigInt.from(100000),
+          fundingTxId: 'f' * 64,
+          fundingOutputIndex: 1,
+          clientPubKeyHex: '02' * 33,
+          clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+          lockTimeUnix: 1900000000,
+          fundingSent: fundingSent,
+          clientPeerId: _client,
+          serverPeerId: _server,
+          latestPaymentTxHex: 'tx1',
+          latestClientSignatureHex: 'sig1',
+          success: true,
+        );
+
+    List<ChannelEvent> clientHistory({bool closed = true}) => [
+          ChannelRequestedEvent(
+            channelId: _channelId,
+            walletId: 'w',
+            clientPeerId: _client,
+            serverPeerId: _server,
+            clientPubKeyHex: '02' * 33,
+            clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+            derivationIndex: 7,
+            fundingAmountSats: BigInt.from(100000),
+            lockTimeUnix: 1900000000,
+          ),
+          FundingSentEvent(
+              channelId: _channelId, fundingTxId: 'f' * 64, fundingOutputIndex: 1, fundingTxHex: '0100'),
+          ChannelOpenedEvent(
+            channelId: _channelId,
+            fundingTxId: 'f' * 64,
+            fundingOutputIndex: 1,
+            fundingTxHex: '0100',
+            fundingAncestorTxids: const [],
+            initialClientBalanceSats: BigInt.from(100000),
+            initialServerBalanceSats: BigInt.zero,
+          ),
+          PaymentRecordedEvent(
+            channelId: _channelId,
+            amountSats: BigInt.from(1000),
+            newClientBalanceSats: BigInt.from(99000),
+            newServerBalanceSats: BigInt.from(1000),
+            sequenceNumber: 1,
+            paymentTxHex: 'tx1',
+            paymentTxId: 'id1',
+            clientSignatureHex: 'sig1',
+          ),
+          ChannelClosingEvent(
+            channelId: _channelId,
+            reason: 'left the room',
+            initiator: 'client',
+            clientBalanceSats: BigInt.from(99000),
+            serverBalanceSats: BigInt.from(1000),
+          ),
+          if (closed)
+            ChannelClosedEvent(
+              channelId: _channelId,
+              settlementTxId: 'ab' * 32,
+              finalClientBalanceSats: BigInt.from(99000),
+              finalServerBalanceSats: BigInt.from(1000),
+              settlementTxHex: 'cafe',
+            ),
+        ];
+
+    test('a closed channel replayed sends nothing, tells the app nothing, and is not looked at', () async {
+      await spawn(_client);
+      clientHistory().forEach(replayed.add);
+      await settle(300);
+
+      expect(emitted, isEmpty, reason: 'every one of these was sent and announced when it was journaled');
+      expect(manager.received.whereType<ChannelDetailsQueryMessage>(), isEmpty,
+          reason: 'the replay showed the channel end');
+    });
+
+    test("a server's channel replayed sends nothing to its client", () async {
+      await spawn(_server);
+      for (final event in <ChannelEvent>[
+        ChannelAcceptedEvent(
+          channelId: _channelId,
+          walletId: 'w',
+          clientPeerId: _client,
+          clientPubKeyHex: '02' * 33,
+          clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+          serverPubKeyHex: '03' * 33,
+          serverAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+          derivationIndex: 3,
+          fundingAmountSats: BigInt.from(100000),
+          lockTimeUnix: 1900000000,
+        ),
+        RefundCountersignedEvent(
+            channelId: _channelId, serverSignatureHex: 'ss', signedRefundTxHex: 'rr'),
+        ChannelClosingEvent(
+          channelId: _channelId,
+          reason: 'the space ended',
+          initiator: 'server',
+          clientBalanceSats: BigInt.from(100000),
+          serverBalanceSats: BigInt.zero,
+        ),
+        ChannelClosedEvent(
+          channelId: _channelId,
+          settlementTxId: 'ab' * 32,
+          finalClientBalanceSats: BigInt.from(100000),
+          finalServerBalanceSats: BigInt.zero,
+          settlementTxHex: 'cafe',
+        ),
+      ]) {
+        replayed.add(event);
+      }
+      await settle(300);
+
+      expect(emitted, isEmpty,
+          reason: 'old code sent channel_accept, refund_signed, channel_close and channel_closed again');
+    });
+
+    test('a client channel left closing has its close go again, with its latest payment', () async {
+      await spawn(_client);
+      manager.states[_channelId] = state('closing', role: 'client');
+      clientHistory(closed: false).forEach(replayed.add);
+      await settle(20);
+      expect(emitted, isEmpty, reason: 'nothing is sent for the events themselves');
+
+      await settle(300);
+
+      final close = sent('channel_close').first;
+      expect(close.toPeerId, _server);
+      expect((close.payload['payment'] as Map)['clientSignatureHex'], 'sig1');
+      expect(sent('channel_close').length, greaterThan(1), reason: 'and is resent until channel_closed');
+      expect(sent('payment_update'), isEmpty);
+      expect(emitted.whereType<coord.P2PMessageToSendEvent>().length, emitted.length,
+          reason: 'the app is told nothing');
+    });
+
+    test('a channel the coordinator hands over is looked at once', () async {
+      await spawn(_client);
+      manager.states[_channelId] = state('closing', role: 'client');
+
+      adapter.resumeAfterRestart(_channelId);
+      adapter.resumeAfterRestart(_channelId);
+      await settle(50);
+
+      expect(manager.received.whereType<ChannelDetailsQueryMessage>(), hasLength(1));
+      expect(sent('channel_close'), hasLength(1));
+    });
+
+    test('a funding sent and not yet opened has channel_open go again from the journal', () async {
+      await spawn(_client);
+      manager.states[_channelId] = state('refundSigned', role: 'client', fundingSent: true);
+
+      adapter.resumeAfterRestart(_channelId);
+      await settle();
+
+      expect(manager.received.whereType<ResendChannelOpenMessage>().single.channelId, _channelId);
+    });
+
+    test('an open client channel has nothing to send', () async {
+      await spawn(_client);
+      manager.states[_channelId] = state('open', role: 'client');
+
+      adapter.resumeAfterRestart(_channelId);
+      await settle();
+
+      expect(emitted, isEmpty);
+      expect(manager.received.whereType<ResendChannelOpenMessage>(), isEmpty);
+    });
+  });
+
   group('the server', () {
     Future<void> serverChannel() async {
       await spawn(_server);
@@ -582,9 +766,25 @@ void main() {
 class _Manager extends Actor {
   final List<dynamic> received = [];
 
+  /// The journaled state each channel is answered with.
+  final Map<String, FullChannelStateResponse> states = {};
+
   @override
   Future<void> onMessage(dynamic message) async {
     received.add(message);
+    if (message is ChannelDetailsQueryMessage) {
+      context.sender?.tell(states[message.channelId] ??
+          FullChannelStateResponse(
+            channelId: message.channelId,
+            walletId: 'w',
+            status: 'unknown',
+            clientBalanceSats: BigInt.zero,
+            serverBalanceSats: BigInt.zero,
+            latestSequenceNumber: 0,
+            fundingAmountSats: BigInt.zero,
+            success: false,
+          ));
+    }
     if (message is RecordPaymentMessage) {
       context.sender?.tell(PaymentRecordedResponse(
         channelId: message.channelId,

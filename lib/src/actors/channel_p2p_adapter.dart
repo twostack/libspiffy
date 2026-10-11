@@ -84,6 +84,7 @@ class ChannelP2PAdapter {
     required ActorRef arcActor,
     required void Function(coord.CoordinatorEvent) emitEvent,
     required Stream<ch.ChannelEvent> channelEvents,
+    Stream<ch.ChannelEvent>? replayedChannelEvents,
     required String walletId,
     required String myPeerId,
     ChannelTiming? timing,
@@ -95,7 +96,10 @@ class ChannelP2PAdapter {
         _walletId = walletId,
         _myPeerId = myPeerId {
     _eventSubscription = channelEvents.listen(_handleEvent);
+    _replaySubscription = replayedChannelEvents?.listen(_handleReplayed);
   }
+
+  StreamSubscription<ch.ChannelEvent>? _replaySubscription;
 
   /// Wallet manager that routes wallet commands to the owning aggregate.
   final ActorRef _walletManager;
@@ -181,6 +185,7 @@ class ChannelP2PAdapter {
     _unconfirmed.clear();
     _disposed = true;
     _eventSubscription?.cancel();
+    _replaySubscription?.cancel();
   }
 
   // ===========================================================================
@@ -218,19 +223,127 @@ class ChannelP2PAdapter {
   /// Rebuilds the records of [channelId] from its journaled state, if the
   /// channel exists.
   Future<void> _restore(String channelId) async {
+    final state = await _journaledState(channelId);
+    if (state != null) _adopt(state);
+  }
+
+  /// The journaled state of [channelId], or null when there is none.
+  Future<FullChannelStateResponse?> _journaledState(String channelId) async {
     final dynamic reply;
     try {
       reply = await _channelManager.ask<dynamic>(
           ChannelDetailsQueryMessage(channelId: channelId), _restoreTimeout);
     } catch (e) {
       _log.warning('Cannot restore channel $channelId: $e');
-      return;
+      return null;
     }
     if (reply is! FullChannelStateResponse || !reply.success) {
       _log.fine('No journaled channel $channelId to restore');
+      return null;
+    }
+    return reply;
+  }
+
+  // ===========================================================================
+  // AFTER A RESTART: REPLAYED EVENTS, AND WHAT IS LEFT TO SEND
+  // ===========================================================================
+
+  /// Channels already looked at since this start ([resumeAfterRestart]).
+  final Set<String> _resumed = {};
+
+  /// Channels the replay showed reach their end: nothing is left to send.
+  final Set<String> _replayedEnded = {};
+
+  /// A channel event the channel projection applied again at start (bead
+  /// overnode_v2-7pf): catching up from its checkpoint after the app was
+  /// stopped, or applying the events a restore copied in. It was acted on
+  /// when it was journaled, so nothing is sent or announced for it: handled
+  /// as a live event, a restore re-sent every channel message of the past to
+  /// its peer (`channel_accept`, `refund_signed`, `channel_close`,
+  /// `channel_closed`, payments) and told the app of every channel again.
+  ///
+  /// What it does say is that its channel changed lately, perhaps after
+  /// what the read model shows: the channel is looked at once
+  /// ([resumeAfterRestart]), after [_resendAfter], so a later event of the
+  /// replay that ends it comes first and spares the look.
+  void _handleReplayed(ch.ChannelEvent event) {
+    final channelId = event.channelId;
+    if (event is ch.ChannelClosedEvent ||
+        event is ch.ChannelRejectedEvent ||
+        event is ch.ChannelExpiredEvent ||
+        event is ch.RefundClaimedEvent) {
+      _replayedEnded.add(channelId);
       return;
     }
-    _adopt(reply);
+    if (_resumed.contains(channelId)) return;
+    Timer(_resendAfter, () {
+      if (!_replayedEnded.contains(channelId)) resumeAfterRestart(channelId);
+    });
+  }
+
+  /// Picks [channelId] up where it was left when the app stopped, from its
+  /// journaled state; once per start, and nothing for a channel with
+  /// nothing left to send.
+  ///
+  /// A client's close goes again until `channel_closed` arrives, and the
+  /// `channel_open` of a funding sent goes again until `channel_opened`;
+  /// on a server, an open channel's settlement is armed. Only the live
+  /// events of a run used to arm these: a restart left a close or an open
+  /// unsent unless the projection happened to apply its event again.
+  ///
+  /// Called for each channel the replay names ([_handleReplayed]) and by
+  /// the coordinator at startup for each channel the read model shows
+  /// closing or funding.
+  void resumeAfterRestart(String channelId) {
+    if (_disposed || !_resumed.add(channelId)) return;
+    _queued++;
+    _queue = _queue.then((_) async {
+      try {
+        if (_disposed) return;
+        final state = await _journaledState(channelId);
+        if (state == null || _disposed) return;
+        if (!_knows(channelId)) _adopt(state);
+        _resume(state);
+      } catch (e, stackTrace) {
+        _log.warning('Channel $channelId could not be resumed: $e', e, stackTrace);
+      } finally {
+        _queued--;
+      }
+    });
+  }
+
+  void _resume(FullChannelStateResponse state) {
+    final channelId = state.channelId;
+    final outbox = _outboxes[channelId];
+    if (state.role == 'client' && state.status == 'closing') {
+      final peers = _channelPeers[channelId];
+      if (peers == null || outbox?.close != null) return;
+      _log.info('Channel $channelId was closing when the app stopped: its close goes again');
+      final close = {
+        'channelId': channelId,
+        'reason': 'closing',
+        if (_latestPayment[channelId] case final payment?) 'payment': payment,
+      };
+      final resumed = _outboxes[channelId] ??= _Outbox(peers.serverPeerId, _resendAfter);
+      resumed.close = close;
+      _emitP2PMessage(peers.serverPeerId, 'channel_close', close);
+      _rearm(channelId, resumed, reset: true);
+    } else if (state.role == 'client' &&
+        state.fundingSent &&
+        !state.fundingFailed &&
+        state.status == 'refundSigned') {
+      if (outbox?.open != null) return;
+      _log.info('Channel $channelId was waiting for channel_opened when the app stopped: '
+          'channel_open goes again');
+      // The manager rebuilds channel_open from the journal, answered in
+      // [handleChannelOpenResent].
+      _channelManager.tell(ResendChannelOpenMessage(channelId: channelId), sender: _replyTo);
+    } else if (state.role == 'server' && state.status == 'open') {
+      final lockTimeUnix = state.lockTimeUnix;
+      if (lockTimeUnix != null && !_settlements.containsKey(channelId)) {
+        settleBeforeLockTime(channelId, lockTimeUnix);
+      }
+    }
   }
 
   void _adopt(FullChannelStateResponse state) {

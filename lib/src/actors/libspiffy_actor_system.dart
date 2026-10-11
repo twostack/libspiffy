@@ -68,6 +68,23 @@ class LibSpiffyActorSystem {
   _Lifecycle _lifecycle = _Lifecycle.uninitialized;
   bool _ownsIsar = false; // Track if we created the Isar instance
   StorageBackend _storageBackend = StorageBackend.isar;
+  /// The last journal sequence when this system started (see
+  /// [_journalHead]). Applied events at or before it are replayed: they
+  /// rebuild state, and nothing is sent or announced for them.
+  int _journalHeadAtStart = 0;
+
+  /// The last sequence in the journal, as the event stream numbers it; 0
+  /// for a store it cannot ask, so every event counts as journaled now.
+  Future<int> _journalHead() async {
+    final store = _eventStore;
+    if (store is IsarEventStore) {
+      final last = await store.isar.eventEnvelopes.where(sort: Sort.desc).anyId().findFirst();
+      return last?.id ?? 0;
+    }
+    if (store is PostgresEventStore) return store.highestJournalId();
+    return 0;
+  }
+
   late EventStore _eventStore;
   late EventStream _eventStream; // Separate reference for LSP compliance
   late ReadModelStorage _walletStorage;
@@ -122,7 +139,7 @@ class LibSpiffyActorSystem {
   /// only exposes message-based operations. Used by the channel-event
   /// broadcaster wiring to re-broadcast post-applied events.
   ProjectionActor? _channelProjectionActor;
-  StreamSubscription<ChannelEvent>? _channelProjectionAppliedSub;
+  StreamSubscription<(Event, int)>? _channelProjectionAppliedSub;
 
   /// The events the wallet and invoice read models have applied, for the
   /// coordinator to announce once an app can query their outcome (bead
@@ -153,6 +170,11 @@ class LibSpiffyActorSystem {
   final StreamController<WalletImportNotification> _importNotificationBroadcaster =
       StreamController<WalletImportNotification>.broadcast();
   final StreamController<ChannelEvent> _channelEventBroadcaster = StreamController<ChannelEvent>.broadcast();
+
+  /// The channel events the channel projection applies again at start
+  /// (see [_journalHeadAtStart]): the adapter looks at their channels, and
+  /// sends nothing for them.
+  final StreamController<ChannelEvent> _replayedChannelEvents = StreamController<ChannelEvent>.broadcast();
 
   /// Initialize the LibSpiffy actor system
   /// 
@@ -435,6 +457,12 @@ class LibSpiffyActorSystem {
         break;
     }
     
+    // The journal as this start found it, before any actor can write: an
+    // event at or before it is one a projection applies again (catching up
+    // from its checkpoint, or the events a restore copied in), not one
+    // journaled now (bead overnode_v2-7pf).
+    _journalHeadAtStart = await _journalHead();
+
     // 4. Initialize secure storage (use provided or default to in-memory)
     if (secureStorage == null && storageBackend != StorageBackend.inMemory) {
       // Events and read models are durable but the keys would live in a
@@ -771,7 +799,7 @@ class LibSpiffyActorSystem {
       'projection-wallet-projection',
       () {
         final actor = ProjectionActor(_walletProjection!, _eventStream, isar: isar);
-        _readModelAppliedSubs.add(actor.appliedEvents.listen(_readModelApplied.add));
+        _readModelAppliedSubs.add(_markingReplayed(actor).listen(_readModelApplied.add));
         return actor;
       },
     );
@@ -785,7 +813,7 @@ class LibSpiffyActorSystem {
       'projection-invoice-projection',
       () {
         final actor = ProjectionActor(_invoiceProjection!, _eventStream, isar: isar);
-        _readModelAppliedSubs.add(actor.appliedEvents.listen(_readModelApplied.add));
+        _readModelAppliedSubs.add(_markingReplayed(actor).listen(_readModelApplied.add));
         return actor;
       },
     );
@@ -814,15 +842,35 @@ class LibSpiffyActorSystem {
     // events are only re-broadcast AFTER `ChannelProjection.handle()`
     // completes, so any downstream read of `paymentChannelEntitys` is
     // guaranteed to see the row.
-    _channelProjectionAppliedSub = _channelProjectionActor!.appliedEvents
-        .where((e) => e is ChannelEvent)
-        .cast<ChannelEvent>()
-        .listen((event) {
-      if (!_channelEventBroadcaster.isClosed) {
-        _channelEventBroadcaster.add(event);
-      }
+    //
+    // An event at or before the journal head this start found is replayed
+    // (bead overnode_v2-7pf): a projection catching up from its checkpoint,
+    // or the events a restore copied in. It goes to the channel adapter on
+    // its own stream, to rebuild from, and nothing is sent or announced for
+    // it: every one of them was acted on when it was journaled. On the one
+    // stream, a restore re-sent every channel message of the past to its
+    // peer and told the app of every channel again.
+    _channelProjectionAppliedSub = _channelProjectionActor!.appliedEventsWithSequence
+        .where((applied) => applied.$1 is ChannelEvent)
+        .listen((applied) {
+      final (event, sequence) = applied;
+      final target = sequence > _journalHeadAtStart ? _channelEventBroadcaster : _replayedChannelEvents;
+      if (!target.isClosed) target.add(event as ChannelEvent);
     });
   }
+
+  /// The events [actor] applies, each one at or before the journal head
+  /// this start found marked replayed ([_replayed]): the coordinator
+  /// announces it no more, as the app heard of it when it was journaled
+  /// (bead overnode_v2-7pf).
+  Stream<Event> _markingReplayed(ProjectionActor actor) => actor.appliedEventsWithSequence.map((applied) {
+        final (event, sequence) = applied;
+        if (sequence <= _journalHeadAtStart) _replayed[event] = true;
+        return event;
+      });
+
+  /// The read-model events applied again at start ([_markingReplayed]).
+  final Expando<bool> _replayed = Expando<bool>('replayed');
 
   /// Spawn all coordination actors
   Future<void> _spawnActors() async {
@@ -982,7 +1030,9 @@ class LibSpiffyActorSystem {
       walletProjection: _walletProjectionRef!,
       storage: _walletStorage,
       channelEvents: _channelEventBroadcaster.stream,
+      replayedChannelEvents: _replayedChannelEvents.stream,
       readModelEvents: _readModelApplied.stream,
+      isReplayed: (event) => _replayed[event] ?? false,
       // This node's own peer id on the channel transport (libspiffy-36f).
       peerId: _channelPeerId,
       channelTiming: _channelTiming,
@@ -1299,6 +1349,10 @@ class LibSpiffyActorSystem {
   /// 
   /// External components (like P2P adapters) can subscribe to this stream
   /// to receive payment channel events for protocol message translation.
+  ///
+  /// Only events journaled since this start: the ones the channel projection
+  /// applies again as it catches up were acted on when they were journaled
+  /// (bead overnode_v2-7pf).
   Stream<ChannelEvent> get channelEvents => _channelEventBroadcaster.stream;
 
   /// Get reference to the SpiffyNode bridge (if connected)
@@ -1666,6 +1720,7 @@ class LibSpiffyActorSystem {
     if (!wasStarted) {
       await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();
+      await _replayedChannelEvents.close();
       return;
     }
 
@@ -1784,6 +1839,7 @@ class LibSpiffyActorSystem {
       await _readModelApplied.close();
       await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();
+      await _replayedChannelEvents.close();
 
     } finally {
       _clearActorRefs();

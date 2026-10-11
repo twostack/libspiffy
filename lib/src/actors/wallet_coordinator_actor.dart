@@ -102,6 +102,9 @@ class WalletCoordinatorActor extends Actor {
 
   StreamSubscription<Event>? _readModelEventsSub;
 
+  /// See the constructor's `isReplayed`.
+  final bool Function(Event event)? _isReplayed;
+
   /// Announces what the read models applied: a confirmation
   /// ([TransactionConfirmedEvent]), a confirmation the chain took back
   /// ([TransactionConfirmationRevertedEvent]), a paid invoice
@@ -114,7 +117,17 @@ class WalletCoordinatorActor extends Actor {
   /// libspiffy-hzkf, libspiffy-7ye4). A confirmation journaled without a
   /// height, before heights were journaled, is not announced: the event
   /// states one.
+  ///
+  /// An event applied again at start ([_isReplayed], bead overnode_v2-7pf)
+  /// is announced no more: the app heard of it when it was journaled, and a
+  /// restore told it again of every confirmation and paid invoice of the
+  /// past. What follows from it is still done (an invoice its payment pays,
+  /// a channel its failed funding can never open), in case the app stopped
+  /// before it was: each step leaves alone what is already done. The
+  /// balance is still announced: it is announced only when it differs from
+  /// the last one this run announced.
   void _announceApplied(Event event) {
+    final announce = !(_isReplayed?.call(event) ?? false);
     final moved = _walletWhoseBalanceMoved(event);
     if (moved != null) {
       _balanceAnnouncements =
@@ -122,14 +135,15 @@ class WalletCoordinatorActor extends Actor {
     }
     switch (event) {
       case domain_events.TransactionConfirmedEvent(:final walletId, :final txid, :final blockHeight?):
-        _emitEvent(TransactionConfirmedEvent(walletId: walletId, txid: txid, blockHeight: blockHeight));
+        if (announce) _emitEvent(TransactionConfirmedEvent(walletId: walletId, txid: txid, blockHeight: blockHeight));
         unawaited(_payInvoiceOfHeldPayment(walletId, txid, DeferredNetworkStatus.mined));
       // The chain stopped supporting a confirmation this wallet announced:
       // the block its proof named left the active chain, or the header at
       // that height contradicts the proof. An app told the transaction
       // confirmed is told it is not (bead libspiffy-hzkf).
       case domain_events.TransactionConfirmationRevertedEvent(
-            :final walletId, :final txid, :final blockHeight, :final blockHash, :final reason):
+            :final walletId, :final txid, :final blockHeight, :final blockHash, :final reason)
+          when announce:
         _emitEvent(TransactionConfirmationRevertedEvent(
           walletId: walletId,
           txid: txid,
@@ -145,7 +159,8 @@ class WalletCoordinatorActor extends Actor {
       // (bead libspiffy-4kfq).
       case domain_events.DeferredTransactionFailedEvent(:final walletId, :final txid, :final networkStatus, :final reason):
         unawaited(_failChannelOfFunding(walletId, txid, reason ?? networkStatus));
-      case invoice_events.InvoicePaidEvent(:final walletId, :final invoiceId, :final txid, :final amountReceived):
+      case invoice_events.InvoicePaidEvent(:final walletId, :final invoiceId, :final txid, :final amountReceived)
+          when announce:
         _emitEvent(InvoicePaidEvent(
             walletId: walletId, invoiceId: invoiceId, txid: txid, amountReceived: amountReceived));
       default:
@@ -411,11 +426,21 @@ class WalletCoordinatorActor extends Actor {
     required ActorRef walletProjection,
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
+    /// The channel events the channel projection applies again at start
+    /// (bead overnode_v2-7pf): the adapter resumes their channels from the
+    /// journaled state, and sends nothing for the events themselves.
+    Stream<ChannelEvent>? replayedChannelEvents,
     /// Events the wallet and invoice read models have applied
     /// (ProjectionActor.appliedEvents). A confirmation and a paid invoice
     /// are announced from here, so an app told of one finds it in the read
     /// model (bead libspiffy-mu09).
     Stream<Event>? readModelEvents,
+    /// Whether one of [readModelEvents] was applied again at start (bead
+    /// overnode_v2-7pf): a projection catching up from its checkpoint, or
+    /// the events a restore copied in. The app heard of it when it was
+    /// journaled, so it is not announced again; the work that follows from
+    /// it is done again, as each step leaves alone what is already done.
+    bool Function(Event event)? isReplayed,
     String peerId = '',
     /// The node's channel timing (bead libspiffy-ywbk): the channel adapter
     /// settles each channel this node serves when its settlement margin
@@ -461,7 +486,8 @@ class WalletCoordinatorActor extends Actor {
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _resumeWalletImport = resumeWalletImport,
-        _importNotifications = importNotifications {
+        _importNotifications = importNotifications,
+        _isReplayed = isReplayed {
     _readModelEventsSub = readModelEvents?.listen(_announceApplied);
     _proofAdapter = ProofP2PAdapter(
       storage: storage,
@@ -476,6 +502,7 @@ class WalletCoordinatorActor extends Actor {
         arcActor: arcActor,
         emitEvent: _emitEvent,
         channelEvents: channelEvents,
+        replayedChannelEvents: replayedChannelEvents,
         walletId: '',
         myPeerId: peerId,
         timing: channelTiming,
@@ -575,6 +602,33 @@ class WalletCoordinatorActor extends Actor {
     // not delay the actor becoming able to serve commands.
     unawaited(_reportUnfinishedChannels());
     unawaited(_settleServedChannels());
+    unawaited(_resumeClientChannels());
+  }
+
+  /// Hands the channel adapter, once at startup, each channel this node is
+  /// the client of that was closing or funding when it stopped (bead
+  /// overnode_v2-7pf): a close goes again until `channel_closed` arrives,
+  /// and a funding sent has its `channel_open` go again until
+  /// `channel_opened` ([ChannelP2PAdapter.resumeAfterRestart], which reads
+  /// the journaled state and leaves alone a channel with nothing to send).
+  /// The channels the projection applies events of again at start are
+  /// handed over by the adapter itself, so a change the read model does not
+  /// show yet is resumed too.
+  Future<void> _resumeClientChannels() async {
+    final adapter = _channelAdapter;
+    if (adapter == null) return;
+    try {
+      for (final walletId in await _storage.listWallets()) {
+        for (final channel in await _storage.getPaymentChannelsForWallet(walletId)) {
+          if (channel.role != PaymentChannelRole.client) continue;
+          if (channel.state == PaymentChannelState.closing || channel.state == PaymentChannelState.funding) {
+            adapter.resumeAfterRestart(channel.channelId);
+          }
+        }
+      }
+    } catch (e, stackTrace) {
+      _log.warning('Could not resume client channels at startup: $e', e, stackTrace);
+    }
   }
 
   /// Arms, once at startup, the settlement of every channel this node

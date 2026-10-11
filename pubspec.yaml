@@ -43,7 +43,7 @@ dependencies:
   duraq_isar: ^3.0.0
 
   # Event sourcing
-  eventador: ^4.0.0
+  eventador: ^4.1.0
 
   # SPV and P2P networking
   spiffynode: ^1.1.0

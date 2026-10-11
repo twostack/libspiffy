@@ -427,6 +427,14 @@ class PostgresEventStore implements EventStore, EventStream {
     }
   }
 
+  /// The id of the last event in the journal, or 0 when it is empty: the
+  /// sequence [allEventsWithSequence] reports with it.
+  Future<int> highestJournalId() async {
+    _ensureInitialized();
+    final result = await _pool!.execute(Sql('SELECT COALESCE(MAX(id), 0) FROM event_envelopes'));
+    return result.first[0] as int;
+  }
+
   Future<int> _getHighestSequenceNumber(
     TxSession? session,
     String persistenceId,

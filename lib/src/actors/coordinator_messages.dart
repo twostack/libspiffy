@@ -887,6 +887,74 @@ class SettleBEEFCommand extends CoordinatorRequest<BEEFSettledEvent> {
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
 }
 
+/// Records the BRC-42 (type-42) keys of [derivations], each derived from
+/// one of the wallet's anchor keys, as the wallet's own (bead
+/// overnode_v2-rww): the wallet then signs with them (a script plugin names
+/// one with `PluginTransactionRequest.keyFor`) and attributes outputs paying
+/// them. Answered with [Type42AddressesRecordedEvent] once the read model
+/// holds every address, so a payment or a plugin can use them at once.
+///
+/// A hand-off received with a payment records its addresses itself
+/// (`ImportTransactionCommand.type42Derivations`); this is for keys the
+/// wallet uses for its own purposes, such as the key a token it makes is
+/// locked to. A derivation whose anchor the wallet never issued is refused.
+class RecordType42AddressesCommand extends CoordinatorRequest<Type42AddressesRecordedEvent> {
+  final String walletId;
+  final List<Type42Derivation> derivations;
+
+  RecordType42AddressesCommand({required this.walletId, required List<Type42Derivation> derivations, super.requestId})
+      : derivations = frozenList(derivations);
+
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+}
+
+/// Renames a wallet. Answered with [WalletRenamedEvent] once the read
+/// model's wallet row holds the new name.
+class RenameWalletCommand extends CoordinatorRequest<WalletRenamedEvent> {
+  final String walletId;
+  final String name;
+
+  RenameWalletCommand({required this.walletId, required this.name, super.requestId});
+
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+}
+
+/// Broadcasts a transaction the app holds, fully signed, through ARC: one
+/// the wallet did not build and has no command for (a payment channel's
+/// settlement, say). Answered with [TransactionBroadcastEvent], ARC's
+/// answer. A transaction that does not reach ARC is queued for another
+/// submission. It is not recorded in the wallet: what it pays the wallet
+/// arrives as any receive does.
+class BroadcastTransactionCommand extends CoordinatorRequest<TransactionBroadcastEvent> {
+  final String walletId;
+  final String txHex;
+
+  BroadcastTransactionCommand({required this.walletId, required this.txHex, super.requestId});
+
+  @override
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+}
+
+/// Asks ARC again about the wallet's transactions waiting for a merkle
+/// proof, as a new block header does. Nothing answers it: what it finds
+/// arrives as the usual confirmation events.
+class CheckPendingTransactionsCommand implements Message {
+  CheckPendingTransactionsCommand();
+
+  @override
+  String get correlationId => 'check-pending-transactions';
+  @override
+  Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  final DateTime timestamp = DateTime.now();
+}
+
 /// Gracefully shutdown the coordinator
 class ShutdownCommand implements Message {
   ShutdownCommand();
@@ -2276,6 +2344,75 @@ class AnchorPublicKeyEvent extends CoordinatorReply {
 
   @override
   String? get failure => success ? null : error ?? 'No anchor key was issued';
+}
+
+/// Answer to [RecordType42AddressesCommand]: the address of each key, in
+/// the command's order, or why they were not recorded.
+class Type42AddressesRecordedEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final List<String> addresses;
+  final bool success;
+  final String? error;
+
+  Type42AddressesRecordedEvent({
+    required this.walletId,
+    this.requestId,
+    List<String> addresses = const [],
+    required this.success,
+    this.error,
+  }) : addresses = frozenList(addresses);
+
+  @override
+  String? get failure => success ? null : error ?? 'The type-42 addresses were not recorded';
+}
+
+/// Answer to [RenameWalletCommand].
+class WalletRenamedEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final String name;
+  final bool success;
+  final String? error;
+
+  WalletRenamedEvent({required this.walletId, this.requestId, required this.name, required this.success, this.error});
+
+  @override
+  String? get failure => success ? null : error ?? 'The wallet was not renamed';
+}
+
+/// Answer to [BroadcastTransactionCommand]: ARC's answer for [txid].
+class TransactionBroadcastEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final String txid;
+  final bool success;
+
+  /// ARC's status, when it gave one.
+  final String? networkStatus;
+
+  /// Whether a broadcast that failed was queued for another submission.
+  final bool willRetry;
+  final String? error;
+
+  TransactionBroadcastEvent({
+    required this.walletId,
+    this.requestId,
+    required this.txid,
+    required this.success,
+    this.networkStatus,
+    this.willRetry = false,
+    this.error,
+  });
+
+  @override
+  String? get failure => success ? null : error ?? 'The broadcast of $txid failed';
 }
 
 /// Answer to [SignWithAnchorKeyCommand]: the DER signature (hex) of

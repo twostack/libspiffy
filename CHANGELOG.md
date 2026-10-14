@@ -1,3 +1,13 @@
+## 5.5.0
+
+The app no longer needs the wallet's internals for what it does every day (bead overnode_v2-rww). OverNode sent commands to the wallet aggregate and messages to the ARC actor itself, and imported helpers from `src/`: the coordinator had no command for them. Each now has a public one.
+
+- **`RecordType42AddressesCommand`:** records type-42 keys of the wallet's anchors as its own, so it signs with them and attributes outputs paying them. Answered with `Type42AddressesRecordedEvent` once the read model holds every address. For keys the wallet uses for itself, such as the key a token it makes is locked to (a hand-off received with a payment still records its addresses through `ImportTransactionCommand`).
+- **`RenameWalletCommand`:** answered with `WalletRenamedEvent` once the wallet row holds the new name.
+- **`BroadcastTransactionCommand`:** broadcasts a fully signed transaction the app holds and the wallet has no command for (a channel's settlement), answered with ARC's answer as `TransactionBroadcastEvent`.
+- **`CheckPendingTransactionsCommand`:** asks ARC again about transactions waiting for a proof, as a new header does.
+- **Public helpers:** `Bip32` (derivation that keeps hardened paths hardened), `AddressDiscoveryService`, and `AnchorKeys`: the path and public key of a wallet's anchor for a context, the rule `WalletKeys.anchorPath` follows, for tools that work from a wallet's seed.
+
 ## 5.4.0
 
 A type-42 destination carries its tweak t (bead overnode_v2-93y.1). A broker that sells access to a recording checks that the buyer paid the creator without holding either private key: it recomputes the destination as `A + t·G` from the creator's anchor key A and the tweak t. The wallet computed t to derive the destination and dropped it, so a buyer could not give it.

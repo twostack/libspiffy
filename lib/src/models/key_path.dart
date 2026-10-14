@@ -3,8 +3,12 @@
 /// modes").
 library;
 
+import 'dart:convert' show utf8;
+
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+
+import '../utils/bip32.dart';
 
 import 'address_chain.dart';
 
@@ -273,4 +277,30 @@ final class Type42KeyPath extends KeyPath {
 
   @override
   String toString() => derivation.toString();
+}
+
+/// Where a wallet's anchor key for a context sits in its HD tree: the rule
+/// the wallet derives its anchors by, public so a tool working from a
+/// wallet's seed (a backup's recovery, say) finds the same anchors.
+abstract final class AnchorKeys {
+  /// The domain separator hashed in front of an anchor context.
+  static const String domain = 'libspiffy/type42-anchor';
+
+  /// The hardened path of the anchor for [anchorContext]:
+  /// `m/3'/0'/h0'/h1'`, from the first 8 bytes of
+  /// `SHA-256(domain || context)`. Throws [ArgumentError] for an empty or
+  /// oversized context.
+  static String path(List<int> anchorContext) {
+    Type42Derivation.anchorContextHex(anchorContext); // refuses an empty or oversized context
+    final digest = dartsv.sha256([...utf8.encode(domain), ...anchorContext]);
+    int half(int offset) =>
+        ((digest[offset] << 24) | (digest[offset + 1] << 16) | (digest[offset + 2] << 8) | digest[offset + 3]) &
+        0x7fffffff;
+    return "m/3'/0'/${half(0)}'/${half(4)}'";
+  }
+
+  /// The anchor public key (compressed, lower-case hex) the wallet with HD
+  /// root [root] has for [anchorContext].
+  static String publicKey(dartsv.HDPrivateKey root, List<int> anchorContext) =>
+      Bip32.derivePrivatePath(root, path(anchorContext)).privateKey.publicKey.toHex().toLowerCase();
 }

@@ -393,17 +393,10 @@ class WalletKeys {
   /// of a type-42 payment knows its tweak t, so a child key c = a + t that
   /// leaks gives away a; under hardened paths a gives away neither the
   /// wallet's other anchors nor its account key, whose xpub may be public.
-  static String anchorPath(List<int> anchorContext) {
-    Type42Derivation.anchorContextHex(anchorContext); // refuses an empty or oversized context
-    final digest = dartsv.sha256([...utf8.encode(anchorDomain), ...anchorContext]);
-    int half(int offset) =>
-        ((digest[offset] << 24) | (digest[offset + 1] << 16) | (digest[offset + 2] << 8) | digest[offset + 3]) &
-        0x7fffffff;
-    return "m/3'/0'/${half(0)}'/${half(4)}'";
-  }
+  static String anchorPath(List<int> anchorContext) => AnchorKeys.path(anchorContext);
 
   /// The domain separator hashed in front of an anchor context.
-  static const String anchorDomain = 'libspiffy/type42-anchor';
+  static const String anchorDomain = AnchorKeys.domain;
 
   /// Path of payer key [index], the key B the wallet derives a type-42
   /// destination with (fresh for every destination).

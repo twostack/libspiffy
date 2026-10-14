@@ -103,7 +103,9 @@ export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BU
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
 export 'src/utils/atomic_beef.dart';            // BEEF V2 (BRC-96) and Atomic BEEF (BRC-95) at the edge
 export 'src/utils/benford_distribution.dart';   // Benford's Law distribution for privacy
-export 'src/utils/network_name.dart';           // One place to compare network names ('main'/'mainnet', ...)
+export 'src/utils/network_name.dart';
+export 'src/utils/bip32.dart';                  // BIP32 derivation that keeps hardened paths hardened (dartsv's does not)
+export 'src/services/address_discovery_service.dart'; // Gap-limit discovery of a key tree's used addresses           // One place to compare network names ('main'/'mainnet', ...)
 
 // TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/payment_channel_builder.dart'; // Payment channel transactions (funding, refund, payment)

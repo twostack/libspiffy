@@ -806,6 +806,14 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleBrc100KeyOperation(message)); // off the mailbox: a wallet round trip
       } else if (message is DeriveType42DestinationCommand) {
         unawaited(_handleDeriveType42Destination(message)); // off the mailbox: a wallet round trip
+      } else if (message is RecordType42AddressesCommand) {
+        unawaited(_handleRecordType42Addresses(message)); // off the mailbox: a wallet round trip
+      } else if (message is RenameWalletCommand) {
+        unawaited(_handleRenameWallet(message)); // off the mailbox: waits on the read model
+      } else if (message is BroadcastTransactionCommand) {
+        unawaited(_handleBroadcastTransaction(message)); // off the mailbox: waits on ARC
+      } else if (message is CheckPendingTransactionsCommand) {
+        _arcActor.tell(wm.CheckStoragePendingUTXOsMessage(triggerBlockHeight: 0));
       } else if (message is CreateInvoiceCommand) {
         unawaited(_handleCreateInvoice(message));
       } else if (message is PayInvoiceCommand) {
@@ -1784,6 +1792,91 @@ class WalletCoordinatorActor extends Actor {
     } catch (e) {
       _emitEvent(AnchorPublicKeyEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
     }
+  }
+
+  Future<void> _handleRecordType42Addresses(RecordType42AddressesCommand cmd) async {
+    Type42AddressesRecordedEvent refuse(String error) =>
+        Type42AddressesRecordedEvent(walletId: cmd.walletId, requestId: cmd.requestId, success: false, error: error);
+    try {
+      final response = await _askWallet<wm.Type42AddressesRecordedResponse>(
+        wm.WalletCommandMessage(
+            cmd.walletId, domain.RecordType42AddressesCommand(walletId: cmd.walletId, derivations: cmd.derivations)),
+        const Duration(seconds: 30),
+      );
+      if (!response.success) {
+        _emitEvent(refuse('The wallet did not record the type-42 addresses: ${response.error}'));
+        return;
+      }
+      final error = await _awaitAddressRows(
+          cmd.walletId,
+          response.journaled,
+          (e) =>
+              e is domain_events.Type42AddressRecordedEvent &&
+              e.walletId == cmd.walletId &&
+              e.address == response.journaled.last);
+      if (error != null) {
+        _emitEvent(refuse('The type-42 addresses were recorded, but the read model did not apply them: $error'));
+        return;
+      }
+      _emitEvent(Type42AddressesRecordedEvent(
+          walletId: cmd.walletId, requestId: cmd.requestId, addresses: response.addresses, success: true));
+    } catch (e) {
+      _emitEvent(refuse('$e'));
+    }
+  }
+
+  Future<void> _handleRenameWallet(RenameWalletCommand cmd) async {
+    WalletRenamedEvent answer({String? error}) => WalletRenamedEvent(
+        walletId: cmd.walletId, requestId: cmd.requestId, name: cmd.name, success: error == null, error: error);
+    try {
+      if (await _storage.getWallet(cmd.walletId) == null) {
+        _emitEvent(answer(error: 'No wallet ${cmd.walletId}'));
+        return;
+      }
+      _walletManager.tell(wm.WalletCommandMessage(
+          cmd.walletId, domain.UpdateWalletConfigurationCommand(walletId: cmd.walletId, newName: cmd.name)));
+      final error = await awaitProjectionApplied(
+        _walletProjection,
+        matches: (e) =>
+            e is domain_events.WalletConfigurationUpdatedEvent && e.walletId == cmd.walletId && e.newName == cmd.name,
+        alreadyApplied: () async => (await _storage.getWallet(cmd.walletId))?['name'] == cmd.name,
+      );
+      _emitEvent(answer(error: error == null ? null : 'The new name was not stored: $error'));
+    } catch (e) {
+      _emitEvent(answer(error: '$e'));
+    }
+  }
+
+  Future<void> _handleBroadcastTransaction(BroadcastTransactionCommand cmd) async {
+    final String txid;
+    try {
+      txid = dartsv.Transaction.fromHex(cmd.txHex).id;
+    } catch (e) {
+      _emitEvent(TransactionBroadcastEvent(
+          walletId: cmd.walletId, requestId: cmd.requestId, txid: '', success: false, error: 'Not a transaction: $e'));
+      return;
+    }
+    TransactionBroadcastEvent answer({String? status, String? error, bool willRetry = false}) => TransactionBroadcastEvent(
+        walletId: cmd.walletId,
+        requestId: cmd.requestId,
+        txid: txid,
+        success: error == null,
+        networkStatus: status,
+        willRetry: willRetry,
+        error: error);
+    final Object? reply;
+    try {
+      reply = await _arcActor.ask<dynamic>(wm.BroadcastTransactionMessage(cmd.walletId, cmd.txHex, txid), _paymentSubmitTimeout);
+    } catch (e) {
+      _emitEvent(answer(error: 'ARC did not answer the broadcast of $txid: $e'));
+      return;
+    }
+    _emitEvent(switch (reply) {
+      wm.BroadcastSuccessMessage(:final networkStatus) => answer(status: networkStatus),
+      wm.BroadcastFailedMessage(:final error, :final networkStatus, :final willRetry) =>
+        answer(status: networkStatus, willRetry: willRetry, error: 'The broadcast of $txid failed: $error'),
+      _ => answer(error: 'ARC answered the broadcast with ${reply.runtimeType}'),
+    });
   }
 
   Future<void> _handleSignWithAnchorKey(SignWithAnchorKeyCommand cmd) async {

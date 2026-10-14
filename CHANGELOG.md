@@ -1,4 +1,4 @@
-## 5.6.0 (unreleased)
+## 5.6.0
 
 An app can export a transaction that is not mined yet (bead spiffyvault-3fm). SpiffyVault's transaction screen copies a payment as BEEF before it is mined, for a payee or a person who checks it with SPV. `ExportTransactionQuery` refused such a transaction, so the app imported `AncestorChainService` from `src/`.
 

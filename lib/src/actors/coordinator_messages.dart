@@ -542,13 +542,22 @@ class ImportTransactionCommand extends CoordinatorRequest<TransactionImportedEve
 /// Answered with a [TransactionExportedEvent]; refused while the
 /// transaction has no proof verified on our header chain, because the
 /// importing wallet accepts only a proven transaction.
+///
+/// With [requireProof] false, a transaction not mined yet is exported too,
+/// with its ancestry back to the ancestors whose proofs the wallet holds
+/// (BRC-62): what a payee that checks SPV itself, or a person who wants the
+/// transaction, takes. A mined transaction exports as before.
 class ExportTransactionQuery extends CoordinatorRequest<TransactionExportedEvent> {
   final String walletId;
   final String txid;
 
+  /// Whether to refuse a transaction with no proof of its own.
+  final bool requireProof;
+
   ExportTransactionQuery({
     required this.walletId,
     required this.txid,
+    this.requireProof = true,
     super.requestId,
   });
 

@@ -498,6 +498,36 @@ void main() {
     expect((await utxo(t.id, changeVout))!.status, UTXOStatus.pending);
     expect((await readModel.getTransaction(t.id, walletId: walletId))?.status, isNot(TransactionStatus.confirmed));
   });
+
+  test('an unmined payment is exported with its proven ancestry only when the export does not require a proof',
+      () async {
+    await fundedWallet();
+    final t = await payBob();
+
+    Future<coord.TransactionExportedEvent> export({required bool requireProof}) {
+      final query = coord.ExportTransactionQuery(walletId: walletId, txid: t.id, requireProof: requireProof);
+      final answer = system.coordinatorEvents!
+          .where((e) => e is coord.TransactionExportedEvent && e.requestId == query.requestId)
+          .cast<coord.TransactionExportedEvent>()
+          .first
+          .timeout(const Duration(seconds: 25));
+      system.coordinator.tell(query);
+      return answer;
+    }
+
+    final refused = await export(requireProof: true);
+    expect(refused.success, isFalse);
+    expect(refused.error, contains('no merkle proof'));
+
+    final exported = await export(requireProof: false);
+    expect(exported.success, isTrue, reason: exported.error);
+    final beef = BEEF.parse(Uint8List.fromList(exported.beef!));
+    final txids = [for (final tx in beef.txs) hex.encode(beef.calculateTxid(tx))];
+    // Parents first (BRC-62): F, proven, then T, the subject, with none.
+    expect(txids, [f.id, t.id]);
+    expect(beef.bumps, hasLength(1));
+    expect(beef.hasMerkle, [true, false]);
+  });
 }
 
 /// A read model rebuilt from the wallet's journal alone (the headers are

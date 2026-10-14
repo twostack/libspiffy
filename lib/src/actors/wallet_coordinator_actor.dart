@@ -1725,7 +1725,9 @@ class WalletCoordinatorActor extends Actor {
 
   /// Exports [query]'s transaction with its proof (bead libspiffy-m8qu): the
   /// transaction, whose own proof must be verified on our header chain, and
-  /// nothing else, since a proven transaction needs no ancestry.
+  /// nothing else, since a proven transaction needs no ancestry. Without
+  /// [ExportTransactionQuery.requireProof], one with no proof of its own
+  /// goes with its ancestry back to proven ancestors.
   Future<void> _handleExportTransaction(ExportTransactionQuery query) async {
     TransactionExportedEvent refuse(String error) => TransactionExportedEvent(
         walletId: query.walletId, txid: query.txid, requestId: query.requestId, success: false, error: error);
@@ -1740,7 +1742,7 @@ class WalletCoordinatorActor extends Actor {
         _emitEvent(refuse('Transaction ${query.txid} cannot be proven: ${chain.error}'));
         return;
       }
-      if (!chain.merkleProofs.any((p) => p.txid == query.txid)) {
+      if (query.requireProof && !chain.merkleProofs.any((p) => p.txid == query.txid)) {
         _emitEvent(refuse('Transaction ${query.txid} has no merkle proof verified on our header chain yet; '
             'it can be exported once it is mined and its proof is held'));
         return;

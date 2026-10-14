@@ -1,3 +1,9 @@
+## 5.6.0 (unreleased)
+
+An app can export a transaction that is not mined yet (bead spiffyvault-3fm). SpiffyVault's transaction screen copies a payment as BEEF before it is mined, for a payee or a person who checks it with SPV. `ExportTransactionQuery` refused such a transaction, so the app imported `AncestorChainService` from `src/`.
+
+- **`ExportTransactionQuery.requireProof`:** true by default, as before. With false, a transaction with no proof of its own is exported with its ancestry back to the ancestors whose proofs the wallet holds (BRC-62, parents first). A mined transaction exports as before.
+
 ## 5.5.0
 
 The app no longer needs the wallet's internals for what it does every day (bead overnode_v2-rww). OverNode sent commands to the wallet aggregate and messages to the ARC actor itself, and imported helpers from `src/`: the coordinator had no command for them. Each now has a public one.

@@ -127,6 +127,9 @@ class LibSpiffyActorSystem {
   ChannelTiming? _channelTiming;
   Duration _deadlineSweepInterval = const Duration(minutes: 1);
   List<Duration> _arcInFlightFollowDelays = ARCActor.defaultInFlightFollowDelays;
+
+  /// Where ARCActor looks up the proof of a transaction ARC does not know.
+  MerkleProofSource? _merkleProofSource;
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -290,6 +293,10 @@ class LibSpiffyActorSystem {
     // How long ARCActor waits before each query of a submission ARC
     // answered in flight (Arcade answers every submission RECEIVED).
     List<Duration> arcInFlightFollowDelays = ARCActor.defaultInFlightFollowDelays,
+    // Where a transaction the broadcaster does not know is looked up by its
+    // merkle proof: a payment the payee broadcast through another service
+    // (spiffyvault-ri8). Null: nowhere, it stays pending until ARC knows it.
+    MerkleProofSource? merkleProofSource,
   }) async {
     // An instance is initialized once. A second call used to build a second
     // actor system and storage stack over the first (A-M5).
@@ -309,6 +316,7 @@ class LibSpiffyActorSystem {
     _channelTiming = channelTiming;
     _deadlineSweepInterval = deadlineSweepInterval;
     _arcInFlightFollowDelays = arcInFlightFollowDelays;
+    _merkleProofSource = merkleProofSource;
     try {
       await _initialize(
         actorSystem: actorSystem,
@@ -932,6 +940,7 @@ class LibSpiffyActorSystem {
       dataSource: _blockchainDataSource is BlockchainDataSource
           ? _blockchainDataSource as BlockchainDataSource
           : null,
+      proofSource: _merkleProofSource,
       inFlightFollowDelays: _arcInFlightFollowDelays,
     ));
     

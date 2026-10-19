@@ -747,6 +747,12 @@ class WalletProjection extends Projection<void> {
       resolvedAt: at,
       resolutionReason: DeferredPayment.reclaimLostRace(utxoKey, spentInTxId),
     ));
+    // Its row too: left broadcasting, the self-spend showed as on its way for
+    // ever (spiffyvault-ri8). A confirmed row is left as it is.
+    final row = await _storage.getTransaction(reclaimTxid, walletId: walletId);
+    if (row != null && row.status != TransactionStatus.confirmed && row.status != TransactionStatus.failed) {
+      await _storage.storeTransaction(walletId, row.copyWith(status: TransactionStatus.failed, updatedAt: at));
+    }
     final rows = _utxoRows(walletId);
     var changed = await _voidOwnOutputs(walletId, reclaimTxid, at, rows);
     changed = await _returnReclaimedHolds(walletId, reclaims, reclaimTxid, at, rows) || changed;

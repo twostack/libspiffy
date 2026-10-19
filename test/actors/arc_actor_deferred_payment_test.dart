@@ -31,9 +31,11 @@ import 'package:libspiffy/src/models/deferred_payment.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
 import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
+import 'package:libspiffy/src/services/teranode_merkle_proof_source.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/extended_format.dart';
+import 'package:libspiffy/src/utils/tsc_converter.dart';
 import 'package:test/test.dart';
 
 import '../spv/testnet_proof_fixture.dart';
@@ -58,7 +60,7 @@ void main() {
   late ActorRef arcActor;
 
   Future<void> storeTx(String txid, String rawHex,
-          {TransactionStatus status = TransactionStatus.pending, String wallet = _wallet}) =>
+          {TransactionStatus status = TransactionStatus.pending, String wallet = _wallet, DateTime? createdAt}) =>
       storage.storeTransaction(
         wallet,
         BitcoinTransaction(
@@ -72,8 +74,8 @@ void main() {
           receivingAddresses: const [],
           sendingAddresses: const [],
           netAmount: BigInt.zero,
-          createdAt: DateTime.utc(2026),
-          updatedAt: DateTime.utc(2026),
+          createdAt: createdAt ?? DateTime.utc(2026),
+          updatedAt: createdAt ?? DateTime.utc(2026),
           lockTime: 0,
           version: 1,
         ),
@@ -132,7 +134,10 @@ void main() {
       });
 
   Future<void> spawnActor(
-      {bool withDataSource = true, Isar? isar, Duration statusCheckInterval = const Duration(minutes: 10)}) async {
+      {bool withDataSource = true,
+      Isar? isar,
+      Duration statusCheckInterval = const Duration(minutes: 10),
+      MerkleProofSource? proofSource}) async {
     final wm = await system.spawn('wallet-manager', () => walletManager);
     arcActor = await system.spawn(
       'arc',
@@ -144,6 +149,7 @@ void main() {
         statusCheckInterval: statusCheckInterval,
         headerTriggerDebounce: const Duration(milliseconds: 10),
         dataSource: withDataSource ? dataSource : null,
+        proofSource: proofSource,
       ),
     );
   }
@@ -878,6 +884,167 @@ void main() {
     });
   });
 
+  // spiffyvault-ri8: the payee broadcast the payment through another
+  // service, so ARC never heard of it, and it was pending for ever in the
+  // payer's wallet with its change on the way. A node holds every block:
+  // its merkle proof, checked against the local headers, settles it.
+  group('a payment ARC does not know, proven by a node', () {
+    late _FakeProofSource node;
+
+    String fixtureBump({int? tamperLevel}) => TscConverter().convertToBump(proof(tamperLevel: tamperLevel)).toHex();
+
+    Future<void> scan() async {
+      final calls = arc.getTransactionCalls;
+      arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: kFixtureHeight));
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (arc.getTransactionCalls <= calls && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+
+    setUp(() async {
+      node = _FakeProofSource();
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+    });
+
+    test('the scan asks the node; a proof matching the header applies the spend and confirms', () async {
+      await handedOver();
+      node.proofs[kFixtureTxid] = fixtureBump();
+      await spawnActor(proofSource: node);
+      await scan();
+      expect(node.asked, [kFixtureTxid]);
+      expect(applied(), [kFixtureTxid]);
+      expect(confirms().single.bumpHex, fixtureBump());
+      expect(confirms().single.blockHeight, kFixtureHeight);
+      expect(statuses(), contains('MINED/merkleProofSource'));
+    });
+
+    test('a node without the proof changes nothing', () async {
+      await handedOver();
+      await spawnActor(proofSource: node);
+      await scan();
+      expect(node.asked, [kFixtureTxid]);
+      expect(applied(), isEmpty);
+      expect(confirms(), isEmpty);
+    });
+
+    test('a proof the stored header contradicts changes nothing', () async {
+      await handedOver();
+      node.proofs[kFixtureTxid] = fixtureBump(tamperLevel: 0);
+      await spawnActor(proofSource: node);
+      await scan();
+      expect(applied(), isEmpty);
+      expect(confirms(), isEmpty);
+    });
+
+    test('a node that cannot be asked changes nothing', () async {
+      await handedOver();
+      node.unreachable = true;
+      await spawnActor(proofSource: node);
+      await scan();
+      expect(applied(), isEmpty);
+      expect(confirms(), isEmpty);
+    });
+
+    test('a transaction younger than an hour is not looked up', () async {
+      await storeTx(kFixtureTxid, kFixtureTxHex, createdAt: DateTime.now().subtract(const Duration(minutes: 5)));
+      await storeDeferred(kFixtureTxid, [_inputKey]);
+      node.proofs[kFixtureTxid] = fixtureBump();
+      await spawnActor(proofSource: node);
+      await scan();
+      expect(node.asked, isEmpty);
+    });
+
+    test('a transaction ARC knows is not looked up', () async {
+      await handedOver();
+      arc.statuses[kFixtureTxid] = status('SEEN_ON_NETWORK');
+      node.proofs[kFixtureTxid] = fixtureBump();
+      await spawnActor(proofSource: node);
+      await scan();
+      expect(node.asked, isEmpty);
+    });
+
+    test('an explicit check asks the node at once and answers MINED, confirmed', () async {
+      await storeTx(kFixtureTxid, kFixtureTxHex, createdAt: DateTime.now());
+      await storeDeferred(kFixtureTxid, [_inputKey]);
+      node.proofs[kFixtureTxid] = fixtureBump();
+      await spawnActor(proofSource: node);
+      final result = await check();
+      expect(result.networkStatus, DeferredNetworkStatus.mined);
+      expect(result.confirmed, isTrue);
+      expect(result.source, 'merkleProofSource');
+      expect(result.blockHeight, kFixtureHeight);
+      expect(confirms().single.txid, kFixtureTxid);
+    });
+
+    test('without a node an explicit check answers as before', () async {
+      await handedOver();
+      await spawnActor();
+      final result = await check();
+      expect(result.networkStatus, DeferredNetworkStatus.notFound);
+      expect(result.confirmed, isFalse);
+    });
+  });
+
+  // spiffyvault-ri8: a reclaim that lost its race was failed, then the
+  // failed-row poll heard ARC say SENT_TO_NETWORK and set it broadcasting
+  // again, for ever.
+  group('a failed row and an in-flight answer', () {
+    Future<void> failedPayment({DeferredPaymentState state = DeferredPaymentState.failed,
+        TransactionStatus row = TransactionStatus.failed}) async {
+      await storeTx(kFixtureTxid, kFixtureTxHex, status: row);
+      await storage.storeDeferredPayment(DeferredPayment(
+        walletId: _wallet,
+        txid: kFixtureTxid,
+        amount: BigInt.from(100),
+        fee: BigInt.from(10),
+        heldInputs: [DeferredPaymentInput(utxoKey: _inputKey, satoshis: BigInt.from(1000))],
+        state: state,
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026),
+      ));
+    }
+
+    List<TransactionStatus> rowUpdates() =>
+        [for (final c in walletManager.commands.whereType<UpdateTransactionStatusCommand>()) c.newStatus];
+
+    test('SENT_TO_NETWORK does not bring a failed row back', () async {
+      await failedPayment();
+      arc.statuses[kFixtureTxid] = status('SENT_TO_NETWORK');
+      await spawnActor();
+      await check();
+      expect(rowUpdates(), isEmpty);
+    });
+
+    test('SEEN_ON_NETWORK still does (the transaction is on the network after all)', () async {
+      await failedPayment();
+      arc.statuses[kFixtureTxid] = status('SEEN_ON_NETWORK');
+      await spawnActor();
+      await check();
+      expect(rowUpdates(), [TransactionStatus.seenOnNetwork]);
+    });
+
+    test('the scan fails a row left broadcasting whose deferred payment failed', () async {
+      await failedPayment(row: TransactionStatus.broadcast);
+      arc.statuses[kFixtureTxid] = status('SENT_TO_NETWORK');
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 100));
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (rowUpdates().isEmpty && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(rowUpdates(), [TransactionStatus.failed]);
+    });
+
+    test('a broadcasting row whose deferred payment is outstanding is left to ARC', () async {
+      await failedPayment(state: DeferredPaymentState.outstanding, row: TransactionStatus.broadcast);
+      arc.statuses[kFixtureTxid] = status('SENT_TO_NETWORK');
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 100));
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(rowUpdates(), isNot(contains(TransactionStatus.failed)));
+    });
+  });
+
   // A token the wallet holds can be spent without it (a Voucher NFT forced
   // back by its issuer, a listing bought): the wallet asks about what it
   // holds, output by output (CheckOutputSpendersMessage). ARCActor finds
@@ -946,6 +1113,19 @@ class _RecordingWalletManager extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     if (message is WalletCommandMessage) commands.add(message.command);
+  }
+}
+
+class _FakeProofSource implements MerkleProofSource {
+  final Map<String, String> proofs = {};
+  final List<String> asked = [];
+  bool unreachable = false;
+
+  @override
+  Future<String?> merkleProofHex(String txid) async {
+    asked.add(txid);
+    if (unreachable) throw StateError('node unreachable');
+    return proofs[txid];
   }
 }
 

@@ -1,3 +1,13 @@
+## 5.8.0 (unreleased)
+
+A payment the payee broadcast through another service is settled from a node's merkle proof (bead spiffyvault-ri8). The payer's wallet asked only its broadcaster, by txid, and a broadcaster knows only what was submitted to it. Such a payment stayed pending for ever and its change stayed on the way, and a reclaim of it was allowed after it was mined.
+
+- **`MerkleProofSource`, `TeranodeMerkleProofSource`:** where a proof is looked up. `TeranodeMerkleProofSource` asks a Teranode asset service for `/merkle_proof/{txid}/hex`; `gorillaPoolTestnet` is a node that serves it. `LibSpiffyActorSystem.initialize(merkleProofSource:)` sets it; without one nothing changes.
+- **The status scan:** a pending or broadcast transaction that ARC does not know, or keeps in flight, for an hour is looked up at the source, then at most every ten minutes. A proof that matches the stored header at its height applies the deferred spend and confirms the transaction, as an ARC MINED report does. Any other answer changes nothing.
+- **`CheckDeferredPaymentStatusCommand`:** when ARC does not know the payment, the source is asked at once; a proof answers `MINED`, confirmed, with the source `merkleProofSource`.
+- **A failed row stays failed on an in-flight answer:** only SEEN_ON_NETWORK or a proof brings it back. A reclaim that lost its race went back to broadcasting two seconds after it failed, and showed so for ever.
+- **A lost reclaim's row is failed:** when the payment it reclaimed spends its coin, the self-spend's row fails with its record. A row left broadcasting while its deferred payment failed is failed by the next scan.
+
 ## 5.7.0
 
 An app can scan one address of a wallet for coins (bead spiffyvault-017). SpiffyVault hands a fresh address to a payer outside it, such as an exchange, and nothing tells the wallet when that payer pays. The import could only rescan a whole wallet up to its gap limit, which is slow and misses an address past the gap.

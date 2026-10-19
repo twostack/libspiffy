@@ -14,6 +14,7 @@ import '../models/foreign_spend.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../models/blockchain_data_models.dart' show MerkleProofData;
 import '../services/blockchain_data_source.dart';
+import '../services/teranode_merkle_proof_source.dart';
 import '../services/transaction_import_service.dart';
 import '../utils/tsc_converter.dart';
 
@@ -237,6 +238,19 @@ class ARCActor extends Actor {
     Duration(seconds: 15),
   ];
 
+  /// Where a transaction ARC does not know, or keeps in flight, is looked
+  /// up by its merkle proof (spiffyvault-ri8); null for nowhere.
+  final MerkleProofSource? _proofSource;
+
+  /// How long a transaction stays unsettled before [_proofSource] is asked.
+  final Duration proofLookupAfter;
+
+  /// How often [_proofSource] is asked about one transaction after that.
+  final Duration proofLookupInterval;
+
+  /// When each transaction may next be looked up at [_proofSource], by txid.
+  final Map<String, DateTime> _proofLookupDue = {};
+
   /// Spawned on the first submission answered in flight.
   ActorRef? _watcher;
   int _followSeq = 0;
@@ -258,8 +272,12 @@ class ARCActor extends Actor {
     this.inFlightStuckAfter = const Duration(hours: 1),
     DateTime Function()? clock,
     BlockchainDataSource? dataSource,
+    MerkleProofSource? proofSource,
+    this.proofLookupAfter = const Duration(hours: 1),
+    this.proofLookupInterval = const Duration(minutes: 10),
     this.inFlightFollowDelays = defaultInFlightFollowDelays,
   })  : _walletManager = walletManager,
+        _proofSource = proofSource,
         _storage = storage,
         _arcConfig = arcConfig,
         _arcService = arcService,
@@ -882,6 +900,7 @@ class ARCActor extends Actor {
 
       final now = DateTime.now();
       final pendingIds = <String>{};
+      final scannedIds = <String>{};
       var checked = 0;
       for (final tx in transactions) {
         final walletId = tx.walletId;
@@ -899,13 +918,20 @@ class ARCActor extends Actor {
         }
 
         checked++;
+        scannedIds.add(tx.txid);
         _log.fine('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
+        if (await _failResolvedDeferredRow(walletId, tx)) continue;
         final check = await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
-        final outcome = check.outcome;
+        var outcome = check.outcome;
         if (outcome != _CheckOutcome.changed &&
             (tx.status == TransactionStatus.broadcast || tx.status == TransactionStatus.pending) &&
             _unsettled(check.status)) {
-          await _resolveIfInputSpent(walletId, tx.txid, tx.rawHex, since: tx.createdAt);
+          final proof = await _lookUpProof(walletId, tx.txid, since: tx.createdAt);
+          if (proof?.status == ProofHeaderStatus.verified) {
+            outcome = _CheckOutcome.changed;
+          } else {
+            await _resolveIfInputSpent(walletId, tx.txid, tx.rawHex, since: tx.createdAt);
+          }
         }
 
         if (isPending) {
@@ -921,6 +947,7 @@ class ARCActor extends Actor {
       }
       // Forget back-off state of transactions that are no longer pending.
       _pendingBackoff.removeWhere((txid, _) => !pendingIds.contains(txid));
+      _proofLookupDue.removeWhere((txid, _) => !scannedIds.contains(txid));
       if (checked > 0) {
         _log.info('Checked $checked of ${transactions.length} non-terminal transaction(s)');
       }
@@ -1052,7 +1079,16 @@ class ARCActor extends Actor {
       // STORED for a transaction already seen on the network. Sending it
       // anyway journaled a status update the projection ignores on every
       // scan, and counted as progress for the pending back-off.
-      final changed = arcTxStatus != currentStatus && TransactionRowRules.setsStatus(currentStatus, arcTxStatus);
+      //
+      // A failed row comes back only when the network holds the transaction
+      // (bead libspiffy-5bju). ARC still taking it to the network
+      // (SENT_TO_NETWORK, ...) is no news against a failure: a reclaim that
+      // lost its race went back to broadcasting two seconds after it failed,
+      // and showed so for ever (spiffyvault-ri8).
+      final revives = currentStatus != TransactionStatus.failed || arcTxStatus == TransactionStatus.seenOnNetwork;
+      final changed = revives &&
+          arcTxStatus != currentStatus &&
+          TransactionRowRules.setsStatus(currentStatus, arcTxStatus);
       if (changed) {
         // Update the transaction status in the wallet
         _updateTransactionStatusFromArc(walletId, txid, response.status);
@@ -1335,6 +1371,22 @@ class ARCActor extends Actor {
   Future<DeferredPaymentNetworkResult> _checkDeferredPayment(
       String walletId, String txid, DeferredPaymentNetworkSource via) async {
     final result = await _checkDeferredPaymentNow(walletId, txid, via);
+    if (!result.confirmed && _unsettled(result.networkStatus)) {
+      // The payee may have broadcast it somewhere ARC does not see.
+      final proof = await _lookUpProof(walletId, txid, explicit: true);
+      if (proof?.status == ProofHeaderStatus.verified) {
+        return DeferredPaymentNetworkResult(
+          walletId: walletId,
+          txid: txid,
+          success: true,
+          networkStatus: DeferredNetworkStatus.mined,
+          source: _proofSourceName,
+          blockHeight: proof!.blockHeight,
+          proofStatus: proof.status.name,
+          confirmed: true,
+        );
+      }
+    }
     if (!result.success || !_unsettled(result.networkStatus)) return result;
     final payment = await _storage.getDeferredPayment(walletId, txid);
     final row = await _storage.getTransaction(txid, walletId: walletId);
@@ -1394,6 +1446,79 @@ class ARCActor extends Actor {
       );
     }
     return fromDataSource;
+  }
+
+  // ==========================================================================
+  // PROOFS FROM A NODE (spiffyvault-ri8)
+  // ==========================================================================
+
+  /// How a network status learned from [_proofSource] names its source.
+  static const String _proofSourceName = 'merkleProofSource';
+
+  /// [txid] of [walletId] looked up at [_proofSource]: a payment the payee
+  /// broadcast through another service is unknown to ARC for ever, and was
+  /// pending for ever in its payer's wallet, its change on the way.
+  ///
+  /// Asked once the transaction has been unsettled for [proofLookupAfter]
+  /// since [since], then at most every [proofLookupInterval]; an [explicit]
+  /// check asks at once. Only a proof that matches the stored header at its
+  /// height counts: then the transaction is on the network (its deferred
+  /// spend applies) and is confirmed, as on an ARC MINED report. Any other
+  /// answer changes nothing. Returns the proof check, or null when nothing
+  /// was asked or the source had no proof.
+  Future<ProofHeaderCheck?> _lookUpProof(String walletId, String txid,
+      {DateTime? since, bool explicit = false}) async {
+    final source = _proofSource;
+    if (source == null) return null;
+    final now = _clock();
+    if (!explicit) {
+      if (since == null || now.difference(since) < proofLookupAfter) return null;
+      final due = _proofLookupDue[txid];
+      if (due != null && now.isBefore(due)) return null;
+    }
+    _proofLookupDue[txid] = now.add(proofLookupInterval);
+
+    final String? bumpHex;
+    try {
+      bumpHex = await source.merkleProofHex(txid);
+    } catch (e) {
+      _log.fine('The merkle proof source could not be asked about $txid: $e');
+      return null;
+    }
+    if (bumpHex == null) return null;
+    final check = await checkBumpHexAgainstHeaders(
+      txid: txid,
+      bumpHex: bumpHex,
+      headerAt: _storage.getBlockHeaderByHeight,
+    );
+    if (check.status != ProofHeaderStatus.verified) {
+      _log.warning('The merkle proof source answered a proof for $txid that does not check out '
+          '(${check.status.name}${check.detail == null ? '' : ': ${check.detail}'}); not used');
+      return check;
+    }
+    _log.info('$txid of wallet $walletId is mined at height ${check.blockHeight}: '
+        'the merkle proof source holds its proof, and it matches the local header');
+    await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.mined,
+        source: _proofSourceName, explicit: explicit, blockHeight: check.blockHeight);
+    await _applyDeferredSpend(txid, walletId);
+    await _handleMinedProof(txid, walletId, bumpHex, check.blockHeight, null);
+    return check;
+  }
+
+  /// A row the scan meets still pending or broadcast while its deferred
+  /// payment failed: the failure stands, so the row is failed and leaves
+  /// the scan. Returns whether it was. A row ARC brought back from failed
+  /// before that was refused (see [_checkAndUpdateTransactionStatus]) stayed
+  /// broadcasting for ever (spiffyvault-ri8).
+  Future<bool> _failResolvedDeferredRow(String walletId, BitcoinTransaction tx) async {
+    if (tx.status != TransactionStatus.broadcast && tx.status != TransactionStatus.pending) return false;
+    final payment = await _storage.getDeferredPayment(walletId, tx.txid);
+    if (payment == null || payment.state != DeferredPaymentState.failed) return false;
+    _log.info('${tx.txid} in wallet $walletId is ${tx.status.name} but its deferred payment failed '
+        '(${payment.resolutionReason ?? payment.lastNetworkStatus}); its row is failed');
+    _walletManager.tell(WalletCommandMessage(walletId,
+        UpdateTransactionStatusCommand(walletId: walletId, txid: tx.txid, newStatus: TransactionStatus.failed)));
+    return true;
   }
 
   // ==========================================================================

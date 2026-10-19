@@ -399,6 +399,7 @@ class WalletCoordinatorActor extends Actor {
     required String walletName,
     String networkType,
     int addressGapLimit,
+    List<String>? addresses,
   })? _resumeWalletImport;
 
   // Import notifications (ImportActor progress), forwarded as CoordinatorEvents
@@ -469,6 +470,7 @@ class WalletCoordinatorActor extends Actor {
       required String walletName,
       String networkType,
       int addressGapLimit,
+      List<String>? addresses,
     })?
         resumeWalletImport,
     Stream<domain_events.WalletImportNotification>? importNotifications,
@@ -1188,7 +1190,11 @@ class WalletCoordinatorActor extends Actor {
 
       if (cmd.resume) {
         _resumeWalletImport!(
-            walletId: cmd.walletId, walletName: cmd.walletName, networkType: cmd.networkType, addressGapLimit: cmd.gapLimit);
+            walletId: cmd.walletId,
+            walletName: cmd.walletName,
+            networkType: cmd.networkType,
+            addressGapLimit: cmd.gapLimit,
+            addresses: cmd.addresses);
       } else if (cmd.xpriv != null) {
         _importWalletFromXpriv!(
           walletId: cmd.walletId,
@@ -1210,7 +1216,11 @@ class WalletCoordinatorActor extends Actor {
           return;
         }
         _resumeWalletImport!(
-            walletId: cmd.walletId, walletName: cmd.walletName, networkType: cmd.networkType, addressGapLimit: cmd.gapLimit);
+            walletId: cmd.walletId,
+            walletName: cmd.walletName,
+            networkType: cmd.networkType,
+            addressGapLimit: cmd.gapLimit,
+            addresses: cmd.addresses);
       }
     } catch (e) {
       await _eventSubscriptions.remove(cmd.walletId)?.cancel();

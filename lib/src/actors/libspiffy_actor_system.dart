@@ -1070,12 +1070,14 @@ class LibSpiffyActorSystem {
         required String walletName,
         String networkType = 'test',
         int addressGapLimit = 20,
+        List<String>? addresses,
       }) {
         resumeWalletImport(
           walletId: walletId,
           walletName: walletName,
           networkType: networkType,
           addressGapLimit: addressGapLimit,
+          addresses: addresses,
         );
       } : null,
       importNotifications: _importNotificationBroadcaster.stream,
@@ -1571,11 +1573,16 @@ class LibSpiffyActorSystem {
   /// [subscribeToImportNotifications] exactly as for a first import; a
   /// resume for a wallet whose import is still running is ignored as a
   /// duplicate.
+  ///
+  /// With [addresses], only those addresses of the wallet are scanned (an
+  /// address it handed out, which a payer paid outside SpiffyVault),
+  /// instead of discovering its addresses up to [addressGapLimit].
   void resumeWalletImport({
     required String walletId,
     required String walletName,
     String networkType = 'test',
     int addressGapLimit = 20,
+    List<String>? addresses,
   }) {
     if (_importActor == null) {
       throw StateError('ImportActor not available. Did you provide a blockchainDataSource during initialization?');
@@ -1586,6 +1593,7 @@ class LibSpiffyActorSystem {
       networkType: networkType,
       addressGapLimit: addressGapLimit,
       resume: true,
+      addresses: addresses,
     ));
   }
 

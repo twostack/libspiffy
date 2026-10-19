@@ -97,7 +97,7 @@ const _sources = <String, String?>{
 /// with type-42 keys recorded for the app (overnode_v2-rww:
 /// `RecordType42AddressesCommand.derivations`,
 /// `Type42AddressesRecordedEvent.addresses`).
-const _expectedFields = 183;
+const _expectedFields = 184;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

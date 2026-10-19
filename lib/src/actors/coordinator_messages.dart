@@ -200,6 +200,12 @@ class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
   final String networkType;
   final bool resume;
 
+  /// With [resume]: scan only these addresses of the wallet, for coins paid
+  /// to an address it handed out, instead of discovering its addresses up
+  /// to [gapLimit]. Each must be an address the wallet holds; transactions
+  /// it has recorded are skipped, so the scan can be repeated.
+  final List<String>? addresses;
+
   ImportWalletCommand({
     required this.walletId,
     required this.walletName,
@@ -209,8 +215,9 @@ class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
     this.gapLimit = 20,
     this.networkType = 'test',
     this.resume = false,
+    List<String>? addresses,
     super.requestId,
-  });
+  }) : addresses = frozenListOrNull(addresses);
 
   @override
   Duration get replyTimeout => CoordinatorRequest.importTimeout;

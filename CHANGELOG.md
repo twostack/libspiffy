@@ -1,3 +1,9 @@
+## 5.7.0 (unreleased)
+
+An app can scan one address of a wallet for coins (bead spiffyvault-017). SpiffyVault hands a fresh address to a payer outside it, such as an exchange, and nothing tells the wallet when that payer pays. The import could only rescan a whole wallet up to its gap limit, which is slow and misses an address past the gap.
+
+- **`ImportWalletCommand.addresses`:** with `resume: true`, only these addresses of the wallet are scanned, instead of discovering its addresses. Each must be an address the wallet holds, or the scan fails. A history lookup that fails fails the scan, so an outage does not read as an empty address. Transactions the wallet has recorded are skipped, so a scan can be repeated. The wallet's other addresses still count as its own for the outputs of a scanned transaction. `LibSpiffyActorSystem.resumeWalletImport` takes `addresses` too.
+
 ## 5.6.0
 
 An app can export a transaction that is not mined yet (bead spiffyvault-3fm). SpiffyVault's transaction screen copies a payment as BEEF before it is mined, for a payee or a person who checks it with SPV. `ExportTransactionQuery` refused such a transaction, so the app imported `AncestorChainService` from `src/`.

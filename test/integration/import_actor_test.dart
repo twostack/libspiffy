@@ -158,6 +158,12 @@ class MockTestnetDataSource implements BlockchainDataSource {
   /// Raw-transaction fetches served so far (a resume must not repeat them).
   int rawFetches = 0;
 
+  /// The addresses whose history was asked for, in order.
+  final List<String> historyLookups = [];
+
+  /// When true, every history lookup fails (an API outage).
+  bool failHistory = false;
+
   /// Make [txid] unavailable (a data-source failure for that transaction).
   void dropRawTransaction(String txid) => _rawTransactions.remove(txid);
 
@@ -196,7 +202,9 @@ class MockTestnetDataSource implements BlockchainDataSource {
     int? offset,
   }) async {
     await Future.delayed(Duration(milliseconds: 10)); // Simulate network delay
-    
+    historyLookups.add(address);
+    if (failHistory) throw DataSourceException('Simulated history outage');
+
     if (!_addressHistory.containsKey(address)) {
       return [];
     }
@@ -813,6 +821,106 @@ void main() {
         expect(failed, isA<WalletImportFailedEvent>());
         expect((failed as WalletImportFailedEvent).error, contains('does not exist'));
         expect(await context.storage.getWallet('no-such-wallet'), isNull);
+      } finally {
+        await context.dispose();
+      }
+    });
+  });
+
+  group('Scan of named addresses', () {
+    Future<WalletImportNotification> outcome(TestContext context, String walletId) =>
+        context.libspiffy
+            .subscribeToImportNotifications(walletId)
+            .firstWhere((e) => e is WalletImportCompletedEvent || e is WalletImportFailedEvent)
+            .timeout(const Duration(seconds: 30));
+
+    /// An imported wallet whose root address had no history at import time;
+    /// a payment to it then arrives on chain.
+    Future<String> emptyWallet(TestContext context) async {
+      final walletId = 'scan-${DateTime.now().microsecondsSinceEpoch}';
+      final history = await context.mockDataSource.getTransactionHistory(kTestRootAddress);
+      context.mockDataSource.setAddressHistory(kTestRootAddress, []);
+      final first = outcome(context, walletId);
+      context.libspiffy.importWalletFromXpriv(
+          walletId: walletId, xpriv: kTestXpriv, walletName: 'Scan', networkType: 'test');
+      final done = await first as WalletImportCompletedEvent;
+      expect(done.totalTransactions, 0);
+      context.mockDataSource.setAddressHistory(kTestRootAddress, history);
+      context.mockDataSource.historyLookups.clear();
+      return walletId;
+    }
+
+    test('records the history of the named address alone, without discovery', () async {
+      final context = await setupTestContext();
+      try {
+        final walletId = await emptyWallet(context);
+        final scan = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(
+            walletId: walletId, walletName: 'Scan', networkType: 'test', addresses: [kTestRootAddress]);
+        final done = await scan as WalletImportCompletedEvent;
+        expect(done.totalAddresses, 1);
+        expect(done.totalTransactions, 2);
+        expect(done.transactionsFailed, 0);
+        expect(context.mockDataSource.historyLookups, [kTestRootAddress],
+            reason: 'one lookup, no gap-limit discovery');
+        expect((await context.storage.getTransactionHistory(walletId)).length, 2);
+        final utxos = await context.storage.getUTXOs(walletId);
+        expect(utxos.length, 1);
+        expect(utxos.single.address, kTestRootAddress, reason: 'the coin is named by the scanned address');
+      } finally {
+        await context.dispose();
+      }
+    });
+
+    test('a second scan of the same address records nothing again', () async {
+      final context = await setupTestContext();
+      try {
+        final walletId = await emptyWallet(context);
+        final first = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(
+            walletId: walletId, walletName: 'Scan', networkType: 'test', addresses: [kTestRootAddress]);
+        await first;
+        final fetches = context.mockDataSource.rawFetches;
+
+        final second = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(
+            walletId: walletId, walletName: 'Scan', networkType: 'test', addresses: [kTestRootAddress]);
+        final again = await second as WalletImportCompletedEvent;
+        expect(again.totalTransactions, 0);
+        expect(again.transactionsSkipped, 2);
+        expect(context.mockDataSource.rawFetches, fetches);
+        expect((await context.storage.getTransactionHistory(walletId)).length, 2);
+        expect((await context.storage.getUTXOs(walletId)).length, 1);
+      } finally {
+        await context.dispose();
+      }
+    });
+
+    test('an address the wallet does not hold is refused', () async {
+      final context = await setupTestContext();
+      try {
+        final walletId = await emptyWallet(context);
+        final scan = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(
+            walletId: walletId, walletName: 'Scan', networkType: 'test', addresses: ['mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef']);
+        final failed = await scan;
+        expect(failed, isA<WalletImportFailedEvent>());
+        expect((failed as WalletImportFailedEvent).error, contains('is not an address of wallet'));
+        expect(context.mockDataSource.historyLookups, isEmpty);
+      } finally {
+        await context.dispose();
+      }
+    });
+
+    test('a history lookup failure fails the scan instead of reading as no coins', () async {
+      final context = await setupTestContext();
+      try {
+        final walletId = await emptyWallet(context);
+        context.mockDataSource.failHistory = true;
+        final scan = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(
+            walletId: walletId, walletName: 'Scan', networkType: 'test', addresses: [kTestRootAddress]);
+        expect(await scan, isA<WalletImportFailedEvent>());
       } finally {
         await context.dispose();
       }

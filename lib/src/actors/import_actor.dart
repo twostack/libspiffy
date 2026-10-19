@@ -222,8 +222,10 @@ class ImportActor extends Actor {
       _throwIfCancelled();
 
       _logger.info('🔍 Phase 2/4: Discovering addresses...');
-      final discoveredAddresses = await _discoverAddresses(message, key);
-      _totalAddresses = discoveredAddresses.length;
+      final discoveredAddresses = message.addresses != null
+          ? await _scanListedAddresses(message)
+          : await _discoverAddresses(message, key);
+      _totalAddresses = message.addresses?.length ?? discoveredAddresses.length;
       _logger.info('   ✅ Found $_totalAddresses used addresses');
       _throwIfCancelled();
 
@@ -496,6 +498,58 @@ class ImportActor extends Actor {
     _reportProgress('Found 1 address with $_totalTransactions transactions', 0.4, 1, 1, 0, _totalTransactions);
 
     return [discoveredAddress];
+  }
+
+  /// A scan of the addresses a resume names, instead of discovery: each
+  /// must be one the wallet already holds (a fresh address it handed out,
+  /// for one), and its history is fetched from the data source. A lookup
+  /// failure fails the scan: taken for an empty history, an outage would
+  /// read as "no coins at this address". The wallet's other addresses come
+  /// back too, without history, so an output of a scanned transaction that
+  /// pays one of them is still taken for the wallet's own.
+  Future<List<DiscoveredAddress>> _scanListedAddresses(ImportWalletMessage message) async {
+    final walletId = message.walletId;
+    final listed = message.addresses!;
+    _logger.info('   → Scanning ${listed.length} named address(es) of $walletId');
+    _reportProgress('Checking address history...', 0.2, 0, listed.length, 0, 0);
+
+    final scanned = <DiscoveredAddress>[];
+    var transactions = 0;
+    for (final address in listed) {
+      final metadata = await _cancellable(_storage.getAddressMetadata(walletId, address));
+      if (metadata == null) {
+        throw StateError('$address is not an address of wallet $walletId');
+      }
+      final history = await _cancellable(_dataSource.getTransactionHistory(address));
+      _logger.info('   → $address: ${history.length} transaction(s)');
+      transactions += history.length;
+      scanned.add(DiscoveredAddress(
+        address: address,
+        derivationIndex: metadata.derivationIndex ?? 0,
+        chain: metadata.chain ?? AddressChain.receive,
+        transactionCount: history.length,
+        txids: history.map((tx) => tx.txid).toList(),
+      ));
+      _throwIfCancelled();
+    }
+
+    final others = await _cancellable(_storage.getAddressesWithMetadata(walletId, includeUnused: true));
+    final known = <DiscoveredAddress>[
+      for (final a in others)
+        if (!listed.contains(a.address))
+          DiscoveredAddress(
+            address: a.address,
+            derivationIndex: a.derivationIndex ?? 0,
+            chain: a.chain ?? AddressChain.receive,
+            transactionCount: 0,
+            txids: const [],
+          ),
+    ];
+
+    _totalTransactions = transactions;
+    _reportProgress('Found ${listed.length} address(es) with $transactions transactions', 0.4,
+        listed.length, listed.length, 0, transactions);
+    return [...scanned, ...known];
   }
 
   /// Register discovered addresses through the CQRS command flow and wait
@@ -1271,6 +1325,10 @@ class ImportWalletMessage implements Message {
   final int addressGapLimit;
   final bool resume;
 
+  /// With [resume]: scan only these addresses of the wallet, instead of
+  /// discovering its addresses up to the gap limit.
+  final List<String>? addresses;
+
   ImportWalletMessage({
     required this.walletId,
     this.xpriv,
@@ -1279,12 +1337,14 @@ class ImportWalletMessage implements Message {
     this.networkType = 'test',
     this.addressGapLimit = 20,
     this.resume = false,
-  }) : assert(
+    this.addresses,
+  })  : assert(
           resume
               ? (xpriv == null && wif == null)
               : ((xpriv != null && wif == null) || (xpriv == null && wif != null)),
           'Exactly one of xpriv or wif must be provided, or resume with neither',
-        );
+        ),
+        assert(addresses == null || resume, 'Addresses are scanned only by a resume');
 
   @override
   String get correlationId => 'import-wallet-$walletId-${DateTime.now().millisecondsSinceEpoch}';

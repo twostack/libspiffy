@@ -1,4 +1,4 @@
-## 5.8.0 (unreleased)
+## 5.8.0
 
 A payment the payee broadcast through another service is settled from a node's merkle proof (bead spiffyvault-ri8). The payer's wallet asked only its broadcaster, by txid, and a broadcaster knows only what was submitted to it. Such a payment stayed pending for ever and its change stayed on the way, and a reclaim of it was allowed after it was mined.
 

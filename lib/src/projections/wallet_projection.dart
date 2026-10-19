@@ -1016,6 +1016,12 @@ class WalletProjection extends Projection<void> {
       resolvedAt: at,
       resolutionReason: DeferredPayment.reclaimedBy(selfSpend.txid),
     ));
+    // Its row too: left pending, the payment showed as on its way for ever
+    // (spiffyvault-56z). A confirmed row is left as it is.
+    final row = await _storage.getTransaction(reclaimedTxid, walletId: walletId);
+    if (row != null && row.status != TransactionStatus.confirmed && row.status != TransactionStatus.failed) {
+      await _storage.storeTransaction(walletId, row.copyWith(status: TransactionStatus.failed, updatedAt: at));
+    }
     // Its own change belongs to a transaction that can no longer be mined
     // (bead libspiffy-3arz).
     final rows = _utxoRows(walletId);

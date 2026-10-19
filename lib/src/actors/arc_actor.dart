@@ -1506,15 +1506,20 @@ class ARCActor extends Actor {
   }
 
   /// A row the scan meets still pending or broadcast while its deferred
-  /// payment failed: the failure stands, so the row is failed and leaves
-  /// the scan. Returns whether it was. A row ARC brought back from failed
-  /// before that was refused (see [_checkAndUpdateTransactionStatus]) stayed
-  /// broadcasting for ever (spiffyvault-ri8).
+  /// payment failed or was reclaimed: neither can be mined any more, so the
+  /// row is failed and leaves the scan. Returns whether it was. A row ARC
+  /// brought back from failed before that was refused (see
+  /// [_checkAndUpdateTransactionStatus]) stayed broadcasting for ever
+  /// (spiffyvault-ri8); a reclaimed payment's row stayed pending for ever
+  /// (spiffyvault-56z).
   Future<bool> _failResolvedDeferredRow(String walletId, BitcoinTransaction tx) async {
     if (tx.status != TransactionStatus.broadcast && tx.status != TransactionStatus.pending) return false;
     final payment = await _storage.getDeferredPayment(walletId, tx.txid);
-    if (payment == null || payment.state != DeferredPaymentState.failed) return false;
-    _log.info('${tx.txid} in wallet $walletId is ${tx.status.name} but its deferred payment failed '
+    if (payment == null ||
+        (payment.state != DeferredPaymentState.failed && payment.state != DeferredPaymentState.reclaimed)) {
+      return false;
+    }
+    _log.info('${tx.txid} in wallet $walletId is ${tx.status.name} but its deferred payment is ${payment.state.name} '
         '(${payment.resolutionReason ?? payment.lastNetworkStatus}); its row is failed');
     _walletManager.tell(WalletCommandMessage(walletId,
         UpdateTransactionStatusCommand(walletId: walletId, txid: tx.txid, newStatus: TransactionStatus.failed)));

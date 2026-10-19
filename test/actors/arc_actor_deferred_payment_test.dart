@@ -1036,6 +1036,19 @@ void main() {
       expect(rowUpdates(), [TransactionStatus.failed]);
     });
 
+    test('the scan fails a row left pending whose deferred payment was reclaimed', () async {
+      // The iPhone's 25a0fe8a (spiffyvault-56z): reclaimed on 2026-10-18,
+      // never on the network, its row still pending.
+      await failedPayment(state: DeferredPaymentState.reclaimed, row: TransactionStatus.pending);
+      arc.statuses[kFixtureTxid] = status('NOT_FOUND');
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 100));
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (rowUpdates().isEmpty && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(rowUpdates(), [TransactionStatus.failed]);
+    });
+
     test('a broadcasting row whose deferred payment is outstanding is left to ARC', () async {
       await failedPayment(state: DeferredPaymentState.outstanding, row: TransactionStatus.broadcast);
       arc.statuses[kFixtureTxid] = status('SENT_TO_NETWORK');

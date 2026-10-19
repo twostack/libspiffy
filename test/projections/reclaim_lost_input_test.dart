@@ -168,4 +168,18 @@ void _cases(bool isarBacked) {
     final rows = await utxos();
     expect([rows[_a]!.status, rows[_b]!.status], [UTXOStatus.spent, UTXOStatus.spent]);
   });
+
+  test('won when the self-spend is seen: the payment is reclaimed and its row fails', () async {
+    // spiffyvault-56z: the payee never broadcast the payment, and the
+    // reclaim reached the network.
+    add((v, at) => TransactionNetworkStatusCheckedEvent(
+        walletId: _w, txid: _reclaim, networkStatus: 'SEEN_ON_NETWORK', source: 'arc', checkedAt: at,
+        version: v, timestamp: at));
+    await project();
+
+    expect((await storage.getDeferredPayment(_w, _payment))!.state, DeferredPaymentState.reclaimed);
+    expect((await storage.getTransaction(_payment, walletId: _w))!.status, TransactionStatus.failed,
+        reason: 'left pending, the reclaimed payment showed as on its way for ever');
+    expect((await storage.getTransaction(_reclaim, walletId: _w))!.status, isNot(TransactionStatus.failed));
+  });
 }

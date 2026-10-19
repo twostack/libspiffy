@@ -1,3 +1,10 @@
+## 5.8.1 (unreleased)
+
+A reclaimed payment's own row is failed (bead spiffyvault-56z). The reclaim resolved the deferred payment as reclaimed, but nothing changed the payment's transaction row, so a payment the payee never broadcast showed as pending for ever, and the status scan kept asking about it.
+
+- **When the self-spend reaches the network:** the reclaimed payment's row fails with its record, unless it is confirmed.
+- **The status scan:** a pending or broadcast row whose deferred payment was reclaimed is failed, as one whose deferred payment failed already was. This repairs the rows that wallets already hold.
+
 ## 5.8.0
 
 A payment the payee broadcast through another service is settled from a node's merkle proof (bead spiffyvault-ri8). The payer's wallet asked only its broadcaster, by txid, and a broadcaster knows only what was submitted to it. Such a payment stayed pending for ever and its change stayed on the way, and a reclaim of it was allowed after it was mined.

@@ -1,4 +1,4 @@
-## 5.9.0 (unreleased)
+## 5.9.0
 
 A reclaimed payment's own row is failed (bead spiffyvault-56z). The reclaim resolved the deferred payment as reclaimed, but nothing changed the payment's transaction row, so a payment the payee never broadcast showed as pending for ever, and the status scan kept asking about it.
 

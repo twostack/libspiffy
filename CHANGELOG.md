@@ -1,4 +1,4 @@
-## 5.7.0 (unreleased)
+## 5.7.0
 
 An app can scan one address of a wallet for coins (bead spiffyvault-017). SpiffyVault hands a fresh address to a payer outside it, such as an exchange, and nothing tells the wallet when that payer pays. The import could only rescan a whole wallet up to its gap limit, which is slow and misses an address past the gap.
 

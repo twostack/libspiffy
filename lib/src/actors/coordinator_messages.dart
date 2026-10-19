@@ -925,6 +925,28 @@ class RecordType42AddressesCommand extends CoordinatorRequest<Type42AddressesRec
   Map<String, dynamic> get metadata => {'walletId': walletId};
 }
 
+/// Records type-42 destinations the wallet derived as a payer and no
+/// longer holds, so it never uses their payer keys again (spiffyvault-56z
+/// follow-up). A wallet imported again by its phrase starts its payer keys
+/// at 0; the app hands back the derivations its payment records kept.
+/// Answered with [Type42DestinationsRecordedEvent] once they are journaled.
+///
+/// The wallet looks for each derivation's payer key among its own payer
+/// keys and derives the address itself. A derivation whose payer key is not
+/// one of its own is skipped, not refused: a record may come from another
+/// wallet, or name an identity key as payer (PeerPay), which uses no payer
+/// key.
+class RecordType42DestinationsCommand extends CoordinatorRequest<Type42DestinationsRecordedEvent> {
+  final String walletId;
+  final List<Type42Derivation> derivations;
+
+  RecordType42DestinationsCommand({required this.walletId, required List<Type42Derivation> derivations, super.requestId})
+      : derivations = frozenList(derivations);
+
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+}
+
 /// Renames a wallet. Answered with [WalletRenamedEvent] once the read
 /// model's wallet row holds the new name.
 class RenameWalletCommand extends CoordinatorRequest<WalletRenamedEvent> {
@@ -2383,6 +2405,35 @@ class Type42AddressesRecordedEvent extends CoordinatorReply {
 
   @override
   String? get failure => success ? null : error ?? 'The type-42 addresses were not recorded';
+}
+
+/// Answer to [RecordType42DestinationsCommand]: the address of each
+/// derivation whose payer key is the wallet's own, in the command's order,
+/// how many were skipped, and how many payer keys the wallet has used now
+/// (the index of the next).
+class Type42DestinationsRecordedEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final List<String> addresses;
+  final int skipped;
+  final int payerKeysUsed;
+  final bool success;
+  final String? error;
+
+  Type42DestinationsRecordedEvent({
+    required this.walletId,
+    this.requestId,
+    List<String> addresses = const [],
+    this.skipped = 0,
+    this.payerKeysUsed = 0,
+    required this.success,
+    this.error,
+  }) : addresses = frozenList(addresses);
+
+  @override
+  String? get failure => success ? null : error ?? 'The type-42 destinations were not recorded';
 }
 
 /// Answer to [RenameWalletCommand].

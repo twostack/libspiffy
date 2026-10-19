@@ -91,6 +91,35 @@ void main() {
     });
   });
 
+  group('RecordType42DestinationsCommand', () {
+    test('a wallet imported again takes back its payer keys, and skips a stranger\'s', () async {
+      await createWallet('w1');
+      final anchor = dartsv.SVPrivateKey().publicKey.toHex();
+      final earlier = [
+        for (var i = 0; i < 2; i++)
+          (await ask(coord.DeriveType42DestinationCommand(walletId: 'w1', anchorPublicKey: anchor))).destination!,
+      ];
+      await createWallet('w2'); // the same phrase, payer keys from 0
+      final stranger = Type42Derivation(
+          anchorPublicKey: anchor, senderPublicKey: dartsv.SVPrivateKey().publicKey.toHex(), invoiceNumber: '1-x-1');
+
+      final recorded = await ask(coord.RecordType42DestinationsCommand(
+          walletId: 'w2', derivations: [earlier[1].derivation, stranger]));
+      expect(recorded.success, isTrue, reason: recorded.error);
+      expect(recorded.addresses, [earlier[1].address]);
+      expect(recorded.skipped, 1);
+      expect(recorded.payerKeysUsed, 2);
+
+      final next = await ask(coord.DeriveType42DestinationCommand(walletId: 'w2', anchorPublicKey: anchor));
+      expect(next.destination!.payerKeyIndex, 2);
+    });
+
+    test('refuses a wallet that does not exist', () async {
+      final refused = await ask(coord.RecordType42DestinationsCommand(walletId: 'nope', derivations: const []));
+      expect(refused.success, isFalse);
+    });
+  });
+
   group('RenameWalletCommand', () {
     test('answers once the wallet row holds the new name', () async {
       await createWallet('w1');

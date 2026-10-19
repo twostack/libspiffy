@@ -1169,6 +1169,35 @@ class Type42AddressesRecordedResponse extends ActorResponse {
         super(metadata: {'walletId': walletId, 'success': success});
 }
 
+/// Reply of the wallet aggregate to RecordType42DestinationsCommand: the
+/// address of each derivation it found its payer key for, in order, those
+/// it journaled (the others it had recorded already), how many it skipped
+/// because their payer key is not one of its own, and how many payer keys
+/// it has used now.
+class Type42DestinationsRecordedResponse extends ActorResponse {
+  final String walletId;
+  final List<String> addresses;
+  final List<String> journaled;
+  final int skipped;
+  final int payerKeysUsed;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  Type42DestinationsRecordedResponse({
+    required this.walletId,
+    List<String> addresses = const [],
+    List<String> journaled = const [],
+    this.skipped = 0,
+    this.payerKeysUsed = 0,
+    required this.success,
+    this.error,
+  })  : addresses = frozenList(addresses),
+        journaled = frozenList(journaled),
+        super(metadata: {'walletId': walletId, 'success': success});
+}
+
 /// Reply of the wallet aggregate to DeriveType42DestinationCommand (bead
 /// libspiffy-zxkd), sent once the destination is journaled; [destination]
 /// is null on failure.

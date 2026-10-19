@@ -585,6 +585,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       ));
     } else if (command is RecordType42AddressesCommand) {
       sender.tell(Type42AddressesRecordedResponse(walletId: command.walletId, success: false, error: errorMessage));
+    } else if (command is RecordType42DestinationsCommand) {
+      sender.tell(Type42DestinationsRecordedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is DeriveType42DestinationCommand) {
       sender.tell(Type42DestinationDerivedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is IssueAnchorKeyCommand || command is SignWithAnchorKeyCommand) {
@@ -664,6 +666,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
             walletId: cmd.walletId,
             addresses: recorded.addresses,
             journaled: [for (final e in recorded.events.whereType<Type42AddressRecordedEvent>()) e.address],
+            success: true,
+          );
+        }
+        return recorded.events;
+      case final RecordType42DestinationsCommand cmd:
+        final recorded = await _keys.recordType42Destinations(currentState, cmd);
+        // Sent once the destinations are journaled, and also when there was
+        // nothing to journal.
+        if (_replyTo(cmd) != null) {
+          _repliesAwaitingPersist[cmd.commandId] = Type42DestinationsRecordedResponse(
+            walletId: cmd.walletId,
+            addresses: recorded.addresses,
+            journaled: [for (final e in recorded.events) e.destination.address],
+            skipped: recorded.skipped,
+            payerKeysUsed: recorded.payerKeysUsed,
             success: true,
           );
         }

@@ -552,6 +552,65 @@ class WalletKeys {
     return (events: events, addresses: addresses);
   }
 
+  /// How many payer keys past the last one found [recordType42Destinations]
+  /// still looks at, as a gap limit does for addresses.
+  static const int payerKeyGap = 100;
+
+  /// [command]'s derivations whose payer key is one of the wallet's own
+  /// payer keys, as [Type42DestinationDerivedEvent]s for the destinations
+  /// not recorded yet, with the address of each match in the command's order
+  /// and how many it skipped. Payer keys are looked for from index 0 up to
+  /// [payerKeyGap] past the highest found or used, whichever is later.
+  Future<({List<Type42DestinationDerivedEvent> events, List<String> addresses, int skipped, int payerKeysUsed})>
+      recordType42Destinations(WalletState currentState, RecordType42DestinationsCommand command) async {
+    _requireType42Keys(command.walletId, currentState, 'payer key');
+    final wanted = {for (final d in command.derivations) d.senderPublicKey};
+    final found = <String, ({int index, dartsv.SVPrivateKey key})>{};
+    final used = Type42Book.payerKeysUsed(currentState.metadata);
+    if (wanted.isNotEmpty) {
+      final root = await _hdPrivateKey(command.walletId, currentState);
+      var last = used - 1;
+      for (var n = 0; n <= last + payerKeyGap && found.length < wanted.length; n++) {
+        final key = Bip32.derivePrivatePath(root, payerKeyPath(n)).privateKey;
+        final public = key.publicKey.toHex().toLowerCase();
+        if (wanted.contains(public) && !found.containsKey(public)) {
+          found[public] = (index: n, key: key);
+          if (n > last) last = n;
+        }
+      }
+    }
+
+    final recorded = Type42Book.destinations(currentState.metadata);
+    final events = <Type42DestinationDerivedEvent>[];
+    final addresses = <String>[];
+    var skipped = 0;
+    var payerKeysUsed = used;
+    for (final derivation in command.derivations) {
+      final payer = found[derivation.senderPublicKey];
+      if (payer == null) {
+        skipped++;
+        continue;
+      }
+      final anchor = dartsv.SVPublicKey.fromHex(derivation.anchorPublicKey);
+      final address = _p2pkh(Type42.deriveChildPublic(anchor, payer.key, derivation.invoiceNumber), currentState);
+      addresses.add(address);
+      if (payer.index >= payerKeysUsed) payerKeysUsed = payer.index + 1;
+      if (recorded.containsKey(address) || events.any((e) => e.destination.address == address)) continue;
+      final tweak = Type42.tweak(Type42.sharedSecret(payer.key, anchor), derivation.invoiceNumber);
+      events.add(Type42DestinationDerivedEvent(
+        walletId: command.walletId,
+        destination: Type42Destination(
+          address: address,
+          derivation: derivation,
+          payerKeyIndex: payer.index,
+          tweak: tweak.toRadixString(16).padLeft(64, '0'),
+        ),
+        version: currentState.version + events.length + 1,
+      ));
+    }
+    return (events: events, addresses: addresses, skipped: skipped, payerKeysUsed: payerKeysUsed);
+  }
+
   /// The type-42 destination [command] asks for, derived with the wallet's
   /// next payer key, or with its anchor key for the command's
   /// [DeriveType42DestinationCommand.payerAnchorContext], as a

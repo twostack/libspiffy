@@ -330,6 +330,33 @@ class RecordType42AddressesCommand extends WalletCommand {
   String get commandType => 'RecordType42AddressesCommand';
 }
 
+/// Records type-42 destinations the wallet derived as a payer and no
+/// longer holds (spiffyvault-56z follow-up): a wallet imported again by its
+/// phrase starts its payer keys at 0, and would use again the keys its
+/// earlier payments used. The app hands back the derivations its payment
+/// records kept.
+///
+/// The wallet takes none on trust: it looks for each derivation's payer
+/// key B among its own payer keys (`m/3'/1'/n'`), and derives the address
+/// from it. A derivation whose B is not one of them is skipped. Each match
+/// is journaled as a [Type42DestinationDerivedEvent], which moves the
+/// payer-key count past it; a destination already recorded journals
+/// nothing.
+class RecordType42DestinationsCommand extends WalletCommand {
+  final List<Type42Derivation> derivations;
+
+  RecordType42DestinationsCommand({
+    required super.walletId,
+    required List<Type42Derivation> derivations,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : derivations = frozenList(derivations);
+
+  @override
+  String get commandType => 'RecordType42DestinationsCommand';
+}
+
 /// Derives a type-42 destination for paying the holder of anchor key
 /// [anchorPublicKey] (beads libspiffy-zxkd, libspiffy-fdal): the wallet's
 /// next payer key B (`m/3'/1'/n'`, never used twice) and [invoiceNumber]

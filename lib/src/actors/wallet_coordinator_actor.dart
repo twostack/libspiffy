@@ -810,6 +810,8 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleDeriveType42Destination(message)); // off the mailbox: a wallet round trip
       } else if (message is RecordType42AddressesCommand) {
         unawaited(_handleRecordType42Addresses(message)); // off the mailbox: a wallet round trip
+      } else if (message is RecordType42DestinationsCommand) {
+        unawaited(_handleRecordType42Destinations(message)); // off the mailbox: a wallet round trip
       } else if (message is RenameWalletCommand) {
         unawaited(_handleRenameWallet(message)); // off the mailbox: waits on the read model
       } else if (message is BroadcastTransactionCommand) {
@@ -1834,6 +1836,28 @@ class WalletCoordinatorActor extends Actor {
           walletId: cmd.walletId, requestId: cmd.requestId, addresses: response.addresses, success: true));
     } catch (e) {
       _emitEvent(refuse('$e'));
+    }
+  }
+
+  Future<void> _handleRecordType42Destinations(RecordType42DestinationsCommand cmd) async {
+    try {
+      final response = await _askWallet<wm.Type42DestinationsRecordedResponse>(
+        wm.WalletCommandMessage(
+            cmd.walletId, domain.RecordType42DestinationsCommand(walletId: cmd.walletId, derivations: cmd.derivations)),
+        const Duration(seconds: 60),
+      );
+      _emitEvent(Type42DestinationsRecordedEvent(
+        walletId: cmd.walletId,
+        requestId: cmd.requestId,
+        addresses: response.addresses,
+        skipped: response.skipped,
+        payerKeysUsed: response.payerKeysUsed,
+        success: response.success,
+        error: response.success ? null : 'The wallet did not record the type-42 destinations: ${response.error}',
+      ));
+    } catch (e) {
+      _emitEvent(Type42DestinationsRecordedEvent(
+          walletId: cmd.walletId, requestId: cmd.requestId, success: false, error: '$e'));
     }
   }
 

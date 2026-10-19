@@ -320,6 +320,88 @@ void main() {
         1);
   });
 
+  group('RecordType42DestinationsCommand', () {
+    // A wallet imported again by its phrase starts its payer keys at 0
+    // (spiffyvault-56z follow-up); its earlier payments' records bring the
+    // count back.
+    Future<List<Type42Destination>> paidThrice() async {
+      final payer = await created('payer', mnemonic: _payerMnemonic);
+      for (final context in [_identityA, _identityB, _identityARotated]) {
+        await payer.commandHandler(DeriveType42DestinationCommand(
+            walletId: 'payer', anchorPublicKey: anchorOf(payeeRoot, context).toHex()));
+      }
+      return [for (final e in journal(payer).whereType<Type42DestinationDerivedEvent>()) e.destination];
+    }
+
+    final againStore = <InMemoryEventStore>[];
+    Future<BitcoinWalletAggregate> importedAgain() async {
+      final own = InMemoryEventStore();
+      againStore
+        ..clear()
+        ..add(own);
+      final wallet = await open('again', eventStore: own);
+      await wallet.commandHandler(CreateWalletCommand(walletId: 'again', walletName: 'again', mnemonic: _payerMnemonic));
+      return wallet;
+    }
+
+    List<Type42Destination> derivedAgain() => [
+          for (final e in againStore.single.journal['BitcoinWallet_again']!.whereType<Type42DestinationDerivedEvent>())
+            e.destination
+        ];
+
+    test('gives back the destinations, and the next payment takes the next payer key', () async {
+      final earlier = await paidThrice();
+      final again = await importedAgain();
+      expect(Type42Book.payerKeysUsed(again.currentState.metadata), 0);
+
+      final stranger = payerDestination(_identityA).derivation; // B is not one of its payer keys
+      await again.commandHandler(RecordType42DestinationsCommand(
+          walletId: 'again', derivations: [earlier[2].derivation, stranger, earlier[0].derivation]));
+      expect([for (final d in derivedAgain()) d.address], [earlier[2].address, earlier[0].address]);
+      expect([for (final d in derivedAgain()) d.payerKeyIndex], [2, 0]);
+      expect([for (final d in derivedAgain()) d.tweak], [earlier[2].tweak, earlier[0].tweak]);
+      expect(Type42Book.payerKeysUsed(again.currentState.metadata), 3);
+
+      await again.commandHandler(DeriveType42DestinationCommand(
+          walletId: 'again', anchorPublicKey: anchorOf(payeeRoot, _identityB).toHex()));
+      expect(derivedAgain().last.payerKeyIndex, 3);
+    });
+
+    test('a second time journals nothing', () async {
+      final earlier = await paidThrice();
+      final again = await importedAgain();
+      await again.commandHandler(
+          RecordType42DestinationsCommand(walletId: 'again', derivations: [earlier[1].derivation]));
+      final version = again.currentState.version;
+      await again.commandHandler(
+          RecordType42DestinationsCommand(walletId: 'again', derivations: [earlier[1].derivation]));
+      expect(again.currentState.version, version);
+      expect(derivedAgain(), hasLength(1));
+      expect(Type42Book.payerKeysUsed(again.currentState.metadata), 2);
+    });
+
+    test('never lowers the count', () async {
+      final earlier = await paidThrice();
+      final payer = await open('payer');
+      final version = payer.currentState.version;
+      await payer.commandHandler(
+          RecordType42DestinationsCommand(walletId: 'payer', derivations: [earlier[0].derivation]));
+      expect(payer.currentState.version, version);
+      expect(Type42Book.payerKeysUsed(payer.currentState.metadata), 3);
+    });
+
+    test('a wallet without its private keys is refused', () async {
+      final earlier = await paidThrice();
+      final watch = await created('watch', xpub: payerRoot.xpubkey);
+      final version = watch.currentState.version;
+      await expectLater(
+          watch.commandHandler(
+              RecordType42DestinationsCommand(walletId: 'watch', derivations: [earlier[0].derivation])),
+          throwsA(isA<StateError>().having((e) => e.message, 'message', contains('watch-only'))));
+      expect(watch.currentState.version, version);
+    });
+  });
+
   test('a snapshot keeps the type-42 records: the restored payee still knows its anchors and signs for its '
       'type-42 output, and the restored payer takes the next payer key', () async {
     final snapshots = SnapshotEventStore();

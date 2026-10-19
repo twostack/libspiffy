@@ -1,9 +1,13 @@
-## 5.8.1 (unreleased)
+## 5.9.0 (unreleased)
 
 A reclaimed payment's own row is failed (bead spiffyvault-56z). The reclaim resolved the deferred payment as reclaimed, but nothing changed the payment's transaction row, so a payment the payee never broadcast showed as pending for ever, and the status scan kept asking about it.
 
 - **When the self-spend reaches the network:** the reclaimed payment's row fails with its record, unless it is confirmed.
 - **The status scan:** a pending or broadcast row whose deferred payment was reclaimed is failed, as one whose deferred payment failed already was. This repairs the rows that wallets already hold.
+
+A wallet imported again can take back the payer keys its earlier payments used. A wallet imported by its phrase alone starts its payer keys at 0, so its next type-42 payments would use again the payer keys of payments made before, and a payee could link them.
+
+- **`RecordType42DestinationsCommand`:** the app hands back the type-42 derivations its payment records kept. The wallet looks for each derivation's payer key among its own (`m/3'/1'/n'`, up to 100 past the highest found or used), derives the address itself, and journals a `Type42DestinationDerivedEvent` for each destination it does not hold yet, which moves the payer-key count past it. A derivation whose payer key is not the wallet's own is skipped. Answered with `Type42DestinationsRecordedEvent`: the addresses, how many were skipped, and the payer keys used now.
 
 ## 5.8.0
 

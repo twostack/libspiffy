@@ -96,8 +96,12 @@ const _sources = <String, String?>{
 /// app could not send (overnode_v2-0o5.3.2: `P2PSendFailed.payload`), 183
 /// with type-42 keys recorded for the app (overnode_v2-rww:
 /// `RecordType42AddressesCommand.derivations`,
-/// `Type42AddressesRecordedEvent.addresses`).
-const _expectedFields = 184;
+/// `Type42AddressesRecordedEvent.addresses`), 189 with payer keys given
+/// back to a wallet imported again (`.derivations` of both
+/// `RecordType42DestinationsCommand`s, `Type42DestinationsRecordedResponse
+/// .addresses` and `.journaled`, `Type42DestinationsRecordedEvent
+/// .addresses`).
+const _expectedFields = 189;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

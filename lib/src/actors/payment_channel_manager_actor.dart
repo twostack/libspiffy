@@ -42,6 +42,7 @@ import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import 'payment_channel_messages.dart';
 import 'wallet_messages.dart';
+import '../core/spiffy_error.dart';
 
 /// Payment Channel Manager - Orchestrates all channel operations
 class PaymentChannelManagerActor extends Actor {
@@ -740,7 +741,8 @@ class PaymentChannelManagerActor extends Actor {
     final quote = await arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _feeRateTimeout);
     final rate = quote.rate;
     if (!quote.success || rate == null) {
-      throw StateError("ARC's policy fee rate could not be read (${quote.error})");
+      throw SpiffyStateError(
+          SpiffyErrorCode.feeRateUnavailable, "ARC's policy fee rate could not be read (${quote.error})");
     }
     return rate;
   }

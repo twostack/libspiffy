@@ -51,6 +51,7 @@ import 'coordinator_messages.dart' show CoordinatorEvent;
 // The actor wiring messages moved to internal_messages.dart.
 export 'internal_messages.dart' show SetInvoiceManagerMessage, SetArcActorMessage;
 import '../services/transaction_import_service.dart';
+import '../core/spiffy_error.dart';
 
 /// Lifecycle of a [LibSpiffyActorSystem] instance.
 enum _Lifecycle { uninitialized, initializing, initialized, shutDown }
@@ -1244,7 +1245,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the WalletManager actor
   ActorRef get walletManager {
     if (_walletManager == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _walletManager!;
   }
@@ -1252,7 +1253,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the PaymentCoordinator actor
   ActorRef get paymentCoordinator {
     if (_paymentCoordinator == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _paymentCoordinator!;
   }
@@ -1260,7 +1261,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the SPV actor
   ActorRef get spvActor {
     if (_spvActor == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _spvActor!;
   }
@@ -1268,7 +1269,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the ARC actor
   ActorRef get arcActor {
     if (_arcActor == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _arcActor!;
   }
@@ -1276,7 +1277,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the HeaderSync actor
   ActorRef get headerSyncActor {
     if (_headerSyncActor == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _headerSyncActor!;
   }
@@ -1284,7 +1285,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the Invoice Coordinator actor
   ActorRef get invoiceCoordinator {
     if (_invoiceCoordinator == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _invoiceCoordinator!;
   }
@@ -1292,7 +1293,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the wallet storage
   ReadModelStorage get walletStorage {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _walletStorage;
   }
@@ -1309,7 +1310,7 @@ class LibSpiffyActorSystem {
 
   BlockHeaderChain get headerChain {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _headerChain;
   }
@@ -1317,7 +1318,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the crypto service
   CryptoService get cryptoService {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _cryptoService;
   }
@@ -1325,7 +1326,7 @@ class LibSpiffyActorSystem {
   /// Get reference to the secure storage
   SecureStorage get secureStorage {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _secureStorage;
   }
@@ -1336,7 +1337,7 @@ class LibSpiffyActorSystem {
   /// their events to this store, and projections consume events from it.
   EventStore get eventStore {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _eventStore;
   }
@@ -1348,7 +1349,7 @@ class LibSpiffyActorSystem {
   /// PaymentChannelAggregate for domain logic.
   ActorRef get channelManager {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     if (_channelManager == null) {
       throw StateError('PaymentChannelManagerActor not spawned');
@@ -1403,7 +1404,7 @@ class LibSpiffyActorSystem {
     final ref = _coordinatorActor;
     final actor = _coordinatorInstance;
     if (ref == null || actor == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _coordinator ??= WalletCoordinator(ref, actor);
   }
@@ -1451,7 +1452,7 @@ class LibSpiffyActorSystem {
   /// harvests UTXOs using a hybrid event sourcing approach.
   TransactionImportService get transactionImportService {
     if (_transactionImportService == null) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _transactionImportService!;
   }
@@ -1462,7 +1463,7 @@ class LibSpiffyActorSystem {
   /// the actor system directly (e.g., spawning additional actors).
   ActorSystem get actorSystem {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _actorSystem;
   }
@@ -1497,7 +1498,7 @@ class LibSpiffyActorSystem {
   /// [importWalletFromWif].
   Stream<WalletImportNotification> subscribeToImportNotifications(String walletId) {
     if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
+      throw SpiffyStateError(SpiffyErrorCode.notInitialized, 'LibSpiffy actor system not initialized');
     }
     return _importNotificationBroadcaster.stream
         .where((notification) => notification.walletId == walletId);

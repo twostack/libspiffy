@@ -39,6 +39,7 @@ import 'invoice_messages.dart' as inv;
 import 'payment_messages.dart' as pay;
 import 'wallet_messages.dart' as wm;
 import 'payment_channel_messages.dart' as ch;
+import '../core/spiffy_error.dart';
 
 /// The five numbers `WalletCoordinatorActor._balancesOf` computes, which
 /// [BalanceResponse] answers a [GetBalanceQuery] with and
@@ -1117,8 +1118,8 @@ class WalletCoordinatorActor extends Actor {
   /// run as a resume, which derives its keys from the stored mnemonic.
   Future<void> _handleImportWallet(ImportWalletCommand cmd) async {
     _log.info('Importing wallet ${cmd.walletId}');
-    ImportCompleteEvent failed(String error) =>
-        ImportCompleteEvent(walletId: cmd.walletId, success: false, error: error, requestId: cmd.requestId);
+    ImportCompleteEvent failed(String error, [SpiffyErrorCode? code]) => ImportCompleteEvent(
+        walletId: cmd.walletId, success: false, error: error, errorCode: code, requestId: cmd.requestId);
 
     if (!cmd.resume && cmd.xpriv == null && cmd.wif == null && cmd.mnemonic == null) {
       _emitEvent(failed('No import key provided (xpriv, wif, or mnemonic required)'));
@@ -1151,6 +1152,7 @@ class WalletCoordinatorActor extends Actor {
           _emitEvent(ImportProgressEvent(
             walletId: cmd.walletId,
             phase: event.phase,
+            step: event.step,
             progress: event.progress,
             message: event.message,
             addressesFound: event.addressesFound,
@@ -1171,7 +1173,7 @@ class WalletCoordinatorActor extends Actor {
           ));
         } else if (event is domain_events.WalletImportFailedEvent) {
           _eventSubscriptions.remove(cmd.walletId)?.cancel();
-          _emitEvent(failed(event.error));
+          _emitEvent(failed(event.error, event.errorCode));
         } else if (event is domain_events.WalletImportUTXOConfirmedEvent) {
           _emitEvent(ImportUTXOConfirmedEvent(
             walletId: cmd.walletId,
@@ -1451,6 +1453,7 @@ class WalletCoordinatorActor extends Actor {
         ancestorCount: 0,
         success: false,
         error: 'Paying invoice ${cmd.invoiceId} failed: $e',
+        errorCode: SpiffyErrorCode.of(e),
         requestId: cmd.requestId,
       ));
       return;
@@ -1466,6 +1469,7 @@ class WalletCoordinatorActor extends Actor {
       ancestorCount: response.ancestorCount,
       success: response.success,
       error: response.error,
+      errorCode: response.errorCode,
       witnessTxid: response.witnessTxid,
       witnessBeefBytes: response.witnessBeefBytes,
       requestId: cmd.requestId,
@@ -2235,6 +2239,7 @@ class WalletCoordinatorActor extends Actor {
         totalFeePaid: BigInt.zero,
         success: false,
         error: 'Splitting the UTXOs of wallet ${cmd.walletId} failed: $e',
+        errorCode: SpiffyErrorCode.of(e),
         requestId: cmd.requestId,
       ));
       return;
@@ -2253,6 +2258,7 @@ class WalletCoordinatorActor extends Actor {
       totalFeePaid: totalFeePaid,
       success: response.success,
       error: response.error,
+      errorCode: response.errorCode,
       txids: txids,
       splits: response.splits,
       requestId: cmd.requestId,

@@ -1,3 +1,12 @@
+## 5.10.0 (unreleased)
+
+Errors and import progress carry codes, for an app to say them in its own language (bead spiffyvault-9ae.5). SpiffyVault read libspiffy's English messages to tell the user what went wrong ("Insufficient funds", "ARC's policy fee rate could not be read"), and guessed an import's step from its progress. The English stays, for logs.
+
+- **`SpiffyErrorCode`:** insufficientFunds, addressInvalid, addressMainnet, addressTestnet, feeRateUnavailable, coinsInUse, chainServiceUnreachable, notInitialized, timedOut, cancelled. `SpiffyErrorCode.of(error)` reads a code from an error: its own, or a `DataSourceException`, `SocketException`, `HttpException` or `TimeoutException` by its type. `byName` reads a code back after it crossed an isolate.
+- **`SpiffyStateError`, `SpiffyArgumentError`:** coded errors, thrown where a `StateError` or `ArgumentError` was, so `on StateError` and `on ArgumentError` still catch them. Insufficient funds (payments, channel funding, the UTXO ledger), an unreadable fee rate, an address of the other network or no address at all, and a system not initialized throw them.
+- **`CoordinatorReply.errorCode`:** set by `PaymentReadyEvent` (from `BEEFPaymentResponse.errorCode`), `UTXOSplitCompleteEvent` (from `SplitUTXOsResponse.errorCode`) and `ImportCompleteEvent` (from `WalletImportFailedEvent.errorCode`); null for every other reply, and for a failure with no code. `CoordinatorFailure.spiffyCode` is its reply's code, so `SpiffyErrorCode.of` reads it from what `ask` throws.
+- **`ImportStep`:** opening, discovering, fetching, recording, finalizing, done. `ImportProgressEvent.step` and `WalletImportProgressEvent.step` say what an import is doing; `phase` is unchanged.
+
 ## 5.9.0
 
 A reclaimed payment's own row is failed (bead spiffyvault-56z). The reclaim resolved the deferred payment as reclaimed, but nothing changed the payment's transaction row, so a payment the payee never broadcast showed as pending for ever, and the status scan kept asking about it.

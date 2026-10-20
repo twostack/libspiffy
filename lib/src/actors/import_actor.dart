@@ -17,7 +17,9 @@ import '../storage/secure_storage.dart';
 import '../models/address_chain.dart';
 import '../models/blockchain_data_models.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
+import '../models/import_step.dart';
 import '../models/wallet_type.dart';
+import '../core/spiffy_error.dart';
 import '../core/wallet/wallet_keys.dart' show WalletKeys;
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
@@ -242,7 +244,7 @@ class ImportActor extends Actor {
       await _notifyImportFailed(walletId, 'Import cancelled', cancelled: true);
     } catch (e, stackTrace) {
       _logger.severe('💥 Wallet import failed: $e', e, stackTrace);
-      await _notifyImportFailed(walletId, e.toString());
+      await _notifyImportFailed(walletId, e.toString(), code: SpiffyErrorCode.of(e));
     } finally {
       _currentImportWalletId = null;
       _cancelSignal = null;
@@ -344,7 +346,7 @@ class ImportActor extends Actor {
       addressGapLimit: message.addressGapLimit,
     ));
 
-    _reportProgress('Wallet created', 0.1, 0, 0, 0, 0);
+    _reportProgress(ImportStep.opening, 'Wallet created', 0.1, 0, 0, 0, 0);
   }
 
   /// A resumed import: the wallet must exist, and its key comes from secure
@@ -392,7 +394,7 @@ class ImportActor extends Actor {
       walletName: message.walletName,
       addressGapLimit: message.addressGapLimit,
     ));
-    _reportProgress('Wallet opened', 0.1, 0, 0, 0, 0);
+    _reportProgress(ImportStep.opening, 'Wallet opened', 0.1, 0, 0, 0, 0);
     return key;
   }
 
@@ -424,7 +426,7 @@ class ImportActor extends Actor {
       shouldStop: () => _isCancelled,
       onProgress: (scannedCount, usedCount) {
         if (!_isCancelled) {
-          _reportProgress(
+          _reportProgress(ImportStep.discovering, 
             'Scanning addresses: $usedCount found',
             0.1 + (0.3 * (scannedCount / (usedCount + message.addressGapLimit))),
             usedCount, // addressesFound
@@ -446,7 +448,7 @@ class ImportActor extends Actor {
     await _registerAddresses(message.walletId, discoveryResult.usedAddresses);
 
     _totalTransactions = discoveryResult.totalTransactions;
-    _reportProgress(
+    _reportProgress(ImportStep.discovering, 
       'Found ${discoveryResult.usedAddresses.length} addresses with $_totalTransactions transactions',
       0.4,
       discoveryResult.usedAddresses.length,
@@ -469,7 +471,7 @@ class ImportActor extends Actor {
     final address = dartsv.Address.fromPublicKey(privateKey.publicKey, network).toBase58();
     _logger.info('   → WIF address: $address (network: ${message.networkType})');
 
-    _reportProgress('Checking address history...', 0.2, 0, 1, 0, 0);
+    _reportProgress(ImportStep.discovering, 'Checking address history...', 0.2, 0, 1, 0, 0);
 
     // Fetch transaction history for this single address
     // No limit - fetch all transactions (data source handles pagination)
@@ -495,7 +497,7 @@ class ImportActor extends Actor {
     await _registerAddresses(message.walletId, [discoveredAddress]);
 
     _totalTransactions = history.length;
-    _reportProgress('Found 1 address with $_totalTransactions transactions', 0.4, 1, 1, 0, _totalTransactions);
+    _reportProgress(ImportStep.discovering, 'Found 1 address with $_totalTransactions transactions', 0.4, 1, 1, 0, _totalTransactions);
 
     return [discoveredAddress];
   }
@@ -511,7 +513,7 @@ class ImportActor extends Actor {
     final walletId = message.walletId;
     final listed = message.addresses!;
     _logger.info('   → Scanning ${listed.length} named address(es) of $walletId');
-    _reportProgress('Checking address history...', 0.2, 0, listed.length, 0, 0);
+    _reportProgress(ImportStep.discovering, 'Checking address history...', 0.2, 0, listed.length, 0, 0);
 
     final scanned = <DiscoveredAddress>[];
     var transactions = 0;
@@ -547,7 +549,7 @@ class ImportActor extends Actor {
     ];
 
     _totalTransactions = transactions;
-    _reportProgress('Found ${listed.length} address(es) with $transactions transactions', 0.4,
+    _reportProgress(ImportStep.discovering, 'Found ${listed.length} address(es) with $transactions transactions', 0.4,
         listed.length, listed.length, 0, transactions);
     return [...scanned, ...known];
   }
@@ -658,7 +660,7 @@ class ImportActor extends Actor {
     _totalTransactions = txidOrder.length;
     _logger.info('   📥 Phase 1: Fetching ${txidOrder.length} unique transactions '
         '($historyEntries address-history entries, $_skippedTransactions already held)...');
-    _reportProgress(
+    _reportProgress(ImportStep.fetching, 
       'Fetching transactions: 0/$_totalTransactions',
       0.4,
       _totalAddresses,
@@ -673,7 +675,7 @@ class ImportActor extends Actor {
       shouldStop: () => _isCancelled,
       onProgress: (completed, total) {
         if (_isCancelled || total == 0) return;
-        _reportProgress(
+        _reportProgress(ImportStep.fetching, 
           'Fetching transactions: $completed/$total',
           0.4 + (0.15 * (completed / total)), // Progress from 0.4 to 0.55
           _totalAddresses,
@@ -702,7 +704,7 @@ class ImportActor extends Actor {
 
     if (allTransactions.isEmpty) {
       _logger.info('   ℹ️ No transactions found to import');
-      _reportProgress(
+      _reportProgress(ImportStep.finalizing, 
         'Import complete: 0 transactions',
         0.9,
         _totalAddresses, // addressesFound
@@ -714,7 +716,7 @@ class ImportActor extends Actor {
     }
 
     // Report progress after collection completes
-    _reportProgress(
+    _reportProgress(ImportStep.recording, 
       'Collected ${allTransactions.length} transactions, preparing to process',
       0.55,
       _totalAddresses, // addressesFound
@@ -753,7 +755,7 @@ class ImportActor extends Actor {
       _throwIfCancelled();
 
       _processedTransactions++;
-      _reportProgress(
+      _reportProgress(ImportStep.recording, 
         'Recording transactions: $_processedTransactions/$_totalTransactions',
         0.55 + (0.35 * (_processedTransactions / _totalTransactions)), // Adjusted from 0.4-0.9 to 0.55-0.9
         _totalAddresses, // addressesFound
@@ -789,7 +791,7 @@ class ImportActor extends Actor {
       _logger.warning('   🔧 ${repaired.length} output(s) were left unspent by the import order and are now marked spent');
     }
 
-    _reportProgress(
+    _reportProgress(ImportStep.finalizing, 
       'Finalizing import: $_processedTransactions transactions, $totalUtxosFound UTXOs',
       0.9,
       _totalAddresses, // addressesFound
@@ -1123,7 +1125,7 @@ class ImportActor extends Actor {
       importedUtxos: [], // UTXOs are tracked via ReceiveUTXOCommand
     ));
 
-    _reportProgress(
+    _reportProgress(ImportStep.done, 
       'Import complete',
       1.0,
       _totalAddresses, // addressesFound
@@ -1136,10 +1138,12 @@ class ImportActor extends Actor {
     _logger.info('Import completed: $_totalAddresses addresses, $_processedTransactions transactions');
   }
 
-  Future<void> _notifyImportFailed(String walletId, String error, {bool cancelled = false}) async {
+  Future<void> _notifyImportFailed(String walletId, String error,
+      {bool cancelled = false, SpiffyErrorCode? code}) async {
     await _notifyEvent(walletId, WalletImportFailedEvent(
       walletId: walletId,
       error: error,
+      errorCode: cancelled ? SpiffyErrorCode.cancelled : code,
       partialProgress: '$_processedTransactions/$_totalTransactions transactions',
       metadata: {'cancelled': cancelled},
     ));
@@ -1159,6 +1163,7 @@ class ImportActor extends Actor {
   }
 
   void _reportProgress(
+    ImportStep step,
     String message,
     double progress,
     int addressesFound,
@@ -1191,6 +1196,7 @@ class ImportActor extends Actor {
       _eventBroadcaster(WalletImportProgressEvent(
         walletId: walletId,
         phase: _phase,
+        step: step,
         message: message,
         progress: progress,
         addressesFound: addressesFound,
@@ -1215,6 +1221,7 @@ class ImportActor extends Actor {
         _eventBroadcaster?.call(WalletImportFailedEvent(
           walletId: target,
           error: 'Import cancelled',
+          errorCode: SpiffyErrorCode.cancelled,
           partialProgress: 'not started',
           metadata: const {'cancelled': true},
         ));

@@ -21,6 +21,7 @@ import 'deferred_payments.dart';
 import 'transaction_signer.dart';
 import 'transaction_size.dart';
 import 'wallet_keys.dart';
+import '../spiffy_error.dart';
 
 /// A funding transaction built for a [BuildFundingTransactionCommand]: the
 /// reservations of its inputs, to journal, and the success reply, to send
@@ -159,7 +160,8 @@ class ChannelFunding {
     final fee = _fee(selectedUtxos, fundingScriptBytes, command.feeRate);
 
     if (selectedTotal < fundingAmount + fee) {
-      throw StateError('Insufficient funds: need ${fundingAmount + fee}, have $selectedTotal');
+      throw SpiffyStateError(
+          SpiffyErrorCode.insufficientFunds, 'Insufficient funds: need ${fundingAmount + fee}, have $selectedTotal');
     }
 
     final changeAmount = selectedTotal - fundingAmount - fee;

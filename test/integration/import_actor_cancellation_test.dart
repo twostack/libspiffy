@@ -27,6 +27,8 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+import 'package:libspiffy/src/models/import_step.dart';
+import 'package:libspiffy/src/core/spiffy_error.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
@@ -107,6 +109,16 @@ void main() {
           reason: end is WalletImportFailedEvent ? end.error : null);
       expect(walletManager.recordedTxids.length, _kTotalTxs);
       expect(walletManager.registeredAddresses.length, _kUsedAddresses);
+      // Each step is reported, in order, without reading the progress.
+      final steps = [for (final e in events.whereType<WalletImportProgressEvent>()) e.step];
+      // (The last, done, comes after the completed event this test stops at.)
+      expect(steps.toSet().toList(), containsAllInOrder([
+        ImportStep.opening,
+        ImportStep.discovering,
+        ImportStep.fetching,
+        ImportStep.recording,
+        ImportStep.finalizing,
+      ]));
 
       print('import of $_kTotalTxs txs took ${stopwatch.elapsedMilliseconds} ms '
           '(old code slept ${_kOldSummedSleeps.inMilliseconds} ms on top of its work)');
@@ -165,6 +177,7 @@ void main() {
       expect(end, isA<WalletImportFailedEvent>(),
           reason: 'a cancelled import must not report completion');
       expect((end as WalletImportFailedEvent).error.toLowerCase(), contains('cancel'));
+      expect(end.errorCode, SpiffyErrorCode.cancelled);
 
       final recordedAtCancel = walletManager.recordedTxids.length;
       // The gated transaction may still land; nothing beyond it may.

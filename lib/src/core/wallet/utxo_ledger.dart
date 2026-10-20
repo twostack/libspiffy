@@ -19,6 +19,7 @@ import '../wallet_events.dart';
 import '../wallet_output_ownership.dart';
 import 'deferred_payments.dart';
 import 'outgoing_transactions.dart';
+import '../spiffy_error.dart';
 
 final _log = Logger('BitcoinWalletAggregate');
 
@@ -76,7 +77,8 @@ abstract final class UtxoLedger {
     }
 
     if (totalSelected < amount) {
-      throw StateError('Insufficient funds: need $amount satoshis, have $totalSelected available');
+      throw SpiffyStateError(SpiffyErrorCode.insufficientFunds,
+          'Insufficient funds: need $amount satoshis, have $totalSelected available');
     }
 
     return selected;

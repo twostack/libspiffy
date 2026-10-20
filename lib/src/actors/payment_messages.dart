@@ -4,6 +4,7 @@ import 'internal_messages.dart';
 import '../models/payment_privacy.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/persistent_map.dart';
+import '../core/spiffy_error.dart';
 
 /// Request to pay an invoice with BEEF-formatted transaction
 ///
@@ -121,6 +122,9 @@ class BEEFPaymentResponse extends ActorResponse {
   @override
   final String? error;
 
+  /// Why the payment failed, when that is known (bead spiffyvault-9ae.5).
+  final SpiffyErrorCode? errorCode;
+
   /// Witness transaction ID (null if no paired witness).
   final String? witnessTxid;
 
@@ -140,6 +144,7 @@ class BEEFPaymentResponse extends ActorResponse {
     required this.ancestorCount,
     required this.success,
     this.error,
+    this.errorCode,
     this.witnessTxid,
     this.witnessBeefBytes,
     List<String> spentUtxoKeys = const [],
@@ -149,6 +154,7 @@ class BEEFPaymentResponse extends ActorResponse {
   BEEFPaymentResponse.error({
     required this.invoiceId,
     required this.error,
+    this.errorCode,
   })  : beefBytes = Uint8List(0),
         txid = '',
         amountPaid = BigInt.zero,

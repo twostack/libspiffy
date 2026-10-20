@@ -7,11 +7,13 @@ import '../models/brc100_key_request.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/deferred_payment.dart';
 import '../models/foreign_spend.dart';
+import '../models/import_step.dart';
 import '../models/payment_privacy.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 import '../utils/unique_id.dart';
+import '../core/spiffy_error.dart';
 
 export '../models/deferred_payment.dart';
 
@@ -47,6 +49,10 @@ abstract class CoordinatorReply extends CoordinatorEvent {
   /// `WalletCoordinator.ask` throws a [CoordinatorFailure] carrying this
   /// reply when it is not null.
   String? get failure;
+
+  /// Why the request failed as a code an app can put in its own words, or
+  /// null: when it succeeded, or when the failure has no code.
+  SpiffyErrorCode? get errorCode => null;
 }
 
 /// A command or query the coordinator answers with one [R].
@@ -121,7 +127,7 @@ abstract class CoordinatorRequest<R extends CoordinatorReply> implements Message
 /// [CoordinatorReply.failure] is [message], or an [ErrorEvent] the request
 /// caused. It is null when the coordinator stopped before answering
 /// ([closed]).
-class CoordinatorFailure implements Exception {
+class CoordinatorFailure implements Exception, SpiffyCoded {
   final String requestId;
   final String message;
   final CoordinatorEvent? event;
@@ -130,6 +136,13 @@ class CoordinatorFailure implements Exception {
 
   /// The coordinator stopped before it answered.
   bool get closed => event == null;
+
+  /// The code of the reply that reported the failure, when it has one.
+  @override
+  SpiffyErrorCode? get spiffyCode => switch (event) {
+        CoordinatorReply(:final errorCode) => errorCode,
+        _ => null,
+      };
 
   /// What failed is still being sent, and may yet land
   /// ([ErrorEvent.stillSent]).
@@ -1606,6 +1619,10 @@ class ImportProgressEvent extends CoordinatorEvent {
   @override
   final String walletId;
   final String phase;
+
+  /// What the import is doing (bead spiffyvault-9ae.5); [phase] and
+  /// [message] stay for compatibility and logs.
+  final ImportStep step;
   final double progress;
   final String message;
   final int addressesFound;
@@ -1616,6 +1633,7 @@ class ImportProgressEvent extends CoordinatorEvent {
   ImportProgressEvent({
     required this.walletId,
     required this.phase,
+    this.step = ImportStep.opening,
     required this.progress,
     required this.message,
     this.addressesFound = 0,
@@ -1633,6 +1651,9 @@ class ImportCompleteEvent extends CoordinatorReply {
   final String? requestId;
   final bool success;
   final String? error;
+  /// Why it failed, when that is known (bead spiffyvault-9ae.5).
+  @override
+  final SpiffyErrorCode? errorCode;
   final int addressCount;
 
   /// Transactions recorded by this run.
@@ -1650,6 +1671,7 @@ class ImportCompleteEvent extends CoordinatorReply {
     required this.walletId,
     required this.success,
     this.error,
+    this.errorCode,
     this.addressCount = 0,
     this.transactionCount = 0,
     this.transactionsSkipped = 0,
@@ -2082,6 +2104,9 @@ class PaymentReadyEvent extends CoordinatorReply {
   final int ancestorCount;
   final bool success;
   final String? error;
+  /// Why it failed, when that is known (bead spiffyvault-9ae.5).
+  @override
+  final SpiffyErrorCode? errorCode;
 
   /// Witness transaction ID (null if no paired witness).
   final String? witnessTxid;
@@ -2099,6 +2124,7 @@ class PaymentReadyEvent extends CoordinatorReply {
     required this.ancestorCount,
     required this.success,
     this.error,
+    this.errorCode,
     this.witnessTxid,
     this.witnessBeefBytes,
     this.requestId,
@@ -3523,6 +3549,9 @@ class UTXOSplitCompleteEvent extends CoordinatorReply {
   final BigInt totalFeePaid;
   final bool success;
   final String? error;
+  /// Why it failed, when that is known (bead spiffyvault-9ae.5).
+  @override
+  final SpiffyErrorCode? errorCode;
 
   /// The split transactions ARC accepted or queued for a retry.
   final List<String> txids;
@@ -3538,6 +3567,7 @@ class UTXOSplitCompleteEvent extends CoordinatorReply {
     required this.totalFeePaid,
     required this.success,
     this.error,
+    this.errorCode,
     List<String> txids = const [],
     List<SplitTransactionOutcome> splits = const [],
     this.requestId,

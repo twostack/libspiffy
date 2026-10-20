@@ -16,13 +16,13 @@ List<WalletImportNotification> _allNotifications() => [
       WalletImportStartedEvent(
           walletId: _w, walletName: 'n', addressGapLimit: 20),
       WalletImportProgressEvent(
-          walletId: _w, phase: 'import', message: 'm', progress: 0.5,
+          walletId: _w, phase: 'import', step: ImportStep.recording, message: 'm', progress: 0.5,
           addressesFound: 1, totalAddresses: 2, transactionsProcessed: 3,
           totalTransactions: 4),
       WalletImportCompletedEvent(
           walletId: _w, totalAddresses: 2, totalTransactions: 4,
           importedUtxos: []),
-      WalletImportFailedEvent(walletId: _w, error: 'e'),
+      WalletImportFailedEvent(walletId: _w, error: 'e', errorCode: SpiffyErrorCode.timedOut),
       WalletImportUTXOConfirmedEvent(
           walletId: _w, txid: 't', vout: 0, success: true),
       WalletImportTransactionConfirmedEvent(
@@ -85,6 +85,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
       expect(events.whereType<ImportProgressEvent>().single.progress, 0.5);
+      expect(events.whereType<ImportProgressEvent>().single.step, ImportStep.recording);
       expect(events.whereType<ImportUTXOConfirmedEvent>(), isEmpty,
           reason: 'completion ends the subscription before later notifications');
       final complete = events.whereType<ImportCompleteEvent>().single;

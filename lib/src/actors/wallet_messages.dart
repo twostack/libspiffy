@@ -24,6 +24,7 @@ export 'internal_messages.dart'
 // with the public UTXOSplitCompleteEvent.
 export 'coordinator_messages.dart' show SplitTransactionOutcome, SplitTransactionStatus;
 import 'coordinator_messages.dart' show SplitTransactionOutcome;
+import '../core/spiffy_error.dart';
 
 /// Messages for coordinating between actors in the LibSpiffy system
 
@@ -348,6 +349,9 @@ class SplitUTXOsResponse extends ActorResponse {
   final bool success;
   @override
   final String? error;
+
+  /// Why the split failed, when that is known (bead spiffyvault-9ae.5).
+  final SpiffyErrorCode? errorCode;
   final int? splitCount; // Number of UTXOs created
   final List<String>? txids; // Split transactions ARC accepted or queued
 
@@ -361,6 +365,7 @@ class SplitUTXOsResponse extends ActorResponse {
     required this.walletId,
     required this.success,
     this.error,
+    this.errorCode,
     this.splitCount,
     List<String>? txids,
     List<SplitTransactionOutcome> splits = const [],

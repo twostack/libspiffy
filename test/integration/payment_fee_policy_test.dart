@@ -364,6 +364,7 @@ void main() {
     // error says which address, not `Instance of 'AddressFormatException'`.
     expect(event.success, isFalse);
     expect(event.error, contains('mock-address'));
+    expect(event.errorCode, SpiffyErrorCode.addressInvalid);
   });
 
   test('bg7n: a payment ARC\'s policy rate could not be read for is refused, not built at an invented rate', () async {
@@ -374,6 +375,7 @@ void main() {
 
     expect(ready.success, isFalse);
     expect(ready.error, contains('policy'));
+    expect(ready.errorCode, SpiffyErrorCode.feeRateUnavailable);
     // Nothing was reserved or recorded for it: the UTXO is spendable.
     await _until(() async => (await system.walletStorage.getPaymentUTXOs(_walletId)).length == 1, 'UTXO available');
   });

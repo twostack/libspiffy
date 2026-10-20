@@ -17,6 +17,7 @@ import '../storage/read_model_storage.dart';
 import '../utils/benford_distribution.dart';
 import 'aggregate_signing_client.dart';
 import 'wallet_messages.dart';
+import '../core/spiffy_error.dart';
 
 /// Coordinator actor for Benford UTXO splitting operations
 ///
@@ -176,7 +177,9 @@ class BenfordCoordinatorActor extends Actor {
       if (!quote.success || rate == null) throw StateError(quote.error ?? 'ARC gave no rate');
       feeRate = rate;
     } catch (e) {
-      _reply(sender, command, error: "ARC's policy fee rate could not be read ($e); nothing was split");
+      _reply(sender, command,
+          error: "ARC's policy fee rate could not be read ($e); nothing was split",
+          code: SpiffyErrorCode.feeRateUnavailable);
       return;
     }
 
@@ -756,11 +759,12 @@ class BenfordCoordinatorActor extends Actor {
       _reply(context.sender, command, error: error);
 
   /// Answers [sender] that [command] failed with [error].
-  void _reply(ActorRef? sender, SplitUTXOsToBenfordCommand command, {required String error}) {
+  void _reply(ActorRef? sender, SplitUTXOsToBenfordCommand command, {required String error, SpiffyErrorCode? code}) {
     sender?.tell(SplitUTXOsResponse(
       walletId: command.walletId,
       success: false,
       error: error,
+      errorCode: code,
     ));
   }
 }

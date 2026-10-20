@@ -186,7 +186,7 @@ Import discovers addresses, fetches transaction history, and harvests UTXOs. It 
 
 ```dart
 final progress = coordinator.on<ImportProgressEvent>(walletId: 'imported').listen((e) {
-  print('${e.phase}: ${(e.progress * 100).toInt()}%');
+  print('${e.step.name}: ${(e.progress * 100).toInt()}%');
 });
 final imported = await coordinator.ask(ImportWalletCommand(
   walletId: 'imported',
@@ -199,7 +199,7 @@ await progress.cancel();
 print('Imported ${imported.addressCount} addresses, ${imported.transactionCount} transactions');
 ```
 
-The import ends with `ImportCompleteEvent`; `ImportProgressEvent` reports the phases on the way. A successful import with `transactionsFailed` above zero is incomplete: send it again with `resume: true`. A mnemonic wallet is created from the mnemonic and then imported, as an xpriv is.
+The import ends with `ImportCompleteEvent`; `ImportProgressEvent` reports the steps on the way: its `step` is an `ImportStep` (opening, discovering, fetching, recording, finalizing, done), and its `message` is English, for a log. A successful import with `transactionsFailed` above zero is incomplete: send it again with `resume: true`. A mnemonic wallet is created from the mnemonic and then imported, as an xpriv is.
 
 Import requires a `blockchainDataSource` to be provided during initialization (e.g., `WhatsOnChainDataSource`). Without it, `ImportWalletCommand` fails.
 
@@ -591,6 +591,20 @@ await coordinator.ask(RegisterWatchAddressCommand(
 ## Error Handling
 
 A request's failure is its own: `ask` throws `CoordinatorFailure`, whose `event` is the reply that reported it or an `ErrorEvent` naming the request. With `tell`, read the reply's `failure` (`CoordinatorReply.failure`): the reason, or null when it succeeded. A request whose failure is reported as an `ErrorEvent` (a channel step, for one) has that event carry its `requestId`.
+
+A failure libspiffy can name has a code: `CoordinatorReply.errorCode` and `CoordinatorFailure.spiffyCode` are a `SpiffyErrorCode` (insufficient funds, an address of the other network, ARC's fee rate unreadable, a data source unreachable, and so on), null when the failure has none. Show the user words of your own for the code; the `failure` text is English, for a log. A code crosses an isolate by its `name` (`SpiffyErrorCode.byName`). An error libspiffy throws (`SpiffyStateError`, `SpiffyArgumentError`) has one too, and `SpiffyErrorCode.of(error)` reads it from any error, a data source's or a timeout included:
+
+```dart
+try {
+  await coordinator.ask(PayInvoiceCommand(/* ... */));
+} on CoordinatorFailure catch (failure) {
+  log.warning(failure.message);
+  showError(switch (failure.spiffyCode) {
+    SpiffyErrorCode.insufficientFunds => 'Not enough money for this payment and its fee.',
+    _ => 'The payment could not be made.',
+  });
+}
+```
 
 Failures no request caused (a channel step the counterparty started, a broadcast retried later) arrive as `ErrorEvent` with no `requestId`. The `source` field tells you what failed, and `walletId` (when present) which wallet:
 

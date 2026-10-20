@@ -496,6 +496,7 @@ void main() {
 
       expect(response.success, isFalse);
       expect(response.error, contains('Insufficient funds'));
+      expect(response.errorCode, SpiffyErrorCode.insufficientFunds);
       
       print('✓ Correctly fails with insufficient funds');
     });
@@ -521,6 +522,7 @@ void main() {
 
       expect(response.success, isFalse);
       expect(response.error, contains('Insufficient funds'));
+      expect(response.errorCode, SpiffyErrorCode.insufficientFunds);
       
       print('✓ Correctly fails with no available UTXOs');
     });

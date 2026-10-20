@@ -37,6 +37,7 @@ import 'aggregate_signing_client.dart';
 import 'projection_barrier.dart';
 import 'payment_messages.dart';
 import 'wallet_messages.dart';
+import '../core/spiffy_error.dart';
 
 /// Coordinator actor for payment operations with SPV BEEF construction
 /// 
@@ -123,7 +124,8 @@ class PaymentCoordinatorActor extends Actor {
       if (message is PayInvoiceMessage) {
         // A third-party plugin's failure is reported by the plugin's id
         // (bead libspiffy-uetb).
-        _sendError(message.invoiceId, e is _PluginCallFailure ? e.message : 'Internal error: $e');
+        _sendError(message.invoiceId, e is _PluginCallFailure ? e.message : 'Internal error: $e',
+            code: SpiffyErrorCode.of(e));
       } else if (message is ProvisionFundingMessage) {
         context.sender?.tell(ProvisionFundingResponse.error(
           walletId: message.walletId,
@@ -180,7 +182,8 @@ class PaymentCoordinatorActor extends Actor {
           msg.invoiceId,
           'Insufficient funds: need $effectiveAmount satoshis and the fee of the transaction, have no spendable '
           'coin (short by $effectiveAmount satoshis and the fee)$excludedNote',
-          sender: originalSender);
+          sender: originalSender,
+          code: SpiffyErrorCode.insufficientFunds);
       return;
     }
 
@@ -206,7 +209,8 @@ class PaymentCoordinatorActor extends Actor {
         rethrow;
       } catch (e) {
         _log.warning('[pay ${msg.invoiceId}] cannot build its outputs: $e');
-        _sendError(msg.invoiceId, 'Failed to build payment transaction: $e', sender: originalSender);
+        _sendError(msg.invoiceId, 'Failed to build payment transaction: $e',
+            sender: originalSender, code: SpiffyErrorCode.of(e));
         return;
       }
       amount = paymentOutputs.fold(BigInt.zero, (sum, output) => sum + output.amount);
@@ -236,6 +240,7 @@ class PaymentCoordinatorActor extends Actor {
         '${utxos.length} UTXO(s)), have $totalBalance (short by ${amount + feeForAll - totalBalance} satoshis)'
         '$excludedNote',
         sender: originalSender,
+        code: SpiffyErrorCode.insufficientFunds,
       );
       return;
     }
@@ -245,7 +250,8 @@ class PaymentCoordinatorActor extends Actor {
     final reservationId = 'payment-${msg.invoiceId}-${DateTime.now().millisecondsSinceEpoch}';
     final reserved = await _reserveUTXOs(msg.walletId, selectedUtxos, reservationId);
     if (!reserved) {
-      _sendError(msg.invoiceId, 'Failed to reserve UTXOs — they may already be in use', sender: originalSender);
+      _sendError(msg.invoiceId, 'Failed to reserve UTXOs — they may already be in use',
+          sender: originalSender, code: SpiffyErrorCode.coinsInUse);
       return;
     }
 
@@ -259,6 +265,7 @@ class PaymentCoordinatorActor extends Actor {
     // so a caller that retries on hearing it can select them again (bead
     // libspiffy-64un).
     String? failure;
+    SpiffyErrorCode? failureCode;
     try {
       paymentDelivered = await _payWithReservedUtxos(
         msg: msg,
@@ -276,6 +283,7 @@ class PaymentCoordinatorActor extends Actor {
       // A third-party plugin's failure is reported by the plugin's id, not
       // as an internal error of ours (bead libspiffy-uetb).
       failure = e is _PluginCallFailure ? e.message : 'Internal error: $e';
+      failureCode = SpiffyErrorCode.of(e);
     } finally {
       _inFlightPayment = null;
       if (!paymentDelivered) {
@@ -295,7 +303,7 @@ class PaymentCoordinatorActor extends Actor {
         }
         _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
         await _awaitReleased(msg.walletId, selectedUtxos, {reservationId, ...inFlight.deferredTxids});
-        if (failure != null) _sendError(msg.invoiceId, failure!, sender: originalSender);
+        if (failure != null) _sendError(msg.invoiceId, failure!, sender: originalSender, code: failureCode);
       }
     }
   }
@@ -759,7 +767,8 @@ class PaymentCoordinatorActor extends Actor {
     try {
       return await _askPolicyRate();
     } on StateError catch (e) {
-      _sendError(invoiceId, '${e.message}; nothing was built', sender: sender);
+      _sendError(invoiceId, '${e.message}; nothing was built',
+          sender: sender, code: SpiffyErrorCode.of(e) ?? SpiffyErrorCode.feeRateUnavailable);
       return null;
     }
   }
@@ -776,7 +785,7 @@ class PaymentCoordinatorActor extends Actor {
     } catch (e) {
       why = 'ARC did not answer: $e';
     }
-    throw StateError("ARC's policy fee rate could not be read ($why)");
+    throw SpiffyStateError(SpiffyErrorCode.feeRateUnavailable, "ARC's policy fee rate could not be read ($why)");
   }
 
   /// The fee of a transaction spending [inputs] and creating outputs whose
@@ -995,11 +1004,12 @@ class PaymentCoordinatorActor extends Actor {
     try {
       parsed = dartsv.Address.fromBase58(address);
     } catch (_) {
-      throw ArgumentError.value(address, 'address', 'not a valid address to pay');
+      throw SpiffyArgumentError.value(SpiffyErrorCode.addressInvalid, address, 'address', 'not a valid address to pay');
     }
     if (network != null && !parsed.networkTypes.contains(network)) {
       final mainnet = network == dartsv.NetworkType.MAIN;
-      throw ArgumentError.value(address, 'address',
+      throw SpiffyArgumentError.value(
+          mainnet ? SpiffyErrorCode.addressTestnet : SpiffyErrorCode.addressMainnet, address, 'address',
           'is a ${mainnet ? 'testnet' : 'mainnet'} address; this wallet is on '
           '${mainnet ? 'mainnet' : 'testnet'}');
     }
@@ -1434,11 +1444,12 @@ class PaymentCoordinatorActor extends Actor {
 
 
   /// Send error response to caller
-  void _sendError(String invoiceId, String error, {ActorRef? sender}) {
+  void _sendError(String invoiceId, String error, {ActorRef? sender, SpiffyErrorCode? code}) {
     final target = sender ?? context.sender;
     target?.tell(BEEFPaymentResponse.error(
       invoiceId: invoiceId,
       error: error,
+      errorCode: code,
     ));
   }
 

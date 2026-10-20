@@ -2,10 +2,12 @@ import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 
 import '../models/address_chain.dart';
+import '../models/import_step.dart';
 import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
+import 'spiffy_error.dart';
 
 // =============================================================================
 // WALLET LIFECYCLE EVENTS
@@ -2245,6 +2247,9 @@ class WalletImportStartedEvent extends WalletImportNotification {
 /// Periodic progress of a running import.
 class WalletImportProgressEvent extends WalletImportNotification {
   final String phase;
+
+  /// What the import is doing (bead spiffyvault-9ae.5).
+  final ImportStep step;
   final String message;
   final double progress;
   final int addressesFound;
@@ -2255,6 +2260,7 @@ class WalletImportProgressEvent extends WalletImportNotification {
   WalletImportProgressEvent({
     required super.walletId,
     required this.phase,
+    this.step = ImportStep.opening,
     required this.message,
     required this.progress,
     required this.addressesFound,
@@ -2302,11 +2308,15 @@ class WalletImportCompletedEvent extends WalletImportNotification {
 /// The import failed or was cancelled (`metadata['cancelled'] == true`).
 class WalletImportFailedEvent extends WalletImportNotification {
   final String error;
+
+  /// Why the import failed, when that is known (bead spiffyvault-9ae.5).
+  final SpiffyErrorCode? errorCode;
   final String? partialProgress;
 
   WalletImportFailedEvent({
     required super.walletId,
     required this.error,
+    this.errorCode,
     this.partialProgress,
     super.timestamp,
     super.metadata,

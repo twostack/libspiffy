@@ -1,3 +1,9 @@
+## Unreleased
+
+Address discovery no longer counts a failed lookup as an unused address. An address whose history could not be read (after the data source's own retries) ended a chain's scan exactly as a real gap would, so an outage or a run of rate-limit errors during an import left every address past it unfound, with nothing to say so.
+
+- **`AddressDiscoveryService.discoverAddresses` and `discoverAddressRange`:** throw a `DataSourceException` naming the address (an error of another type is wrapped, with it as `originalError`). An import fails with `SpiffyErrorCode.chainServiceUnreachable` and can be resumed.
+
 ## 5.10.0
 
 Errors and import progress carry codes, for an app to say them in its own language (bead spiffyvault-9ae.5). SpiffyVault read libspiffy's English messages to tell the user what went wrong ("Insufficient funds", "ARC's policy fee rate could not be read"), and guessed an import's step from its progress. The English stays, for logs.

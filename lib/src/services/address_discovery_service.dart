@@ -42,6 +42,9 @@ class AddressDiscoveryService {
   ///
   /// Returns [AddressDiscoveryResult] with all discovered addresses.
   ///
+  /// Throws [DataSourceException] when an address cannot be looked up: an
+  /// address whose history is unknown is not counted as unused.
+  ///
   /// The process checks each chain of [AddressChain] (m/{chain}/x):
   /// receiving, change and delegated addresses.
   Future<AddressDiscoveryResult> discoverAddresses({
@@ -163,9 +166,13 @@ class AddressDiscoveryService {
           }
         }
       } catch (e) {
+        // A lookup that failed (after the data source's own retries) says
+        // nothing about the address. Counted as unused, as it once was, an
+        // outage ended a chain's scan exactly like a real gap, and every
+        // address past it went unfound without a word. Stop instead: an
+        // import is resumable, and the caller can tell the user.
         _logger.warning('      ❌ Error checking address $address: $e');
-        // Continue scanning even if one address fails
-        consecutiveUnused++;
+        throw _lookupFailed(address, e);
       }
 
       index++;
@@ -230,12 +237,20 @@ class AddressDiscoveryService {
           ));
         }
       } catch (e) {
+        // As in [_scanAddressChain]: a failed lookup is not an empty history.
         _logger.warning('Error checking address $address: $e');
+        throw _lookupFailed(address, e);
       }
     }
 
     return usedAddresses;
   }
+
+  /// [error] from looking up [address], as the [DataSourceException] the
+  /// import reports (`SpiffyErrorCode.chainServiceUnreachable`).
+  static DataSourceException _lookupFailed(String address, Object error) => error is DataSourceException
+      ? error
+      : DataSourceException('Could not check the history of $address', address: address, originalError: error);
 
   /// Get transaction history for a single address
   ///

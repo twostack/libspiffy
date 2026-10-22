@@ -1,3 +1,10 @@
+## 5.11.1
+
+An import no longer fails at a transaction with many inputs. A mainnet wallet's import stopped at a transaction with 162 inputs: its parents were fetched one by one (94 seconds), and the wait for the wallet read model to apply the transaction had started before them, so its 30 seconds were over before the transaction was sent.
+
+- **Import:** the wait for a transaction to be applied starts when its first command is sent, after its parents are fetched. A transaction's parents are fetched six at a time and each once, from storage when it holds them.
+- **`WhatsOnChainDataSource`:** requests made at the same time keep to `requestsPerSecondLimit`. A request now takes its place in the last second's requests under the lock; before, requests that checked the limit together all went through.
+
 ## 5.11.0
 
 Address discovery no longer counts a failed lookup as an unused address. An address whose history could not be read (after the data source's own retries) ended a chain's scan exactly as a real gap would, so an outage or a run of rate-limit errors during an import left every address past it unfound, with nothing to say so.

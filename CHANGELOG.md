@@ -12,6 +12,14 @@ HODLocker coins — coins time-locked to a wallet key until a block height — a
 - **`ReceiveUTXOCommand`:** a HODLocker output is refused when its key is neither a wallet nor a watch address, and is recorded with its lock whatever metadata the sender gave.
 - **`BalanceResponse.lockedBalance`, `BalanceUpdatedEvent.lockedBalance`:** the value of the wallet's HODLocker coins, mined or not; not part of `totalBalance` or any other number.
 
+Coins can be locked and unlocked (bead spiffyvault-mnz.2).
+
+- **`LockCoinsCommand(walletId, amount, lockHeight)` → `CoinsLockedEvent`:** pays `amount` to a HODLocker output locked to a fresh receive address of the wallet until `lockHeight`, with change, through the ordinary payment path, and broadcasts it. Refused for a height the chain has reached or one of 500000000 or more. The reply names the transaction and the owner address.
+- **`UnlockCoinsCommand(walletId, utxoKey)` → `CoinsUnlockedEvent`:** spends a locked coin back to a fresh address of the wallet, less the fee: nLockTime at the lock height, the input's sequence `0xfffffffe`, and `<signature> <public key> <preimage>`, checked against the locking script before it is recorded and broadcast. Refused, with nothing built, while the header chain is below the lock height, so no transaction the network cannot take yet is sent.
+- **`HodlockerOutputSpec`:** an invoice or payment output locked to an address until a height.
+- **`AggregateSigningClient.signInputWithKey`:** `signInput` with the signing key's public key.
+- **`HodlockerLock`** also reads a lock height written as a small-number opcode (`OP_1` to `OP_16`), which dartsv's pattern does not; the import, SPV and outgoing paths ask it before dartsv's templates.
+
 ## 5.10.0
 
 Errors and import progress carry codes, for an app to say them in its own language (bead spiffyvault-9ae.5). SpiffyVault read libspiffy's English messages to tell the user what went wrong ("Insufficient funds", "ARC's policy fee rate could not be read"), and guessed an import's step from its progress. The English stays, for logs.

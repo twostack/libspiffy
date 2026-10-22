@@ -16,8 +16,8 @@ void main() {
       expect(HodlockerLock.looksLike(_mainnetLock), isTrue);
     });
 
-    test('reads back what dartsv builds, for heights of every push size', () {
-      for (final height in [17, 200, 40000, 810477, 499999999]) {
+    test('reads back what dartsv builds, for heights of every push size and the small-number opcodes', () {
+      for (final height in [1, 10, 16, 17, 200, 40000, 810477, 499999999]) {
         final pkh = List.generate(20, (i) => i + height % 7);
         final script = dartsv.HODLockerLockingScriptBuilder(pkh, BigInt.from(height)).getScriptPubkey().toHex();
         final lock = HodlockerLock.parseHex(script);

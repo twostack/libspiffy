@@ -29,9 +29,11 @@ import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet/address_book.dart' show AddressBook;
+import '../core/hodlocker_lock.dart';
 import '../core/wallet_output_ownership.dart';
 import '../core/wallet/transaction_signer.dart' show WalletTransactionSigner;
 import '../core/wallet/transaction_size.dart';
+import '../services/transaction/builder/hodl_unlockbuilder.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'aggregate_signing_client.dart';
 import 'projection_barrier.dart';
@@ -117,11 +119,15 @@ class PaymentCoordinatorActor extends Actor {
         await _handlePayInvoice(message);
       } else if (message is ProvisionFundingMessage) {
         await _handleProvisionFunding(message);
+      } else if (message is UnlockHodlockerMessage) {
+        await _handleUnlockHodlocker(message);
       } else {
       }
     } catch (e, stackTrace) {
       _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
-      if (message is PayInvoiceMessage) {
+      if (message is UnlockHodlockerMessage) {
+        _sendError(message.invoiceId, 'Internal error: $e', code: SpiffyErrorCode.of(e));
+      } else if (message is PayInvoiceMessage) {
         // A third-party plugin's failure is reported by the plugin's id
         // (bead libspiffy-uetb).
         _sendError(message.invoiceId, e is _PluginCallFailure ? e.message : 'Internal error: $e',
@@ -307,6 +313,214 @@ class PaymentCoordinatorActor extends Actor {
       }
     }
   }
+
+  /// The input sequence of a HODLocker unlock: not final, so the network
+  /// enforces the transaction's nLockTime, which the contract requires.
+  static const int _unlockSequence = 0xfffffffe;
+
+  /// Spends a HODLocker coin back to the wallet (bead spiffyvault-mnz.2).
+  ///
+  /// The transaction's nLockTime is the lock height and its one input is
+  /// not final: the contract reads both from the preimage. It is built only
+  /// once our header chain has reached the lock height, so it is final for
+  /// the next block; one built earlier is a transaction no node takes yet.
+  /// The coin goes to a fresh change address, less the fee.
+  ///
+  /// The wallet aggregate signs the input over its BIP143 preimage
+  /// ([AggregateSigningClient.signInputWithKey]); the unlocking script is
+  /// `<signature> <public key> <preimage>`, checked against the locking
+  /// script here before anything is recorded. Recorded as a deferred spend
+  /// and answered with its BEEF, as a payment is.
+  Future<void> _handleUnlockHodlocker(UnlockHodlockerMessage msg) async {
+    final sender = context.sender;
+    final invoiceId = msg.invoiceId;
+    void fail(String error, {SpiffyErrorCode? code}) => _sendError(invoiceId, error, sender: sender, code: code);
+
+    final separator = msg.utxoKey.lastIndexOf(':');
+    final vout = separator < 0 ? null : int.tryParse(msg.utxoKey.substring(separator + 1));
+    final utxo = vout == null ? null : await _storage.getUTXO(msg.walletId, msg.utxoKey.substring(0, separator), vout);
+    if (utxo == null || !HodlockerLock.isLockedCoin(utxo)) {
+      fail('${msg.utxoKey} is not a locked coin of wallet ${msg.walletId}');
+      return;
+    }
+    final lock = HodlockerLock.parseHex(utxo.scriptPubKey);
+    if (lock == null) {
+      fail('${msg.utxoKey} is recorded as locked but its script is not a HODLocker script');
+      return;
+    }
+    if (utxo.status != UTXOStatus.available) {
+      fail('${msg.utxoKey} cannot be unlocked: it is ${utxo.status.name}', code: SpiffyErrorCode.coinsInUse);
+      return;
+    }
+    final bestHeight = await _storage.getBestHeight();
+    if (!lock.isSpendableAt(bestHeight)) {
+      fail('${msg.utxoKey} is locked until block ${lock.lockHeight}; the chain is at block $bestHeight');
+      return;
+    }
+    final rate = await _policyRate(invoiceId, sender);
+    if (rate == null) return;
+
+    final reservationId = 'unlock-${utxo.key}-${DateTime.now().millisecondsSinceEpoch}';
+    if (!await _reserveUTXOs(msg.walletId, [utxo], reservationId)) {
+      fail('${msg.utxoKey} could not be reserved for its unlock', code: SpiffyErrorCode.coinsInUse);
+      return;
+    }
+    var delivered = false;
+    final inFlight = _InFlightPayment(invoiceId, null, null, null);
+    _inFlightPayment = inFlight;
+    String? failure;
+    SpiffyErrorCode? failureCode;
+    try {
+      final ancestors = await _ancestorService.collectAncestorChainForUtxos([utxo.txid]);
+      if (!ancestors.isValid) {
+        failure = 'Incomplete transaction chain: ${ancestors.error}';
+        return;
+      }
+      final to = await _changeAddressesFor(msg.walletId, invoiceId, 1);
+      if (to.error != null) {
+        failure = 'No address to unlock ${msg.utxoKey} to: ${to.error}';
+        return;
+      }
+      final destination = to.addresses.single;
+      final signing = _signingClient();
+      final path = await signing.pathForAddress(msg.walletId, utxo.address);
+      if (path == null) {
+        failure = 'Wallet ${msg.walletId} holds no key for ${utxo.address}, the key ${msg.utxoKey} is locked to';
+        return;
+      }
+      final lockingScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
+
+      dartsv.Transaction build(BigInt fee) {
+        final tx = dartsv.Transaction()
+          ..version = 1
+          ..nLockTime = lock.lockHeight;
+        tx.inputs.add(dartsv.TransactionInput(utxo.txid, utxo.vout, _unlockSequence));
+        tx.outputs.add(dartsv.TransactionOutput(utxo.satoshis - fee, _p2pkhTo(destination, _network).getScriptPubkey()));
+        return tx;
+      }
+
+      Uint8List preimageOf(dartsv.Transaction tx) {
+        final sighash = dartsv.Sighash();
+        sighash.hash(tx, AggregateSigningClient.sigHashAllForkId, 0, lockingScript, utxo.satoshis);
+        return sighash.preImage!;
+      }
+
+      // The signed size: the unsigned transaction, plus the unlocking
+      // script at its largest (a 73-byte signature) and the longer length
+      // prefix it needs. The preimage's length does not depend on the fee.
+      final unsigned = build(BigInt.zero);
+      final preimageLength = preimageOf(unsigned).length;
+      final unlockingLength = (1 + 73) + (1 + 33) + _pushPrefix(preimageLength) + preimageLength;
+      final size = unsigned.serialize().length ~/ 2 + unlockingLength + _varIntSize(unlockingLength) - 1;
+      final fee = rate.feeFor(size);
+      if (utxo.satoshis <= fee) {
+        failure = '${msg.utxoKey} holds ${utxo.satoshis} sats, not more than the $fee sats its unlock costs';
+        return;
+      }
+
+      final tx = build(fee);
+      final preimage = preimageOf(tx);
+      final signed = await signing.signInputWithKey(
+        walletId: msg.walletId,
+        txHex: tx.serialize(),
+        inputIndex: 0,
+        subscript: lockingScript,
+        satoshis: utxo.satoshis,
+        path: path,
+      );
+      tx.inputs[0].script = HodlUnlockBuilder(signed.signature, signed.publicKey, preimage).getScriptSig();
+      final rawHex = tx.serialize();
+      final check = dartsv.Transaction.fromHex(rawHex);
+      try {
+        dartsv.Interpreter().correctlySpends(check.inputs[0].script!, lockingScript, check, 0,
+            {dartsv.VerifyFlag.SIGHASH_FORKID, dartsv.VerifyFlag.UTXO_AFTER_GENESIS}, dartsv.Coin.ofSat(utxo.satoshis));
+      } on dartsv.ScriptException catch (e) {
+        failure = 'The unlock of ${msg.utxoKey} does not satisfy its script: $e';
+        return;
+      }
+
+      final now = DateTime.now();
+      final transaction = BitcoinTransaction(
+        txid: check.id,
+        rawHex: rawHex,
+        status: TransactionStatus.signed,
+        inputValue: utxo.satoshis,
+        outputValue: utxo.satoshis - fee,
+        fee: fee,
+        receivingAddresses: [destination],
+        sendingAddresses: [utxo.address],
+        netAmount: -fee,
+        createdAt: now,
+        updatedAt: now,
+        lockTime: lock.lockHeight,
+        version: 1,
+      );
+      try {
+        await _recordOutgoingTransaction(
+          walletId: msg.walletId,
+          transaction: transaction,
+          spentUtxoKeys: [utxo.key],
+          recipientAddresses: [destination],
+          paymentAmount: utxo.satoshis - fee,
+          deferSpend: true,
+          purpose: 'hodlocker-unlock',
+          preSigned: true,
+          signerMetadata: {'signerType': 'hodlocker-unlock', 'role': 'primary', 'keyPath': path.toString()},
+        );
+      } on _RecordingRefused catch (refused) {
+        failure = 'The wallet refused to record unlock ${transaction.txid}: ${refused.error}';
+        return;
+      }
+
+      final headers = await _getBlockHeaders(ancestors.blockHeights);
+      final beef = await _createBEEF(
+        paymentTransaction: transaction,
+        ancestorTransactions: ancestors.ancestorTransactions,
+        merkleProofs: ancestors.merkleProofs,
+        blockHeaders: headers,
+      );
+      sender?.tell(BEEFPaymentResponse(
+        invoiceId: invoiceId,
+        beefBytes: beef,
+        txid: transaction.txid,
+        amountPaid: utxo.satoshis - fee,
+        changeAmount: BigInt.zero,
+        ancestorCount: ancestors.ancestorTransactions.length,
+        success: true,
+        spentUtxoKeys: [utxo.key],
+      ));
+      delivered = true;
+    } on AggregateSigningException catch (e) {
+      failure = 'The wallet did not sign the unlock of ${msg.utxoKey}: $e';
+    } catch (e, stackTrace) {
+      _log.warning('[unlock ${msg.utxoKey}] failed: $e\n$stackTrace');
+      failure = 'Internal error: $e';
+      failureCode = SpiffyErrorCode.of(e);
+    } finally {
+      _inFlightPayment = null;
+      if (!delivered) {
+        for (final txid in inFlight.deferredTxids.reversed) {
+          _walletManager.tell(WalletCommandMessage(
+            msg.walletId,
+            CancelDeferredSpendCommand(
+              walletId: msg.walletId,
+              txid: txid,
+              reason: 'unlock of ${msg.utxoKey} failed before it was handed over',
+            ),
+          ));
+        }
+        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
+        await _awaitReleased(msg.walletId, [utxo], {reservationId, ...inFlight.deferredTxids});
+        fail(failure ?? 'The unlock of ${msg.utxoKey} was not built', code: failureCode);
+      }
+    }
+  }
+
+  /// The bytes of the push opcode for [length] bytes of data.
+  static int _pushPrefix(int length) => length < 0x4c ? 1 : length <= 0xff ? 2 : length <= 0xffff ? 3 : 5;
+
+  /// The bytes of a Bitcoin varint holding [value].
+  static int _varIntSize(int value) => value < 0xfd ? 1 : value <= 0xffff ? 3 : value <= 0xffffffff ? 5 : 9;
 
   /// Waits until the read model shows none of [utxos] reserved by any of
   /// [holders] (the payment's reservation and the deferred spends it
@@ -754,6 +968,8 @@ class PaymentCoordinatorActor extends Actor {
         return 'multisig:${o.threshold}-of-${o.totalKeys}';
       } else if (o is OPReturnOutputSpec) {
         return 'op_return';
+      } else if (o is HodlockerOutputSpec) {
+        return 'hodlocker:${o.ownerAddress}';
       }
       return 'unknown';
     }).toList();
@@ -991,6 +1207,9 @@ class PaymentCoordinatorActor extends Actor {
                     _PaymentOutput(OpReturnLockBuilder([chunk]), BigInt.zero, 'op_return'),
                 ]
               : [_PaymentOutput(OpReturnLockBuilder(opReturn.dataChunks), BigInt.zero, 'op_return')],
+          HodlockerOutputSpec lock => [
+              _PaymentOutput(lock.lockBuilder, lock.amount, 'hodlocker:${lock.ownerAddress}'),
+            ],
           PluginOutputSpec plugin => [_PaymentOutput(_pluginLock(plugin), plugin.amount,
               '${plugin.pluginId}:${plugin.pluginScriptType}')],
         },

@@ -77,7 +77,14 @@ final class HodlockerLock {
     final pubKeyHash = script.substring(at, at + 40);
     at += 40;
     final pushLength = int.tryParse(script.substring(at, at + 2), radix: 16);
-    if (pushLength == null || pushLength < 1 || pushLength > 4) return null;
+    if (pushLength == null) return null;
+    // Heights 1 to 16 are the opcodes OP_1 to OP_16, as a script number is
+    // written minimally (a regtest chain's heights).
+    if (pushLength >= 0x51 && pushLength <= 0x60) {
+      if (script.substring(at + 2) != _tail) return null;
+      return HodlockerLock(pubKeyHash, pushLength - 0x50);
+    }
+    if (pushLength < 1 || pushLength > 4) return null;
     at += 2;
     if (script.length < at + pushLength * 2) return null;
     final heightBytes = HEX.decode(script.substring(at, at + pushLength * 2));

@@ -369,6 +369,11 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
                 'Output $i: Invalid OP_RETURN configuration - '
                 'must have non-empty data within ${OPReturnOutputSpec.maxTotalDataSize} bytes');
           }
+        case HodlockerOutputSpec lock:
+          if (lock.lockHeight < 1 || lock.lockHeight >= 500000000) {
+            throw ArgumentError('Output $i: a HODLocker lock height must be a block height '
+                '(1 to 499999999), not ${lock.lockHeight}');
+          }
         case PluginOutputSpec plugin:
           if (plugin.pluginId.isEmpty) {
             throw ArgumentError('Output $i: Plugin ID cannot be empty');

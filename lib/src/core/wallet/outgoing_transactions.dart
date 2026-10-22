@@ -310,7 +310,11 @@ class OutgoingTransactions {
         }
 
         // Identify script type
-        final scriptType = scriptRegistry.identifyScriptType(output.script)?.toLowerCase() ?? 'unknown';
+        // HodlockerLock first: dartsv's pattern misses a lock height written
+        // as a small-number opcode.
+        final scriptType = HodlockerLock.looksLike(output.script.toHex())
+            ? HodlockerLock.scriptType
+            : scriptRegistry.identifyScriptType(output.script)?.toLowerCase() ?? 'unknown';
 
         String? outputAddress;
         bool belongsToWallet = false;

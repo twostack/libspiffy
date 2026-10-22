@@ -1210,6 +1210,15 @@ class SPVActor extends Actor {
       dartsv.TemplateRegistry.initialize();
       final templateRegistry = dartsv.ScriptTemplateRegistry();
       final script = output.script;
+      // A coin time-locked to a key (bead spiffyvault-mnz.1): the address of
+      // that key, as for P2PKH. Read by HodlockerLock, which knows every
+      // form of the lock height (dartsv's pattern misses a small-number
+      // one). The wallet records it with its lock (UtxoLedger.receive).
+      final hodl = HodlockerLock.looksLike(script.toHex()) ? HodlockerLock.parse(script) : null;
+      if (hodl != null) {
+        return _OutputLock(
+            scriptType: HodlockerLock.scriptType, address: hodl.ownerAddress(NetworkName.toDartsv(_networkType)));
+      }
       final scriptType = templateRegistry.identifyScriptType(script);
       recognisedAs = scriptType;
       final scriptInfo = templateRegistry.extractScriptInfo(script);
@@ -1269,12 +1278,6 @@ class SPVActor extends Actor {
           // reading 'pubKeys' never matched and an invoice paid with its
           // multisig output went unrecognised.
           multisig = BareMultisigScript.parse(script);
-          break;
-        case HodlockerLock.scriptType:
-          // A coin time-locked to a key (bead spiffyvault-mnz.1): the
-          // address of that key, as for P2PKH. The wallet records it with
-          // its lock (UtxoLedger.receive), so it is locked balance.
-          address = HodlockerLock.parse(script)?.ownerAddress(NetworkName.toDartsv(_networkType));
           break;
       }
       return _OutputLock(scriptType: scriptType, address: address, multisig: multisig);

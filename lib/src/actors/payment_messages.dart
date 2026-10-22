@@ -91,6 +91,36 @@ class PayInvoiceMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Spend the wallet's HODLocker coin [utxoKey] back to the wallet (bead
+/// spiffyvault-mnz.2), once the chain has reached its lock height.
+///
+/// Answered with a [BEEFPaymentResponse] for [invoiceId]: the signed and
+/// recorded unlock transaction, its inputs held until the network takes it,
+/// for the caller to broadcast.
+class UnlockHodlockerMessage implements Message {
+  final String walletId;
+
+  /// The locked coin, `txid:vout`.
+  final String utxoKey;
+
+  /// Names this unlock in the reply, the reservation and the change label.
+  final String invoiceId;
+
+  UnlockHodlockerMessage({required this.walletId, required this.utxoKey, required this.invoiceId});
+
+  @override
+  String get correlationId => invoiceId;
+
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'utxoKey': utxoKey};
+
+  @override
+  ActorRef? get replyTo => null;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Response with BEEF package ready to send to receiver
 /// 
 /// Contains serialized BEEF with payment transaction, ancestor transactions,

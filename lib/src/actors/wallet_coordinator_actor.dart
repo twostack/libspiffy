@@ -851,6 +851,10 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleProvisionFunding(message));
       } else if (message is TimestampCommand) {
         unawaited(_handleTimestamp(message));
+      } else if (message is LockCoinsCommand) {
+        unawaited(_handleLockCoins(message));
+      } else if (message is UnlockCoinsCommand) {
+        unawaited(_handleUnlockCoins(message));
       } else if (message is SettleBEEFCommand) {
         await _handleSettleBEEF(message);
       }
@@ -2327,6 +2331,135 @@ class WalletCoordinatorActor extends Actor {
           error: 'The broadcast of ${response.txid} failed: $error${willRetry ? ' (queued for a retry)' : ''}'),
       _ => answer(txid: response.txid, error: 'ARC answered the broadcast with ${reply.runtimeType}'),
     });
+  }
+
+  /// Locks coins with a HODLocker output (bead spiffyvault-mnz.2): a fresh
+  /// receive address of the wallet is the key, the payment coordinator
+  /// builds, records and packages the payment, and ARC's answer to its
+  /// broadcast is the reply, as for a timestamp.
+  Future<void> _handleLockCoins(LockCoinsCommand cmd) async {
+    CoinsLockedEvent answer({String? txid, String? owner, String? error, SpiffyErrorCode? code}) => CoinsLockedEvent(
+        walletId: cmd.walletId,
+        requestId: cmd.requestId,
+        transactionId: txid,
+        ownerAddress: owner,
+        lockHeight: cmd.lockHeight,
+        amount: cmd.amount,
+        success: error == null,
+        error: error,
+        errorCode: code);
+
+    if (cmd.amount <= BigInt.zero) {
+      _emitEvent(answer(error: 'A lock needs a positive amount, not ${cmd.amount}'));
+      return;
+    }
+    if (cmd.lockHeight >= 500000000) {
+      _emitEvent(answer(error: 'A lock height is a block height below 500000000, not ${cmd.lockHeight}'));
+      return;
+    }
+    final bestHeight = await _storage.getBestHeight();
+    if (cmd.lockHeight <= bestHeight) {
+      _emitEvent(answer(error: 'Block ${cmd.lockHeight} is not ahead of the chain, which is at block $bestHeight'));
+      return;
+    }
+
+    final String owner;
+    try {
+      final generated = await _askWallet<wm.AddressGeneratedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.GenerateAddressCommand(walletId: cmd.walletId, label: 'lock:${cmd.lockHeight}'),
+        ),
+        const Duration(seconds: 30),
+      );
+      if (!generated.success || generated.address.isEmpty) {
+        _emitEvent(answer(error: 'The wallet gave no address to lock to: ${generated.error ?? 'none'}'));
+        return;
+      }
+      owner = generated.address;
+    } catch (e) {
+      _emitEvent(answer(error: 'The wallet gave no address to lock to: $e'));
+      return;
+    }
+
+    final pay.BEEFPaymentResponse response;
+    try {
+      response = await _ask<pay.BEEFPaymentResponse>(
+        _paymentCoordinator,
+        pay.PayInvoiceMessage(
+          walletId: cmd.walletId,
+          invoiceId: 'lock-${cmd.lockHeight}-${DateTime.now().millisecondsSinceEpoch}',
+          addresses: [],
+          amount: BigInt.zero,
+          outputs: [HodlockerOutputSpec(ownerAddress: owner, lockHeight: cmd.lockHeight, amount: cmd.amount)],
+        ),
+        CoordinatorRequest.paymentTimeout,
+      );
+    } catch (e) {
+      _emitEvent(answer(owner: owner, error: 'The lock transaction was not built: $e', code: SpiffyErrorCode.of(e)));
+      return;
+    }
+    if (!response.success) {
+      _emitEvent(answer(owner: owner, error: response.error ?? 'The lock transaction was not built', code: response.errorCode));
+      return;
+    }
+    final broadcastError = await _broadcastBuilt(cmd.walletId, response);
+    _emitEvent(answer(txid: response.txid, owner: owner, error: broadcastError));
+  }
+
+  /// Spends a locked coin back to the wallet (bead spiffyvault-mnz.2) and
+  /// broadcasts the spend.
+  Future<void> _handleUnlockCoins(UnlockCoinsCommand cmd) async {
+    CoinsUnlockedEvent answer({String? txid, BigInt? amount, String? error, SpiffyErrorCode? code}) =>
+        CoinsUnlockedEvent(
+            walletId: cmd.walletId,
+            requestId: cmd.requestId,
+            utxoKey: cmd.utxoKey,
+            transactionId: txid,
+            amount: amount,
+            success: error == null,
+            error: error,
+            errorCode: code);
+
+    final pay.BEEFPaymentResponse response;
+    try {
+      response = await _ask<pay.BEEFPaymentResponse>(
+        _paymentCoordinator,
+        pay.UnlockHodlockerMessage(
+          walletId: cmd.walletId,
+          utxoKey: cmd.utxoKey,
+          invoiceId: 'unlock-${cmd.utxoKey}-${DateTime.now().millisecondsSinceEpoch}',
+        ),
+        CoordinatorRequest.paymentTimeout,
+      );
+    } catch (e) {
+      _emitEvent(answer(error: 'The unlock was not built: $e', code: SpiffyErrorCode.of(e)));
+      return;
+    }
+    if (!response.success) {
+      _emitEvent(answer(error: response.error ?? 'The unlock was not built', code: response.errorCode));
+      return;
+    }
+    final broadcastError = await _broadcastBuilt(cmd.walletId, response);
+    _emitEvent(answer(txid: response.txid, amount: response.amountPaid, error: broadcastError));
+  }
+
+  /// Broadcasts a payment the payment coordinator built ([response]) and
+  /// waits for ARC's answer: null when ARC took it, otherwise why not.
+  Future<String?> _broadcastBuilt(String walletId, pay.BEEFPaymentResponse response) async {
+    final Object? reply;
+    try {
+      reply = await _arcActor.ask<dynamic>(
+          wm.BroadcastBEEFMessage(walletId, hex.encode(response.beefBytes), response.txid), _paymentSubmitTimeout);
+    } catch (e) {
+      return 'ARC did not answer the broadcast of ${response.txid}: $e';
+    }
+    return switch (reply) {
+      wm.BroadcastSuccessMessage() => null,
+      wm.BroadcastFailedMessage(:final error, :final willRetry) =>
+        'The broadcast of ${response.txid} failed: $error${willRetry ? ' (queued for a retry)' : ''}',
+      _ => 'ARC answered the broadcast of ${response.txid} with ${reply.runtimeType}',
+    };
   }
 
   Future<void> _handleShutdown() async {

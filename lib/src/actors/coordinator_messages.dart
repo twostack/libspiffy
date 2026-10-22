@@ -891,6 +891,59 @@ class TimestampCommand extends CoordinatorRequest<TimestampCompleteEvent> {
   Map<String, dynamic> get metadata => {'walletId': walletId, 'archiveId': archiveId};
 }
 
+/// Lock [amount] satoshis of the wallet's coins until block [lockHeight]
+/// (bead spiffyvault-mnz.2): a HODLocker output to a fresh receive address
+/// of the wallet, paid like any payment (selection, fee, change), recorded,
+/// and broadcast. Answered with ARC's answer to the broadcast.
+///
+/// The coin is the wallet's locked balance (`BalanceResponse.lockedBalance`)
+/// until [UnlockCoinsCommand] spends it back, at or after [lockHeight]. A
+/// seed-phrase import finds it again: the lock transaction is in the history
+/// of the coins that paid for it.
+class LockCoinsCommand extends CoordinatorRequest<CoinsLockedEvent> {
+  final String walletId;
+  final BigInt amount;
+
+  /// A block height above the chain's current height and below 500000000
+  /// (larger values are times, which the contract refuses).
+  final int lockHeight;
+
+  LockCoinsCommand({
+    required this.walletId,
+    required this.amount,
+    required this.lockHeight,
+    super.requestId,
+  });
+
+  /// Building the payment, then ARC's answer to its broadcast.
+  @override
+  Duration get replyTimeout => CoordinatorRequest.paymentTimeout + CoordinatorRequest.networkTimeout;
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'lockHeight': lockHeight};
+}
+
+/// Spend the wallet's locked coin [utxoKey] back to a fresh address of the
+/// wallet (bead spiffyvault-mnz.2), less the fee, and broadcast it.
+/// Refused before anything is built while the chain is below the coin's
+/// lock height.
+class UnlockCoinsCommand extends CoordinatorRequest<CoinsUnlockedEvent> {
+  final String walletId;
+
+  /// The locked coin, `txid:vout`.
+  final String utxoKey;
+
+  UnlockCoinsCommand({
+    required this.walletId,
+    required this.utxoKey,
+    super.requestId,
+  });
+
+  @override
+  Duration get replyTimeout => CoordinatorRequest.paymentTimeout + CoordinatorRequest.networkTimeout;
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'utxoKey': utxoKey};
+}
+
 /// Settle a BEEF by broadcasting all unsettled transactions (hasMerkle=false)
 /// to ARC in dependency order.
 ///
@@ -3701,6 +3754,80 @@ class TimestampCompleteEvent extends CoordinatorReply {
 
   @override
   String? get failure => success ? null : error ?? 'The timestamp was not made';
+}
+
+/// The answer to [LockCoinsCommand].
+class CoinsLockedEvent extends CoordinatorReply {
+  @override
+  final String? walletId;
+  @override
+  final String? requestId;
+
+  /// The lock transaction; set once it was built, even when its broadcast
+  /// failed.
+  final String? transactionId;
+
+  /// The address of the key the coin is locked to.
+  final String? ownerAddress;
+  final int lockHeight;
+  final BigInt amount;
+  final bool success;
+  final String? error;
+
+  /// Why it failed, when that is known.
+  @override
+  final SpiffyErrorCode? errorCode;
+
+  CoinsLockedEvent({
+    this.walletId,
+    this.requestId,
+    this.transactionId,
+    this.ownerAddress,
+    required this.lockHeight,
+    required this.amount,
+    required this.success,
+    this.error,
+    this.errorCode,
+  });
+
+  @override
+  String? get failure => success ? null : error ?? 'The coins were not locked';
+}
+
+/// The answer to [UnlockCoinsCommand].
+class CoinsUnlockedEvent extends CoordinatorReply {
+  @override
+  final String? walletId;
+  @override
+  final String? requestId;
+  final String utxoKey;
+
+  /// The unlock transaction; set once it was built, even when its broadcast
+  /// failed.
+  final String? transactionId;
+
+  /// What came back to the wallet: the coin less the fee.
+  final BigInt? amount;
+  final bool success;
+  final String? error;
+
+  /// Why it failed, when that is known.
+  @override
+  final SpiffyErrorCode? errorCode;
+
+  CoinsUnlockedEvent({
+    this.walletId,
+    this.requestId,
+    required this.utxoKey,
+    this.transactionId,
+    this.amount,
+    required this.success,
+    this.error,
+    this.errorCode,
+  });
+
+  @override
+  String? get failure => success ? null : error ?? 'The coins were not unlocked';
 }
 
 // --- Status & Error Events ---

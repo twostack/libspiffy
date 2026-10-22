@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:test/test.dart';
 import 'package:libspiffy/src/models/invoice_output_spec.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
+import 'package:libspiffy/src/core/hodlocker_lock.dart';
+import 'package:dartsv/dartsv.dart' show NetworkType;
 
 void main() {
   group('InvoiceOutputSpec', () {
@@ -562,12 +564,26 @@ void main() {
               results.add('OP_RETURN: ${opReturn.dataChunks.length} chunks');
             case PluginOutputSpec plugin:
               results.add('Plugin: ${plugin.pluginId}:${plugin.pluginScriptType}');
+            case HodlockerOutputSpec lock:
+              results.add('HODLocker: ${lock.ownerAddress} until ${lock.lockHeight}');
           }
         }
 
         expect(results[0], equals('P2PKH: mAddr'));
         expect(results[1], equals('P2MS: 2-of-2'));
         expect(results[2], equals('OP_RETURN: 1 chunks'));
+      });
+    });
+
+    group('HodlockerOutputSpec (bead spiffyvault-mnz.2)', () {
+      test('round-trips through its map, and builds the HODLocker script', () {
+        final spec = HodlockerOutputSpec(
+            ownerAddress: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12', lockHeight: 1700000, amount: BigInt.from(5000), label: 'savings');
+        final back = InvoiceOutputSpec.fromMap(spec.toMap());
+        expect(back, spec);
+        final lock = HodlockerLock.parse(spec.lockBuilder.getScriptPubkey());
+        expect(lock?.lockHeight, 1700000);
+        expect(lock?.ownerAddress(NetworkType.TEST), 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12');
       });
     });
 

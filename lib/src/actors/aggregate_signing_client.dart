@@ -169,6 +169,27 @@ class AggregateSigningClient {
       ))
           .signature;
 
+  /// [signInput], with the public key of the signing key: what a script that
+  /// checks a key hash needs pushed beside the signature (a HODLocker
+  /// unlock, bead spiffyvault-mnz.2).
+  Future<({dartsv.SVSignature signature, dartsv.SVPublicKey publicKey})> signInputWithKey({
+    required String walletId,
+    required String txHex,
+    required int inputIndex,
+    required dartsv.SVScript subscript,
+    required BigInt satoshis,
+    required KeyPath path,
+  }) =>
+      _signInputWithKey(
+        walletId: walletId,
+        txHex: txHex,
+        inputIndex: inputIndex,
+        subscript: subscript,
+        satoshis: satoshis,
+        path: path,
+        sighashType: sigHashAllForkId,
+      );
+
   /// Sends [SignInputCommand] and returns the signature with the public key
   /// the aggregate reports for the signing key. The signature is checked to
   /// come from that key over this input's sighash.

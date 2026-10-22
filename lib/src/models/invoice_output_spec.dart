@@ -32,6 +32,7 @@ sealed class InvoiceOutputSpec {
       'p2ms' => P2MSOutputSpec.fromMap(map),
       'op_return' => OPReturnOutputSpec.fromMap(map),
       'plugin' => PluginOutputSpec.fromMap(map),
+      'hodlocker' => HodlockerOutputSpec.fromMap(map),
       _ => throw ArgumentError('Unknown output type: $type'),
     };
   }
@@ -285,6 +286,63 @@ class OPReturnOutputSpec extends InvoiceOutputSpec {
     final totalSize = dataChunks.fold<int>(0, (sum, c) => sum + c.length);
     return 'OPReturnOutputSpec(chunks: ${dataChunks.length}, totalBytes: $totalSize, separateOutputs: $separateOutputs, label: $label)';
   }
+}
+
+/// A HODLocker output (bead spiffyvault-mnz.2): [amount] time-locked to the
+/// key of [ownerAddress] until block [lockHeight]. Spendable from that
+/// height on by the key alone (`HodlockerLock`).
+class HodlockerOutputSpec extends InvoiceOutputSpec {
+  /// The P2PKH address of the key the coin is locked to.
+  final String ownerAddress;
+
+  /// The block height from which the coin can be spent.
+  final int lockHeight;
+
+  const HodlockerOutputSpec({
+    required this.ownerAddress,
+    required this.lockHeight,
+    required super.amount,
+    super.label,
+  });
+
+  @override
+  BitcoinScriptType get scriptType => BitcoinScriptType.custom;
+
+  /// The locking script.
+  LockingScriptBuilder get lockBuilder => HODLockerLockingScriptBuilder(
+        hex.decode(Address.fromBase58(ownerAddress).pubkeyHash160),
+        BigInt.from(lockHeight),
+      );
+
+  @override
+  Map<String, dynamic> toMap() => {
+        'type': 'hodlocker',
+        'ownerAddress': ownerAddress,
+        'lockHeight': lockHeight,
+        'amount': amount.toString(),
+        if (label != null) 'label': label,
+      };
+
+  factory HodlockerOutputSpec.fromMap(Map<String, dynamic> map) => HodlockerOutputSpec(
+        ownerAddress: map['ownerAddress'] as String,
+        lockHeight: map['lockHeight'] as int,
+        amount: BigInt.parse(map['amount'] as String),
+        label: map['label'] as String?,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is HodlockerOutputSpec &&
+      other.ownerAddress == ownerAddress &&
+      other.lockHeight == lockHeight &&
+      other.amount == amount &&
+      other.label == label;
+
+  @override
+  int get hashCode => Object.hash(ownerAddress, lockHeight, amount, label);
+
+  @override
+  String toString() => 'HodlockerOutputSpec($amount sats to $ownerAddress until $lockHeight)';
 }
 
 bool _deepListEquals(List<List<int>> a, List<List<int>> b) {

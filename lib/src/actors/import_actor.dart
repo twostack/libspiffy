@@ -979,7 +979,12 @@ class ImportActor extends Actor {
       final scriptRegistry = ScriptTypeRegistry(
         networkType: NetworkName.toDartsv(message.networkType),
       );
-      final scriptType = scriptRegistry.identifyScriptType(output.script);
+      // A HODLocker script is read by HodlockerLock, which knows every form
+      // of its lock height: dartsv's pattern misses a height written as a
+      // small-number opcode.
+      final scriptType = HodlockerLock.looksLike(scriptHex)
+          ? HodlockerLock.scriptType
+          : scriptRegistry.identifyScriptType(output.script);
       _logger.fine('            Script type: $scriptType');
 
       // Step 2: Use appropriate builder based on script type

@@ -6,6 +6,7 @@ library libspiffy;
 
 // ✅ CORE MODELS - Complete domain models with DartSV integration
 export 'src/core/spiffy_error.dart';         // Error codes an app can put in its own words
+export 'src/core/hodlocker_lock.dart';        // HODLocker time-locked outputs (locked balance)
 export 'src/models/wallet_event.dart';          // Event sourcing base class
 export 'src/models/foreign_spend.dart';
 export 'src/models/bitcoin_utxo.dart';          // UTXO tracking with reservations

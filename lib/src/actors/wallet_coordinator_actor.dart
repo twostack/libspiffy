@@ -9,6 +9,7 @@ import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 
 import '../core/channel_events.dart';
+import '../core/hodlocker_lock.dart';
 import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
 import '../core/invoice_events.dart' as invoice_events;
@@ -50,6 +51,7 @@ typedef _Balances = ({
   BigInt reserved,
   BigInt watchOnly,
   BigInt pending,
+  BigInt locked,
 });
 
 /// The canonical public interface for third-party apps using LibSpiffy.
@@ -250,7 +252,8 @@ class WalletCoordinatorActor extends Actor {
           now.unconfirmed == BigInt.zero &&
           now.reserved == BigInt.zero &&
           now.watchOnly == BigInt.zero &&
-          now.pending == BigInt.zero) {
+          now.pending == BigInt.zero &&
+          now.locked == BigInt.zero) {
         return;
       }
       _emitEvent(BalanceUpdatedEvent(
@@ -261,6 +264,7 @@ class WalletCoordinatorActor extends Actor {
         pendingBalance: now.pending,
         watchOnlyBalance: now.watchOnly,
         reservedBalance: now.reserved,
+        lockedBalance: now.locked,
       ));
     } catch (e, stackTrace) {
       _log.warning('Could not read wallet $walletId\'s balance to announce it: $e',
@@ -1306,6 +1310,9 @@ class WalletCoordinatorActor extends Actor {
       reserved: reserved,
       watchOnly: paymentUtxos.watchOnlySatoshis,
       pending: pending,
+      // HODLocker coins (bead spiffyvault-mnz.1): plugin-managed, so in no
+      // number above.
+      locked: HodlockerLock.lockedSatoshis(all),
     );
   }
 
@@ -1321,6 +1328,7 @@ class WalletCoordinatorActor extends Actor {
         pendingBalance: balances.pending,
         watchOnlyBalance: balances.watchOnly,
         reservedBalance: balances.reserved,
+        lockedBalance: balances.locked,
       ));
     } catch (e) {
       _emitEvent(ErrorEvent(

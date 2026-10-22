@@ -59,6 +59,7 @@ class AddressDiscoveryService {
     );
 
     final usedAddresses = <DiscoveredAddress>[];
+    final unusedAddresses = <DiscoveredAddress>[];
     int totalTransactions = 0;
 
     // Determine network type
@@ -79,6 +80,7 @@ class AddressDiscoveryService {
         gapLimit: gapLimit,
         onProgress: onProgress,
         shouldStop: shouldStop,
+        unused: unusedAddresses,
       );
       usedAddresses.addAll(results);
       totalTransactions += results.fold<int>(0, (sum, addr) => sum + addr.transactionCount);
@@ -99,10 +101,12 @@ class AddressDiscoveryService {
       usedAddresses: usedAddresses,
       lastCheckedIndex: lastCheckedIndex,
       totalTransactions: totalTransactions,
+      unusedAddresses: unusedAddresses,
     );
   }
 
-  /// Scan a single chain for used addresses
+  /// Scan a single chain for used addresses; each address found unused is
+  /// added to [unused] when it is given.
   Future<List<DiscoveredAddress>> _scanAddressChain({
     required dartsv.HDPublicKey hdPublicKey,
     required AddressChain chain,
@@ -110,6 +114,7 @@ class AddressDiscoveryService {
     required int gapLimit,
     void Function(int scannedCount, int usedCount)? onProgress,
     bool Function()? shouldStop,
+    List<DiscoveredAddress>? unused,
   }) async {
     final usedAddresses = <DiscoveredAddress>[];
     int consecutiveUnused = 0;
@@ -161,6 +166,13 @@ class AddressDiscoveryService {
         } else {
           // Address is unused
           consecutiveUnused++;
+          unused?.add(DiscoveredAddress(
+            address: address,
+            derivationIndex: index,
+            chain: chain,
+            transactionCount: 0,
+            txids: const [],
+          ));
           if (index < 3) {
             _logger.info('      ⚪ Address unused, gap count: $consecutiveUnused/$gapLimit');
           }

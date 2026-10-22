@@ -19,6 +19,7 @@ import '../models/blockchain_data_models.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../models/import_step.dart';
 import '../models/wallet_type.dart';
+import '../core/hodlocker_lock.dart';
 import '../core/spiffy_error.dart';
 import '../core/wallet/wallet_keys.dart' show WalletKeys;
 import '../core/wallet_commands.dart';
@@ -90,6 +91,12 @@ class ImportActor extends Actor {
   int _processedTransactions = 0;
   int _skippedTransactions = 0;
   int _failedTransactions = 0;
+
+  /// The addresses the running import's scan derived and found unused, by
+  /// address: where it looks for the owner of a HODLocker output, whose key
+  /// has no history of its own (bead spiffyvault-mnz.1). An owner found here
+  /// is registered with the wallet and moves to the discovered list.
+  Map<String, DiscoveredAddress> _unusedAddresses = const {};
 
   /// Aggregate acknowledgements awaited when no wallet projection is wired.
   final Map<String, Completer<TransactionRecordedResponse>> _pendingRecordAcks = {};
@@ -248,6 +255,7 @@ class ImportActor extends Actor {
     } finally {
       _currentImportWalletId = null;
       _cancelSignal = null;
+      _unusedAddresses = const {};
       _phase = 'idle';
       _pendingRecordAcks.clear();
       _logger.info('🔓 Import lock released for wallet $walletId');
@@ -446,6 +454,7 @@ class ImportActor extends Actor {
     }
 
     await _registerAddresses(message.walletId, discoveryResult.usedAddresses);
+    _unusedAddresses = {for (final a in discoveryResult.unusedAddresses) a.address: a};
 
     _totalTransactions = discoveryResult.totalTransactions;
     _reportProgress(ImportStep.discovering, 
@@ -617,6 +626,9 @@ class ImportActor extends Actor {
     List<DiscoveredAddress> addresses,
   ) async {
     _logger.info('   → Importing transactions for ${addresses.length} addresses');
+    // The wallet's addresses as the outputs are read: a HODLocker owner
+    // found among the unused ones joins them (bead spiffyvault-mnz.1).
+    final knownAddresses = [...addresses];
 
     // PHASE 1: Fetch every transaction of every discovered address, once.
     //
@@ -770,7 +782,7 @@ class ImportActor extends Actor {
         tx,
         message,
         currentAddress,
-        addresses,
+        knownAddresses,
       );
 
       totalUtxosFound += utxosFound.length;
@@ -972,6 +984,7 @@ class ImportActor extends Actor {
 
       // Step 2: Use appropriate builder based on script type
       bool belongsToWallet = false;
+      Map<String, dynamic>? pluginMetadata;
 
       try {
         if (scriptType?.toLowerCase() == 'p2pkh') {
@@ -999,6 +1012,49 @@ class ImportActor extends Actor {
           belongsToWallet = outputAddress != null;
           if (!belongsToWallet) {
             _logger.info('            ℹ️  Multisig output not spendable by the wallet alone');
+          }
+        } else if (scriptType?.toLowerCase() == HodlockerLock.scriptType) {
+          // A coin time-locked to a key (bead spiffyvault-mnz.1). The lock
+          // transaction is in the history of the address that funded it;
+          // the key it is locked to has no history of its own, so its
+          // owner may be an address the scan found unused.
+          final lock = HodlockerLock.parse(output.script);
+          if (lock == null) {
+            _logger.info('            ⚠️  Script looks like HODLocker but is not the contract - skipping');
+            continue;
+          }
+          final network = NetworkName.toDartsv(message.networkType);
+          outputAddress = lock.ownerAddress(network);
+          belongsToWallet = allAddresses.any((a) => a.address == outputAddress);
+          final unused = _unusedAddresses[outputAddress];
+          if (!belongsToWallet && unused != null) {
+            _logger.info('            🔒 Lock key is unused address m/${unused.chain.index}/${unused.derivationIndex}; registering it');
+            final owner = DiscoveredAddress(
+              address: unused.address,
+              derivationIndex: unused.derivationIndex,
+              chain: unused.chain,
+              transactionCount: 1,
+              txids: [tx.txid],
+            );
+            // Told before the UTXO, to the same wallet: the wallet holds the
+            // address when it takes the coin on.
+            _walletManagerActor.tell(
+              WalletCommandMessage(walletId, RegisterDiscoveredAddressCommand(
+                walletId: walletId,
+                address: owner.address,
+                derivationIndex: owner.derivationIndex,
+                chain: owner.chain,
+                transactionCount: owner.transactionCount,
+              )),
+              sender: context.self,
+            );
+            allAddresses.add(owner);
+            _unusedAddresses = {..._unusedAddresses}..remove(outputAddress);
+            belongsToWallet = true;
+          }
+          if (belongsToWallet) {
+            pluginMetadata = lock.metadata(network);
+            _logger.info('            🔒 Locked until block ${lock.lockHeight}');
           }
         } else if (scriptType?.toLowerCase() == 'p2sh') {
           _logger.info('            ⚠️  P2SH output detected - skipping (not supported for UTXO import)');
@@ -1040,6 +1096,8 @@ class ImportActor extends Actor {
           blockHeight: tx.blockHeight,
           confirmations: null, // Will be updated separately
           initialStatus: UTXOStatus.available, // Imported UTXOs are already confirmed
+          // A HODLocker coin's lock: plugin-managed, so locked balance.
+          pluginMetadata: pluginMetadata,
         );
 
         _logger.info('            → Sending ReceiveUTXOCommand to WalletManager for wallet ${message.walletId}');

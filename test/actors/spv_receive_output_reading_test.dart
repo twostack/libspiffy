@@ -214,6 +214,29 @@ void main() {
     });
   });
 
+  group('spiffyvault-mnz.1: HODLocker outputs', () {
+    test('a lock to a wallet key is credited to the wallet as a locked coin', () async {
+      await createWallet('hodl');
+      final generated = await generateAddress('hodl');
+      final spv = await spawnSpv();
+      final lock = dartsv.HODLockerLockingScriptBuilder(
+        hex.decode(dartsv.Address.fromBase58(generated.address).pubkeyHash160),
+        BigInt.from(kFixtureHeight + 1000),
+      );
+
+      final payment = spendFixture([(lock, 150000000), (p2pkh(_payerRootAddress), 49990000)]);
+      final result = await receive(spv, 'hodl', payment);
+      expect(result.isValid, isTrue, reason: result.validationError);
+      expect([for (final u in result.spendableUTXOs) (u['vout'], u['address'])], [(0, generated.address)]);
+
+      await settled('hodl', payment.id);
+      final utxo = received('hodl', payment.id).single;
+      expect(utxo.vout, 0);
+      expect(utxo.pluginMetadata?['pluginId'], 'hodlocker');
+      expect(utxo.pluginMetadata?['lockHeight'], kFixtureHeight + 1000);
+    });
+  });
+
   group('libspiffy-n8b9: invoice payments the invoice path cannot verify', () {
     test('an invoice coordinator that does not answer fails the result instead of validating it with nothing',
         () async {

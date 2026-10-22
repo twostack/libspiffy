@@ -1801,6 +1801,12 @@ class BalanceResponse extends CoordinatorReply {
   /// moment older than the numbers beside it.
   final BigInt reservedBalance;
 
+  /// Value of the wallet's HODLocker coins (`HodlockerLock`, bead
+  /// spiffyvault-mnz.1), mined or not: time-locked to a wallet key until a
+  /// block height, so not spendable until then, and not part of
+  /// [totalBalance] or of any other number here.
+  final BigInt lockedBalance;
+
   BalanceResponse({
     required this.walletId,
     this.requestId,
@@ -1810,9 +1816,11 @@ class BalanceResponse extends CoordinatorReply {
     BigInt? pendingBalance,
     BigInt? watchOnlyBalance,
     BigInt? reservedBalance,
+    BigInt? lockedBalance,
   })  : pendingBalance = pendingBalance ?? BigInt.zero,
         watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
-        reservedBalance = reservedBalance ?? BigInt.zero;
+        reservedBalance = reservedBalance ?? BigInt.zero,
+        lockedBalance = lockedBalance ?? BigInt.zero;
 
   /// Never: a failure to answer arrives as an [ErrorEvent].
   @override
@@ -1907,6 +1915,9 @@ class BalanceUpdatedEvent extends CoordinatorEvent {
   /// See [BalanceResponse.reservedBalance]. Not part of [totalBalance].
   final BigInt reservedBalance;
 
+  /// See [BalanceResponse.lockedBalance]. Not part of [totalBalance].
+  final BigInt lockedBalance;
+
   BalanceUpdatedEvent({
     required this.walletId,
     required this.confirmedBalance,
@@ -1915,9 +1926,11 @@ class BalanceUpdatedEvent extends CoordinatorEvent {
     BigInt? pendingBalance,
     BigInt? watchOnlyBalance,
     BigInt? reservedBalance,
+    BigInt? lockedBalance,
   })  : pendingBalance = pendingBalance ?? BigInt.zero,
         watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
-        reservedBalance = reservedBalance ?? BigInt.zero;
+        reservedBalance = reservedBalance ?? BigInt.zero,
+        lockedBalance = lockedBalance ?? BigInt.zero;
 }
 
 /// An outgoing transaction a [RecordOutgoingCommand] asked the wallet to

@@ -19,6 +19,7 @@ import '../../services/script_type_registry.dart';
 import '../../utils/network_name.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
+import '../hodlocker_lock.dart';
 import '../wallet_output_ownership.dart';
 import 'deferred_payments.dart';
 import 'state_records.dart';
@@ -353,6 +354,18 @@ class OutgoingTransactions {
             // transaction itself is recorded whole either way.
             outputAddress = BareMultisigScript.parse(output.script)?.spendableAloneBy(walletAddresses.contains, network);
             belongsToWallet = outputAddress != null;
+            break;
+
+          case HodlockerLock.scriptType:
+            // A lock this wallet made, to one of its own keys (bead
+            // spiffyvault-mnz.1): recorded with its lock, as locked balance.
+            final lock = HodlockerLock.parse(output.script);
+            final owner = lock?.ownerAddress(network);
+            if (owner != null && walletAddresses.contains(owner)) {
+              outputAddress = owner;
+              belongsToWallet = true;
+              outputPluginMetadata = lock!.metadata(network);
+            }
             break;
 
           case 'opreturn':

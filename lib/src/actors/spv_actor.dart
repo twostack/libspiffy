@@ -26,6 +26,7 @@ import '../models/bitcoin_transaction.dart' show BitcoinTransaction, Transaction
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../spv/beef_ancestry.dart';
 import '../spv/merkle_proof_header_check.dart';
+import '../core/hodlocker_lock.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 
 /// Actor that handles true SPV validation - receives transactions from counterparties
@@ -1268,6 +1269,12 @@ class SPVActor extends Actor {
           // reading 'pubKeys' never matched and an invoice paid with its
           // multisig output went unrecognised.
           multisig = BareMultisigScript.parse(script);
+          break;
+        case HodlockerLock.scriptType:
+          // A coin time-locked to a key (bead spiffyvault-mnz.1): the
+          // address of that key, as for P2PKH. The wallet records it with
+          // its lock (UtxoLedger.receive), so it is locked balance.
+          address = HodlockerLock.parse(script)?.ownerAddress(NetworkName.toDartsv(_networkType));
           break;
       }
       return _OutputLock(scriptType: scriptType, address: address, multisig: multisig);

@@ -222,6 +222,21 @@ void main() {
     expect(answer.pendingBalance, BigInt.zero);
     expect(answer.totalBalance, BigInt.zero);
   });
+
+  test('a HODLocker coin is locked balance, mined or not, and in no other number '
+      '(bead spiffyvault-mnz.1)', () async {
+    final lock = {'pluginId': 'hodlocker', 'scriptType': 'hodlocker', 'lockHeight': 900500};
+    await storage.upsertUTXO(_w, _utxo(9, 40000, pluginMetadata: lock));
+    await storage.upsertUTXO(
+        _w, _utxo(10, 2000, status: UTXOStatus.pending, provenHeight: null, pluginMetadata: lock));
+    await storage.upsertUTXO(_w, _utxo(11, 7000, status: UTXOStatus.spent, pluginMetadata: lock));
+    await storage.upsertUTXO(_w, _utxo(12, 1000));
+
+    final answer = await balance();
+    expect(answer.lockedBalance, BigInt.from(42000), reason: 'the spent lock is unlocked and gone');
+    expect(answer.totalBalance, BigInt.from(1000));
+    expect((answer.pendingBalance, answer.reservedBalance), (BigInt.zero, BigInt.zero));
+  });
 }
 
 class _Noop extends Actor {

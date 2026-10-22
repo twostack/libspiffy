@@ -295,10 +295,19 @@ class AddressDiscoveryResult {
   /// Total number of transactions found across all addresses
   final int totalTransactions;
 
+  /// The addresses the scan derived and found no history for: the gap at
+  /// the end of each chain, and any unused address between used ones.
+  ///
+  /// A key a HODLocker output is locked to has no history of its own (the
+  /// output is not a payment to its address), so an import looks for a
+  /// lock's owner among these too (bead spiffyvault-mnz.1).
+  final List<DiscoveredAddress> unusedAddresses;
+
   AddressDiscoveryResult({
     required this.usedAddresses,
     required this.lastCheckedIndex,
     required this.totalTransactions,
+    this.unusedAddresses = const [],
   });
 }
 

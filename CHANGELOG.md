@@ -4,6 +4,14 @@ Address discovery no longer counts a failed lookup as an unused address. An addr
 
 - **`AddressDiscoveryService.discoverAddresses` and `discoverAddressRange`:** throw a `DataSourceException` naming the address (an error of another type is wrapped, with it as `originalError`). An import fails with `SpiffyErrorCode.chainServiceUnreachable` and can be resumed.
 
+HODLocker coins — coins time-locked to a wallet key until a block height — are the wallet's, and a seed-phrase import finds them (bead spiffyvault-mnz.1). dartsv names the HODLocker script `hodlocker`, and the import, the SPV receive path and the recording of the wallet's own transactions had no case for it, so every such output was dropped. A locked coin is recorded as plugin-managed, so it is never selected for a payment and is in no balance but the new locked one.
+
+- **`HodlockerLock`:** reads a HODLocker script (`parseHex`, `parse`): the owner's key hash and the lock height. Every fixed byte of the contract is compared; dartsv's `ScriptPattern.isHODLocker` checks only the lengths of its leading constants. `metadata` is what a wallet's lock is recorded with (`pluginId: 'hodlocker'`, `lockHeight`, `ownerAddress`), `isLockedCoin` and `lockedSatoshis` read it back.
+- **Import:** a HODLocker output whose key is one of the wallet's is imported with its lock. The lock transaction is in the history of the address that funded it; the key it is locked to has no history of its own, so its owner is also looked for among the addresses the scan found unused, and such an address is registered with the wallet before the coin. `AddressDiscoveryResult.unusedAddresses` lists them.
+- **SPV receive and `RecordOutgoingTransactionCommand`:** a HODLocker output to a wallet key is the wallet's.
+- **`ReceiveUTXOCommand`:** a HODLocker output is refused when its key is neither a wallet nor a watch address, and is recorded with its lock whatever metadata the sender gave.
+- **`BalanceResponse.lockedBalance`, `BalanceUpdatedEvent.lockedBalance`:** the value of the wallet's HODLocker coins, mined or not; not part of `totalBalance` or any other number.
+
 ## 5.10.0
 
 Errors and import progress carry codes, for an app to say them in its own language (bead spiffyvault-9ae.5). SpiffyVault read libspiffy's English messages to tell the user what went wrong ("Insufficient funds", "ARC's policy fee rate could not be read"), and guessed an import's step from its progress. The English stays, for logs.

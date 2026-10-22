@@ -16,6 +16,7 @@ import '../../plugin/plugin_registry.dart';
 import '../../utils/network_name.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
+import '../hodlocker_lock.dart';
 import '../wallet_output_ownership.dart';
 import 'deferred_payments.dart';
 import 'outgoing_transactions.dart';
@@ -153,6 +154,22 @@ abstract final class UtxoLedger {
         'neither holds nor watches; it is not a wallet UTXO');
   }
 
+  /// The HODLocker lock [scriptPubKey] holds, after throwing when its key
+  /// is not one the wallet holds or watches (bead spiffyvault-mnz.1); null
+  /// when the script is not a HODLocker script.
+  ///
+  /// The counterpart of [rejectP2pkNotOurs] for a time-locked coin: the key
+  /// hash is compared, as the address it gives, with the wallet's.
+  static HodlockerLock? requireHodlockerOurs(WalletState currentState, String scriptPubKey, String utxoKey) {
+    if (!HodlockerLock.looksLike(scriptPubKey)) return null;
+    final lock = HodlockerLock.parseHex(scriptPubKey);
+    if (lock == null) return null;
+    final owner = lock.ownerAddress(NetworkName.toDartsv(currentState.networkType));
+    if (currentState.addresses.containsKey(owner) || currentState.watchAddresses.containsKey(owner)) return lock;
+    throw StateError('UTXO $utxoKey is a HODLocker output locked to a key the wallet '
+        'neither holds nor watches; it is not a wallet UTXO');
+  }
+
   /// The plugin metadata of a UTXO locked by [scriptPubKey] that was
   /// received with [metadata], naming the plugin that manages it (bead
   /// libspiffy-ecy8).
@@ -245,6 +262,15 @@ abstract final class UtxoLedger {
     // address the wallet holds no key for is what one is for.
     rejectP2pkNotOurs(currentState, command.scriptPubKey, utxoKey);
 
+    // Business rule: the same for a HODLocker output, which is recorded
+    // with its lock whatever the sender named (bead spiffyvault-mnz.1): the
+    // lock makes it plugin-managed, so it is locked balance and is never
+    // selected, on this layer and the read model alike.
+    final lock = requireHodlockerOurs(currentState, command.scriptPubKey, utxoKey);
+    final pluginMetadata = lock == null
+        ? command.pluginMetadata
+        : {...?command.pluginMetadata, ...lock.metadata(NetworkName.toDartsv(currentState.networkType))};
+
     // The status is the caller's (it defaults to pending) and is never
     // derived from the command's block height or confirmation count: only
     // the sender knows whether a merkle proof verified against our header
@@ -266,7 +292,7 @@ abstract final class UtxoLedger {
       blockHeight: command.blockHeight,
       confirmations: command.confirmations,
       derivationIndex: command.derivationIndex,
-      pluginMetadata: command.pluginMetadata,
+      pluginMetadata: pluginMetadata,
       // Who paid us, as the app names them (bead libspiffy-cq16). Journaled
       // verbatim and never interpreted.
       counterpartyMarker: command.counterpartyMarker,

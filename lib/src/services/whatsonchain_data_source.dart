@@ -647,7 +647,6 @@ class WhatsOnChainDataSource implements BlockchainDataSource, SpentOutputLookup 
     while (true) {
       try {
         await _waitForRateLimit();
-        await _recordRequest();
         return await apiCall().timeout(_requestTimeout);
       } catch (e) {
         if (retryCount >= _maxRetries) {
@@ -682,37 +681,29 @@ class WhatsOnChainDataSource implements BlockchainDataSource, SpentOutputLookup 
     }
   }
 
+  /// Waits for a place among the last second's [_requestsPerSecondLimit]
+  /// requests. The place is taken under the lock, so requests made at the
+  /// same time (an import fetches a transaction's parents in parallel) each
+  /// get their own: checking under the lock and recording after it let them
+  /// all through together.
   Future<void> _waitForRateLimit() async {
-    final now = DateTime.now();
-
-    await _rateLimitLock.synchronized(() {
-      _recentRequests.removeWhere(
-        (requestTime) => now.difference(requestTime).inMilliseconds > 1000,
-      );
+    final wait = await _rateLimitLock.synchronized(() {
+      final now = DateTime.now();
+      _recentRequests.removeWhere((at) => now.difference(at).inMilliseconds > 1000);
+      var at = now;
+      if (_recentRequests.length >= _requestsPerSecondLimit) {
+        final freed = _recentRequests[_recentRequests.length - _requestsPerSecondLimit]
+            .add(const Duration(milliseconds: 1050));
+        if (freed.isAfter(at)) at = freed;
+      }
+      _recentRequests.add(at);
+      return at.difference(now);
     });
 
-    if (_recentRequests.length < _requestsPerSecondLimit) {
-      return;
+    if (wait > Duration.zero) {
+      _logger.fine('Rate limit approaching, waiting ${wait.inMilliseconds}ms');
+      await Future.delayed(wait);
     }
-
-    final oldestAllowedRequest = await _rateLimitLock.synchronized(() {
-      return _recentRequests.first;
-    });
-
-    final timeToWait =
-        1000 - now.difference(oldestAllowedRequest).inMilliseconds + 50;
-
-    if (timeToWait > 0) {
-      _logger.fine('Rate limit approaching, waiting ${timeToWait}ms');
-      await Future.delayed(Duration(milliseconds: timeToWait));
-    }
-  }
-
-  Future<void> _recordRequest() async {
-    final now = DateTime.now();
-    await _rateLimitLock.synchronized(() {
-      _recentRequests.add(now);
-    });
   }
 
   /// Close the HTTP client

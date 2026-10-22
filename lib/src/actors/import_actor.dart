@@ -75,6 +75,9 @@ class ImportActor extends Actor {
   /// apply). `ask` timeouts are this plus [_askSlack] so dactor's own timeout
   /// never fires before the awaiter's (see the coordinator actors).
   final Duration _ackTimeout;
+
+  /// How many of a transaction's parents are fetched at the same time.
+  static const _parentFetchConcurrency = 6;
   static const Duration _askSlack = Duration(seconds: 2);
 
   // Track import state
@@ -813,6 +816,35 @@ class ImportActor extends Actor {
     );
   }
 
+  /// The raw transactions [txids] name, from storage when it holds them,
+  /// otherwise fetched, [_parentFetchConcurrency] at a time (the data
+  /// source keeps to its own rate limit). A parent that cannot be had is
+  /// left out, and its inputs are not counted.
+  Future<Map<String, String>> _fetchParents(Set<String> txids) async {
+    final pending = txids.toList();
+    final found = <String, String>{};
+    Future<void> worker() async {
+      while (pending.isNotEmpty && !_isCancelled) {
+        final txid = pending.removeLast();
+        try {
+          final cached = await _storage.getTransaction(txid);
+          if (cached != null && cached.rawHex.isNotEmpty) {
+            found[txid] = cached.rawHex;
+            _logger.fine('      ✓ Cache hit for parent tx: $txid');
+          } else {
+            found[txid] = await _dataSource.getRawTransaction(txid);
+            _logger.fine('      ✗ Cache miss, fetched from API: $txid');
+          }
+        } catch (e) {
+          _logger.warning('      ⚠️  Failed to fetch parent tx $txid: $e');
+        }
+      }
+    }
+
+    await _cancellable(Future.wait([for (var i = 0; i < _parentFetchConcurrency; i++) worker()]));
+    return found;
+  }
+
   /// Process a single imported transaction
   ///
   /// Returns list of UTXO maps found in this transaction
@@ -824,18 +856,6 @@ class ImportActor extends Actor {
   ) async {
     final importedUtxos = <Map<String, dynamic>>[];
     final walletId = message.walletId;
-
-    // Register the acknowledgement we will wait on BEFORE any command for
-    // this transaction is sent: the projection applying TransactionImportedEvent
-    // (which follows the UTXO events in order), or, without a projection, the
-    // aggregate's TransactionRecordedResponse delivered to this mailbox.
-    final applied = _awaitApplied((e) =>
-        e is TransactionImportedEvent && e.walletId == walletId && e.txid == tx.txid);
-    Completer<TransactionRecordedResponse>? recordAck;
-    if (applied == null) {
-      recordAck = Completer<TransactionRecordedResponse>();
-      _pendingRecordAcks[tx.txid] = recordAck;
-    }
 
     // Parse transaction to extract data (BEEF already has this parsed)
     final parsedTx = tx.transaction;
@@ -862,24 +882,18 @@ class ImportActor extends Actor {
     final ancestors = <BeefAncestor>[];
     final ancestorTxids = <String>{};
 
-    // Fetch parent transactions for each input to get values and addresses
+    // Fetch parent transactions for each input to get values and addresses:
+    // all of them first, several at a time, each once (a transaction with
+    // 162 inputs took 94 seconds one by one).
+    final parents = await _fetchParents({for (final input in parsedTx.inputs) input.prevTxnId.toString()});
     for (final input in parsedTx.inputs) {
       try {
         final prevTxid = input.prevTxnId.toString();
         final prevVout = input.prevTxnOutputIndex;
 
-        // Fetch parent transaction - check database cache first
-        dartsv.Transaction parentTx;
-        final String parentRawHex;
-        final cachedTx = await _storage.getTransaction(prevTxid);
-        if (cachedTx != null && cachedTx.rawHex.isNotEmpty) {
-          parentRawHex = cachedTx.rawHex;
-          _logger.fine('      ✓ Cache hit for parent tx: $prevTxid');
-        } else {
-          parentRawHex = await _dataSource.getRawTransaction(prevTxid);
-          _logger.fine('      ✗ Cache miss, fetched from API: $prevTxid');
-        }
-        parentTx = dartsv.Transaction.fromHex(parentRawHex);
+        final parentRawHex = parents[prevTxid];
+        if (parentRawHex == null) continue;
+        final parentTx = dartsv.Transaction.fromHex(parentRawHex);
         if (ancestorTxids.add(prevTxid)) {
           ancestors.add(BeefAncestor(txid: prevTxid, rawHex: parentRawHex));
         }
@@ -911,7 +925,7 @@ class ImportActor extends Actor {
           }
         }
       } catch (e) {
-        _logger.warning('      ⚠️  Failed to fetch parent tx for input: $e');
+        _logger.warning('      ⚠️  Failed to read parent tx for input: $e');
         // Continue processing other inputs
       }
     }
@@ -938,6 +952,20 @@ class ImportActor extends Actor {
       _logger.fine('         Input spends: $prevTxid:$prevVout');
     }
     final spentUtxos = await _findSpentWalletUTXOs(parsedTx, message.walletId);
+
+    // Register the acknowledgement we will wait on BEFORE any command for
+    // this transaction is sent: the projection applying TransactionImportedEvent
+    // (which follows the UTXO events in order), or, without a projection, the
+    // aggregate's TransactionRecordedResponse delivered to this mailbox. Not
+    // before the parents are fetched: the projection's timeout runs from
+    // here, and fetching a large transaction's parents outlasted it.
+    final applied = _awaitApplied((e) =>
+        e is TransactionImportedEvent && e.walletId == walletId && e.txid == tx.txid);
+    Completer<TransactionRecordedResponse>? recordAck;
+    if (applied == null) {
+      recordAck = Completer<TransactionRecordedResponse>();
+      _pendingRecordAcks[tx.txid] = recordAck;
+    }
 
     if (spentUtxos.isNotEmpty) {
       _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');

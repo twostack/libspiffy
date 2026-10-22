@@ -1,4 +1,4 @@
-## Unreleased
+## 5.11.0
 
 Address discovery no longer counts a failed lookup as an unused address. An address whose history could not be read (after the data source's own retries) ended a chain's scan exactly as a real gap would, so an outage or a run of rate-limit errors during an import left every address past it unfound, with nothing to say so.
 

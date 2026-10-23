@@ -28,6 +28,7 @@ const goldenTypeNames = <String, String>{
   'AnchorKeyIssuedEvent': 'wallet.anchor_key.issued',
   'Type42AddressRecordedEvent': 'wallet.type42_address.recorded',
   'Type42DestinationDerivedEvent': 'wallet.type42_destination.derived',
+  'LockKeyAddedEvent': 'wallet.lock_key.added',
   'UTXOReceivedEvent': 'wallet.utxo.received',
   'UTXOMarkedAvailableEvent': 'wallet.utxo.marked_available',
   'UTXOSpentEvent': 'wallet.utxo.spent',
@@ -92,7 +93,12 @@ const _senderKey = '02dfcbe35d95b55b5f3168ea8f12717e266ceddf88d04d2ff741272dfb0e
 /// Event types added after the journal stored stable identifiers (audit
 /// 2026-09-14 M8): no release ever stored them under their class name, so
 /// they are registered without a class-name alias.
-const _bornWithStableIds = {'AnchorKeyIssuedEvent', 'Type42AddressRecordedEvent', 'Type42DestinationDerivedEvent'};
+const _bornWithStableIds = {
+  'AnchorKeyIssuedEvent',
+  'Type42AddressRecordedEvent',
+  'Type42DestinationDerivedEvent',
+  'LockKeyAddedEvent',
+};
 
 /// The samples a journal written before M8 could hold.
 Iterable<MapEntry<String, Event>> _legacySamples() =>
@@ -124,6 +130,7 @@ Map<String, Event> sampleEvents() => <String, Event>{
       'WatchAddressAddedEvent': WatchAddressAddedEvent(
           walletId: _w, address: 'addr', scriptType: 'p2pkh', label: 'l',
           registeredAt: _t, reconciled: true, timestamp: _t, version: 6),
+      'LockKeyAddedEvent': LockKeyAddedEvent(walletId: _w, address: 'addr', timestamp: _t, version: 6),
       'AnchorKeyIssuedEvent': AnchorKeyIssuedEvent(
           walletId: _w, anchorPublicKey: _senderKey, anchorContext: '010203', timestamp: _t, version: 6),
       'Type42AddressRecordedEvent': Type42AddressRecordedEvent(

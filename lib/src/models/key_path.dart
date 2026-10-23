@@ -279,6 +279,28 @@ final class Type42KeyPath extends KeyPath {
   String toString() => derivation.toString();
 }
 
+/// A key the wallet holds outside its HD tree, by its [address]: a lock key
+/// another application derived from the same seed (bead spiffyvault-mnz.5),
+/// such as RelayX's paymail key that hodlocker.com locked coins to. Its
+/// private key is in secure storage; the wallet only signs with it.
+final class LockKeyPath extends KeyPath {
+  final String address;
+
+  const LockKeyPath(this.address);
+
+  @override
+  int? get derivationIndex => null;
+
+  @override
+  bool operator ==(Object other) => other is LockKeyPath && other.address == address;
+
+  @override
+  int get hashCode => address.hashCode;
+
+  @override
+  String toString() => 'lock key $address';
+}
+
 /// Where a wallet's anchor key for a context sits in its HD tree: the rule
 /// the wallet derives its anchors by, public so a tool working from a
 /// wallet's seed (a backup's recovery, say) finds the same anchors.

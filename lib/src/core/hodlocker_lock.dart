@@ -129,6 +129,28 @@ final class HodlockerLock {
   /// Whether a transaction with nLockTime [height] can spend the coin.
   bool isSpendableAt(int height) => height >= lockHeight;
 
+  /// The signed size, in bytes, of the transaction that unlocks a coin
+  /// locked by a script of [lockingScriptLength] bytes: the coin as its one
+  /// input, unlocked with `<signature> <public key> <preimage>` at the
+  /// signature's largest (73 bytes), and one P2PKH output. The preimage
+  /// holds the whole locking script, so it is most of the size; an unlock
+  /// costs that rate's fee on this size (bead spiffyvault-mnz.7).
+  static int unlockSize(int lockingScriptLength) {
+    // version, 1 input with an empty script, 1 P2PKH output, nLockTime
+    const unsigned = 4 + 1 + (32 + 4 + 1 + 4) + 1 + (8 + 1 + 25) + 4;
+    // BIP143: version, prevouts, sequences, outpoint, script code, amount,
+    // sequence, outputs, nLockTime, sighash type
+    final preimage = 4 + 32 + 32 + 36 + _varIntSize(lockingScriptLength) + lockingScriptLength + 8 + 4 + 32 + 4 + 4;
+    final unlocking = (1 + 73) + (1 + 33) + _pushPrefix(preimage) + preimage;
+    return unsigned + unlocking + _varIntSize(unlocking) - 1;
+  }
+
+  /// The bytes of the push opcode for [length] bytes of data.
+  static int _pushPrefix(int length) => length < 0x4c ? 1 : length <= 0xff ? 2 : length <= 0xffff ? 3 : 5;
+
+  /// The bytes of a Bitcoin varint holding [value].
+  static int _varIntSize(int value) => value < 0xfd ? 1 : value <= 0xffff ? 3 : value <= 0xffffffff ? 5 : 9;
+
   @override
   bool operator ==(Object other) =>
       other is HodlockerLock && other.pubKeyHashHex == pubKeyHashHex && other.lockHeight == lockHeight;

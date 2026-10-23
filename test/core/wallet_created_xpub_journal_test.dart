@@ -80,7 +80,7 @@ void main() {
     final envelopes = await store.isar.eventEnvelopes.where().findAll();
     return envelopes
         .where((e) => e.persistenceId == 'Wallet_$walletId')
-        .expand((e) => e.eventData)
+        .expand((e) => e.payload)
         .toList();
   }
 

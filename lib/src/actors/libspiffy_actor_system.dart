@@ -644,6 +644,7 @@ class LibSpiffyActorSystem {
         aliases: const ['WatchAddressAddedEvent']);
     // Type-42 payments (beads libspiffy-zxkd, libspiffy-fdal)
     EventRegistry.register<AnchorKeyIssuedEvent>(AnchorKeyIssuedEvent.stableTypeName, AnchorKeyIssuedEvent.fromMap);
+    EventRegistry.register<LockKeyAddedEvent>(LockKeyAddedEvent.stableTypeName, LockKeyAddedEvent.fromMap);
     EventRegistry.register<Type42AddressRecordedEvent>(
         Type42AddressRecordedEvent.stableTypeName, Type42AddressRecordedEvent.fromMap);
     EventRegistry.register<Type42DestinationDerivedEvent>(
@@ -1053,6 +1054,7 @@ class LibSpiffyActorSystem {
         required String walletName,
         String networkType = 'test',
         int addressGapLimit = 20,
+        List<String> lockKeyWifs = const [],
       }) {
         importWalletFromXpriv(
           walletId: walletId,
@@ -1060,6 +1062,7 @@ class LibSpiffyActorSystem {
           walletName: walletName,
           networkType: networkType,
           addressGapLimit: addressGapLimit,
+          lockKeyWifs: lockKeyWifs,
         );
       } : null,
       importWalletFromWif: _importActor != null ? ({
@@ -1523,6 +1526,7 @@ class LibSpiffyActorSystem {
     required String walletName,
     String networkType = 'test',
     int addressGapLimit = 20,
+    List<String> lockKeyWifs = const [],
   }) {
     if (_importActor == null) {
       throw StateError('ImportActor not available. Did you provide a blockchainDataSource during initialization?');
@@ -1534,6 +1538,7 @@ class LibSpiffyActorSystem {
       walletName: walletName,
       networkType: networkType,
       addressGapLimit: addressGapLimit,
+      lockKeyWifs: lockKeyWifs,
     );
     
     _importActor!.tell(importMessage);

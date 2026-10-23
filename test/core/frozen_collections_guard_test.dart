@@ -100,8 +100,9 @@ const _sources = <String, String?>{
 /// back to a wallet imported again (`.derivations` of both
 /// `RecordType42DestinationsCommand`s, `Type42DestinationsRecordedResponse
 /// .addresses` and `.journaled`, `Type42DestinationsRecordedEvent
-/// .addresses`).
-const _expectedFields = 189;
+/// .addresses`), 190 with lock keys given to an imported wallet
+/// (spiffyvault-mnz.5: `ImportWalletCommand.lockKeyWifs`).
+const _expectedFields = 190;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

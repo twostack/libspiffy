@@ -60,7 +60,7 @@ void main() {
   tearDown(() => system.shutdown());
 
   /// Imports the wallet whose root address received [tx].
-  Future<WalletImportNotification> runImport(dartsv.Transaction tx) async {
+  Future<WalletImportNotification> runImport(dartsv.Transaction tx, {List<String> lockKeyWifs = const []}) async {
     final walletManagerRef = await system.spawn('wm', () => walletManager);
     final terminal = Completer<WalletImportNotification>();
     await system.spawn(
@@ -82,6 +82,7 @@ void main() {
           walletName: 'w',
           networkType: 'test',
           addressGapLimit: 2,
+          lockKeyWifs: lockKeyWifs,
         )));
     return terminal.future.timeout(const Duration(seconds: 30));
   }
@@ -133,6 +134,23 @@ void main() {
     final lock = walletManager.commands.whereType<ReceiveUTXOCommand>().firstWhere((c) => c.vout == 0);
     expect(lock.address, lockAddress);
     expect(lock.pluginMetadata?['pluginId'], 'hodlocker');
+  });
+
+  test('a lock to a lock key handed over with the import is the wallet\'s (bead spiffyvault-mnz.5)', () async {
+    final lockKey = dartsv.SVPrivateKey.fromHex('7a' * 32, dartsv.NetworkType.TEST);
+    final lockAddress = lockKey.publicKey.toAddress(dartsv.NetworkType.TEST).toBase58();
+    final tx = txWith([(500000000, lockTo(lockAddress)), (10000, p2pkh(_rootAddress))]);
+
+    final end = await runImport(tx, lockKeyWifs: [lockKey.toWIF()]);
+
+    expect(end, isA<WalletImportCompletedEvent>());
+    final added = walletManager.commands.whereType<AddLockKeyCommand>().single;
+    expect(added.wif, lockKey.toWIF());
+    final lock = walletManager.commands.whereType<ReceiveUTXOCommand>().singleWhere((c) => c.vout == 0);
+    expect(lock.address, lockAddress);
+    expect(lock.pluginMetadata?['pluginId'], 'hodlocker');
+    expect(walletManager.commands.indexOf(added), lessThan(walletManager.commands.indexOf(lock)),
+        reason: 'the wallet holds the key when it takes the coin on');
   });
 
   test('a lock to a key that is not the wallet\'s is not imported', () async {
@@ -209,6 +227,13 @@ class _RecordingWalletManager extends Actor {
       commands.add(command);
       if (command is RegisterDiscoveredAddressCommand) {
         registeredAddresses.add(command.address);
+      } else if (command is AddLockKeyCommand) {
+        context.sender?.tell(LockKeyAddedResponse(
+          walletId: command.walletId,
+          address: dartsv.SVPrivateKey.fromWIF(command.wif).publicKey.toAddress(dartsv.NetworkType.TEST).toBase58(),
+          success: true,
+          journaled: true,
+        ));
       } else if (command is ReceiveUTXOCommand) {
         context.sender?.tell(UTXOReceivedResponse(
             walletId: command.walletId, txid: command.txid, vout: command.vout, success: true));

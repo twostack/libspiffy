@@ -18,6 +18,7 @@ import '../../models/address_chain.dart';
 import '../../models/brc100_key_request.dart';
 import '../../models/key_path.dart';
 import '../../models/wallet_state.dart';
+import '../../models/persistent_map.dart';
 import '../../models/wallet_type.dart';
 import '../../services/crypto_service.dart';
 import '../../storage/secure_storage.dart';
@@ -75,10 +76,15 @@ class WalletKeys {
         'wallet_mnemonic_$walletId',
         passphraseKey(walletId),
         hdPubKeyKey(walletId),
+        lockKeysKey(walletId),
       ];
 
   static String passphraseKey(String walletId) => 'wallet_passphrase_$walletId';
   static String hdPubKeyKey(String walletId) => 'wallet_hdpubkey_$walletId';
+
+  /// The wallet's lock keys (AddLockKeyCommand): a JSON object, address ->
+  /// WIF.
+  static String lockKeysKey(String walletId) => 'wallet_lockkeys_$walletId';
 
   /// Store key material in secure storage BEFORE the WalletCreatedEvent is
   /// persisted (audit 2026-09-14 H4). Writing the secrets after the event
@@ -524,6 +530,77 @@ class WalletKeys {
   String _p2pkh(dartsv.SVPublicKey key, WalletState currentState) =>
       key.toAddress(NetworkName.toDartsv(currentState.networkType)).toBase58();
 
+  // ---------------------------------------------------------------------------
+  // Lock keys (bead spiffyvault-mnz.5)
+  // ---------------------------------------------------------------------------
+
+  /// The addresses of the lock keys the wallet took.
+  static Set<String> lockKeyAddresses(Map<String, dynamic> metadata) => {
+        if (metadata[WalletMetadataKeys.lockKeys] case final Map records)
+          for (final address in records.keys)
+            if (address is String) address,
+      };
+
+  Future<Map<String, String>> _storedLockKeys(String walletId) async {
+    final json = await secureStorage.getString(lockKeysKey(walletId));
+    if (json == null || json.isEmpty) return {};
+    return {for (final MapEntry(:key, :value) in (jsonDecode(json) as Map).entries) key as String: value as String};
+  }
+
+  /// Takes the lock key [command] hands over: stores it in secure storage
+  /// BEFORE the event is persisted (as [storeKeyMaterial] does), and a
+  /// [LockKeyAddedEvent] for it unless the wallet holds it already.
+  Future<({List<Event> events, String address})> addLockKey(
+      WalletState currentState, AddLockKeyCommand command) async {
+    if (currentState.walletType == WalletType.xpub) {
+      throw StateError('Wallet ${command.walletId} is watch-only and cannot hold a lock key');
+    }
+    final dartsv.SVPrivateKey key;
+    try {
+      key = dartsv.SVPrivateKey.fromWIF(command.wif);
+    } catch (e) {
+      throw ArgumentError('The lock key is not a WIF-encoded private key: $e');
+    }
+    final mainnet = NetworkName.isMainnet(currentState.networkType);
+    if ((key.networkType == dartsv.NetworkType.MAIN) != mainnet) {
+      throw ArgumentError('The lock key is for another network than wallet ${command.walletId} '
+          '(${currentState.networkType})');
+    }
+    final address = _p2pkh(key.publicKey, currentState);
+    final held = lockKeyAddresses(currentState.metadata).contains(address);
+    if (!held && (currentState.addresses.containsKey(address) || currentState.watchAddresses.containsKey(address))) {
+      throw StateError('The lock key\'s address $address is already one of wallet ${command.walletId}\'s');
+    }
+    final stored = await _storedLockKeys(command.walletId);
+    if (stored[address] != command.wif) {
+      await secureStorage.setString(lockKeysKey(command.walletId), jsonEncode({...stored, address: command.wif}));
+    }
+    if (held) return (events: const <Event>[], address: address);
+    return (
+      events: <Event>[
+        LockKeyAddedEvent(walletId: command.walletId, address: address, version: currentState.version + 1),
+      ],
+      address: address,
+    );
+  }
+
+  /// The private key of the wallet's lock key at [address].
+  Future<dartsv.SVPrivateKey> lockKey(String walletId, String address) async {
+    final wif = (await _storedLockKeys(walletId))[address];
+    if (wif == null) throw StateError('Lock key $address of wallet $walletId is not in secure storage');
+    return dartsv.SVPrivateKey.fromWIF(wif);
+  }
+
+  /// Records the lock key [event] journals: its address is one of the
+  /// wallet's.
+  static void applyLockKeyAdded(WalletStateBuilder state, LockKeyAddedEvent event) {
+    state.addresses = state.addresses.put(event.address, 'Lock key');
+    final records = state.metadata[WalletMetadataKeys.lockKeys];
+    state.metadata = state.metadata.put(
+        WalletMetadataKeys.lockKeys,
+        (records is Map ? freezeMap(records) : PersistentMap<String, dynamic>.empty()).put(event.address, true));
+  }
+
   /// The addresses [command]'s derivations give from the wallet's own anchor
   /// key, in the command's order, and a [Type42AddressRecordedEvent] for
   /// each the wallet has not recorded yet.
@@ -686,6 +763,7 @@ class WalletKeys {
         HdKeyPath(:final derivationIndex, :final chain) =>
           privateKeyAtIndex(walletId, derivationIndex, currentState, chain: chain),
         Type42KeyPath(:final derivation) => type42ChildKey(walletId, currentState, derivation),
+        LockKeyPath(:final address) => lockKey(walletId, address),
       };
 
   /// Retrieve the private key for a given address from secure storage
@@ -709,6 +787,10 @@ class WalletKeys {
       return type42ChildKey(walletId, currentState, derivation);
     }
     if (keyPath is Type42KeyPath) return type42ChildKey(walletId, currentState, keyPath.derivation);
+    // A lock key is signed for with its stored key, whatever path is named.
+    if (keyPath is LockKeyPath || lockKeyAddresses(currentState.metadata).contains(address)) {
+      return lockKey(walletId, address);
+    }
     final hdPath = keyPath as HdKeyPath?;
     final derivationIndex = hdPath?.derivationIndex;
     final chain = hdPath?.chain;

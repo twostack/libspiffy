@@ -1128,6 +1128,28 @@ class WatchAddressAddedResponse extends ActorResponse {
   }) : super(metadata: {'walletId': walletId, 'address': address, 'success': success});
 }
 
+/// Reply of the wallet aggregate to AddLockKeyCommand (bead
+/// spiffyvault-mnz.5): the lock key's [address].
+class LockKeyAddedResponse extends ActorResponse {
+  final String walletId;
+  final String? address;
+  @override
+  final bool success;
+
+  /// False when the wallet held the key already.
+  final bool journaled;
+  @override
+  final String? error;
+
+  LockKeyAddedResponse({
+    required this.walletId,
+    this.address,
+    required this.success,
+    this.journaled = false,
+    this.error,
+  }) : super(metadata: {'walletId': walletId, 'address': address, 'success': success});
+}
+
 /// Reply of the wallet aggregate to RecordDelegatedAddressesCommand (bead
 /// libspiffy-m8qu): the address of each requested index, in order, and
 /// those it journaled (the others it had recorded already).

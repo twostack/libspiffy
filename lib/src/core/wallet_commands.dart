@@ -515,6 +515,32 @@ class AddWatchAddressCommand extends WalletCommand {
   String get commandType => 'AddWatchAddressCommand';
 }
 
+/// Gives the wallet a lock key (bead spiffyvault-mnz.5): a private key
+/// outside its HD tree that HODLocker coins may be locked to, such as the
+/// RelayX paymail key at `m/0'/236'/0'/0/0` of a RelayX seed. The key is kept
+/// in secure storage, never in an event; a LockKeyAddedEvent journals its
+/// address, which is then one of the wallet's: a HODLocker output locked to
+/// it is the wallet's, and the wallet signs its unlock with the key.
+///
+/// Idempotent: a key the wallet holds already journals nothing. Refused for
+/// a key of another network, or one whose address the wallet holds already
+/// another way. Answered with a LockKeyAddedResponse.
+class AddLockKeyCommand extends WalletCommand {
+  /// The private key, WIF-encoded.
+  final String wif;
+
+  AddLockKeyCommand({
+    required String walletId,
+    required this.wif,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'AddLockKeyCommand';
+}
+
 /// A watch address the read model recorded before watch addresses were
 /// journaled (an address row with purpose `watch`).
 class LegacyWatchAddress {

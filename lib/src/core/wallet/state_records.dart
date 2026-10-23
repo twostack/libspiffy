@@ -38,6 +38,10 @@ abstract final class WalletMetadataKeys {
   /// recorded and settled with a BEEF (`TransactionAncestorsRecordedEvent`).
   static const String settledAncestors = 'settledAncestors';
 
+  /// address -> true for each lock key the wallet took (AddLockKeyCommand):
+  /// addresses signed for with a key outside the HD tree.
+  static const String lockKeys = 'lock_keys';
+
   /// address -> derivation index (signing key lookup).
   static const String addressIndices = 'address_indices';
 

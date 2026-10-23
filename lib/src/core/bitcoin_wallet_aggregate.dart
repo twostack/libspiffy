@@ -583,6 +583,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
+    } else if (command is AddLockKeyCommand) {
+      sender.tell(LockKeyAddedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is RecordType42AddressesCommand) {
       sender.tell(Type42AddressesRecordedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is RecordType42DestinationsCommand) {
@@ -644,6 +646,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return AddressBook.registerDiscoveredAddress(currentState, cmd);
       case final AddWatchAddressCommand cmd:
         return AddressBook.addWatchAddress(currentState, cmd);
+      case final AddLockKeyCommand cmd:
+        final added = await _keys.addLockKey(currentState, cmd);
+        // Sent once the key is journaled, and also when the wallet held it
+        // already (nothing to journal).
+        if (_replyTo(cmd) != null) {
+          _repliesAwaitingPersist[cmd.commandId] = LockKeyAddedResponse(
+            walletId: cmd.walletId,
+            address: added.address,
+            success: true,
+            journaled: added.events.isNotEmpty,
+          );
+        }
+        return added.events;
       case final RecordDelegatedAddressesCommand cmd:
         final recorded = await _keys.recordDelegatedAddresses(currentState, cmd);
         // Sent once the addresses are journaled, and also when every one
@@ -855,6 +870,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         Type42Book.applyAnchorKeyIssued(state, evt);
       case final Type42AddressRecordedEvent evt:
         Type42Book.applyAddressRecorded(state, evt);
+      case final LockKeyAddedEvent evt:
+        WalletKeys.applyLockKeyAdded(state, evt);
       case final Type42DestinationDerivedEvent evt:
         Type42Book.applyDestinationDerived(state, evt);
       case final TransactionImportedEvent evt:

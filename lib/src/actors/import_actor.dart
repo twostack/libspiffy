@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
@@ -104,6 +105,14 @@ class ImportActor extends Actor {
   /// Aggregate acknowledgements awaited when no wallet projection is wired.
   final Map<String, Completer<TransactionRecordedResponse>> _pendingRecordAcks = {};
 
+  /// The wallet's answer to the AddLockKeyCommand sent last, while one is
+  /// awaited.
+  Completer<LockKeyAddedResponse>? _pendingLockKey;
+
+  /// The addresses of the wallet's lock keys: a HODLocker output locked to
+  /// one is the wallet's.
+  Set<String> _lockKeyAddresses = {};
+
   ImportActor({
     required BlockchainDataSource dataSource,
     required ReadModelStorage storage,
@@ -142,6 +151,9 @@ class ImportActor extends Actor {
         _handleCancelImport(message);
       } else if (message is ImportProgressQuery) {
         _handleProgressQuery();
+      } else if (message is LockKeyAddedResponse) {
+        final pending = _pendingLockKey;
+        if (pending != null && !pending.isCompleted) pending.complete(message);
       } else if (message is TransactionRecordedResponse) {
         if (message.success) {
           _logger.info('✅ Transaction recorded: ${message.txid}');
@@ -232,6 +244,8 @@ class ImportActor extends Actor {
         key = (xpriv: message.xpriv, wif: message.wif);
       }
       _throwIfCancelled();
+      await _addLockKeys(message);
+      _throwIfCancelled();
 
       _logger.info('🔍 Phase 2/4: Discovering addresses...');
       final discoveredAddresses = message.addresses != null
@@ -304,6 +318,39 @@ class ImportActor extends Actor {
   // ===========================================================================
   // PHASES
   // ===========================================================================
+
+  /// Gives the wallet the lock keys [message] hands over, and learns the
+  /// addresses of all it holds (bead spiffyvault-mnz.5). A key the wallet
+  /// refuses is logged and left out: the import goes on without it.
+  Future<void> _addLockKeys(ImportWalletMessage message) async {
+    final addresses = <String>{};
+    for (final wif in message.lockKeyWifs) {
+      final reply = _pendingLockKey = Completer<LockKeyAddedResponse>();
+      _walletManagerActor.tell(
+        WalletCommandMessage(message.walletId, AddLockKeyCommand(walletId: message.walletId, wif: wif)),
+        sender: context.self,
+      );
+      try {
+        final added = await _cancellable(reply.future.timeout(_ackTimeout));
+        if (added.success && added.address != null) {
+          addresses.add(added.address!);
+          _logger.info('   🔑 Lock key ${added.address} ${added.journaled ? 'added' : 'held already'}');
+        } else {
+          _logger.warning('   ⚠️  The wallet refused a lock key: ${added.error}');
+        }
+      } on TimeoutException {
+        _logger.warning('   ⚠️  No answer to a lock key within $_ackTimeout; going on without it');
+      } finally {
+        _pendingLockKey = null;
+      }
+    }
+    // A resumed import gets no keys handed over: the wallet holds them.
+    final stored = await _secureStorage?.getString(WalletKeys.lockKeysKey(message.walletId));
+    if (stored != null && stored.isNotEmpty) {
+      addresses.addAll((jsonDecode(stored) as Map).keys.whereType<String>());
+    }
+    _lockKeyAddresses = addresses;
+  }
 
   Future<void> _createWallet(ImportWalletMessage message) async {
     final importType = message.xpriv != null ? 'xpriv' : 'wif';
@@ -1058,7 +1105,8 @@ class ImportActor extends Actor {
           }
           final network = NetworkName.toDartsv(message.networkType);
           outputAddress = lock.ownerAddress(network);
-          belongsToWallet = allAddresses.any((a) => a.address == outputAddress);
+          belongsToWallet = allAddresses.any((a) => a.address == outputAddress) ||
+              _lockKeyAddresses.contains(outputAddress);
           final unused = _unusedAddresses[outputAddress];
           if (!belongsToWallet && unused != null) {
             _logger.info('            🔒 Lock key is unused address m/${unused.chain.index}/${unused.derivationIndex}; registering it');
@@ -1427,6 +1475,12 @@ class ImportWalletMessage implements Message {
   /// discovering its addresses up to the gap limit.
   final List<String>? addresses;
 
+  /// Lock keys (WIF) to give the wallet before the scan (bead
+  /// spiffyvault-mnz.5): keys outside its HD tree that HODLocker coins in
+  /// its history may be locked to. The application derives them from the
+  /// seed, such as RelayX's paymail key.
+  final List<String> lockKeyWifs;
+
   ImportWalletMessage({
     required this.walletId,
     this.xpriv,
@@ -1436,6 +1490,7 @@ class ImportWalletMessage implements Message {
     this.addressGapLimit = 20,
     this.resume = false,
     this.addresses,
+    this.lockKeyWifs = const [],
   })  : assert(
           resume
               ? (xpriv == null && wif == null)

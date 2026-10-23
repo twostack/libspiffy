@@ -675,6 +675,50 @@ class WatchAddressAddedEvent extends WalletEvent {
       );
 }
 
+/// The wallet took a lock key (bead spiffyvault-mnz.5): [address] is the
+/// P2PKH address of a private key outside its HD tree, kept in secure
+/// storage. The address is one of the wallet's from now on, signed for with
+/// that key.
+class LockKeyAddedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.lock_key.added';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String address;
+
+  LockKeyAddedEvent({
+    required String walletId,
+    required this.address,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {'address': address};
+
+  static LockKeyAddedEvent fromMap(Map<String, dynamic> map) => LockKeyAddedEvent(
+        walletId: map['walletId'] as String,
+        address: map['address'] as String,
+        eventId: map['eventId'] as String?,
+        timestamp: map['timestamp'] == null
+            ? null
+            : (map['timestamp'] is DateTime ? map['timestamp'] as DateTime : DateTime.parse(map['timestamp'] as String)),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
 /// A payer's type-42 address was recorded (bead libspiffy-zxkd): [address]
 /// is the anchor key's type-42 child for [derivation], which the wallet
 /// derived itself from its anchor private key. The wallet signs for it with

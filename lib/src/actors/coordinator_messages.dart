@@ -219,6 +219,13 @@ class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
   /// it has recorded are skipped, so the scan can be repeated.
   final List<String>? addresses;
 
+  /// With [xpriv]: lock keys (WIF) outside the account the wallet is given
+  /// before the scan (bead spiffyvault-mnz.5), so HODLocker coins in its
+  /// history that are locked to one are found as its own and can be
+  /// unlocked. An application derives them from the seed the account came
+  /// from, such as RelayX's paymail key at `m/0'/236'/0'/0/0`.
+  final List<String> lockKeyWifs;
+
   ImportWalletCommand({
     required this.walletId,
     required this.walletName,
@@ -229,8 +236,10 @@ class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
     this.networkType = 'test',
     this.resume = false,
     List<String>? addresses,
+    List<String> lockKeyWifs = const [],
     super.requestId,
-  }) : addresses = frozenListOrNull(addresses);
+  })  : addresses = frozenListOrNull(addresses),
+        lockKeyWifs = frozenList(lockKeyWifs);
 
   @override
   Duration get replyTimeout => CoordinatorRequest.importTimeout;
@@ -942,6 +951,21 @@ class UnlockCoinsCommand extends CoordinatorRequest<CoinsUnlockedEvent> {
   Duration get replyTimeout => CoordinatorRequest.paymentTimeout + CoordinatorRequest.networkTimeout;
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'utxoKey': utxoKey};
+}
+
+/// Quote the fee of unlocking a coin locked by a HODLocker script of
+/// [lockingScriptLength] bytes (bead spiffyvault-mnz.7): ARC's policy rate
+/// on [HodlockerLock.unlockSize]. A locked coin worth no more than this
+/// cannot be unlocked; [UnlockCoinsCommand] refuses it. Nothing is built.
+class QuoteUnlockFeeCommand extends CoordinatorRequest<UnlockFeeQuotedEvent> {
+  final int lockingScriptLength;
+
+  QuoteUnlockFeeCommand({required this.lockingScriptLength, super.requestId});
+
+  @override
+  Duration get replyTimeout => CoordinatorRequest.networkTimeout;
+  @override
+  Map<String, dynamic> get metadata => {'lockingScriptLength': lockingScriptLength};
 }
 
 /// Settle a BEEF by broadcasting all unsettled transactions (hasMerkle=false)
@@ -3792,6 +3816,34 @@ class CoinsLockedEvent extends CoordinatorReply {
 
   @override
   String? get failure => success ? null : error ?? 'The coins were not locked';
+}
+
+/// Answer to [QuoteUnlockFeeCommand]: the [fee] of one unlock, in
+/// satoshis, at ARC's policy rate. [fee] is null when the rate could not
+/// be read ([error] says why).
+class UnlockFeeQuotedEvent extends CoordinatorReply {
+  @override
+  String? get walletId => null;
+  @override
+  final String? requestId;
+  final int lockingScriptLength;
+  final BigInt? fee;
+  final bool success;
+  final String? error;
+  @override
+  final SpiffyErrorCode? errorCode;
+
+  UnlockFeeQuotedEvent({
+    this.requestId,
+    required this.lockingScriptLength,
+    this.fee,
+    required this.success,
+    this.error,
+    this.errorCode,
+  });
+
+  @override
+  String? get failure => success ? null : error ?? 'The unlock fee could not be quoted';
 }
 
 /// The answer to [UnlockCoinsCommand].

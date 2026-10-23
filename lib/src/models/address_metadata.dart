@@ -42,6 +42,9 @@ class AddressMetadata {
     required this.isWatched,
   });
 
+  /// The [purpose] of a lock key's address (bead spiffyvault-mnz.5).
+  static const String lockKeyPurpose = 'lock-key';
+
   /// Check if address has never been used
   bool get isUnused => usageCount == 0 && firstUsedAt == null;
 
@@ -52,6 +55,7 @@ class AddressMetadata {
   /// address, which the wallet holds no key for.
   KeyPath? get keyPath {
     if (purpose == 'watch') return null;
+    if (purpose == lockKeyPurpose) return LockKeyPath(address);
     if (type42 case final derivation?) return Type42KeyPath(derivation);
     return HdKeyPath(derivationIndex ?? 0, chain: chain ?? AddressChain.receive);
   }

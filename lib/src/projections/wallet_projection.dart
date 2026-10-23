@@ -67,6 +67,7 @@ class WalletProjection extends Projection<void> {
         Type42AddressRecordedEvent,
         AddressLabelUpdatedEvent,
         WatchAddressAddedEvent,
+        LockKeyAddedEvent,
         UTXOReceivedEvent,
         UTXOMarkedAvailableEvent,
         UTXOSpentEvent,
@@ -152,6 +153,9 @@ class WalletProjection extends Projection<void> {
         return true;
       case final WatchAddressAddedEvent evt:
         await _handleWatchAddressAdded(evt);
+        return true;
+      case final LockKeyAddedEvent evt:
+        await _handleLockKeyAdded(evt);
         return true;
       case final UTXOReceivedEvent evt:
         await _handleUTXOReceived(evt);
@@ -397,6 +401,25 @@ class WalletProjection extends Projection<void> {
   /// The watch address row (bead libspiffy-p4kv). An existing row (a replay,
   /// or the row a reconciled legacy registration was read from) keeps its
   /// usage, balance and creation time.
+  /// A lock key's address (bead spiffyvault-mnz.5): one of the wallet's,
+  /// signed for with the stored key ([AddressMetadata.keyPath] is a
+  /// [LockKeyPath]).
+  Future<void> _handleLockKeyAdded(LockKeyAddedEvent event) async {
+    final metadata = await _preservingUsage(event.walletId, AddressMetadata(
+      address: event.address,
+      scriptType: 'p2pkh',
+      chain: AddressChain.receive,
+      label: 'Lock key',
+      purpose: AddressMetadata.lockKeyPurpose,
+      usageCount: 0,
+      balance: BigInt.zero,
+      createdAt: event.timestamp,
+      isWatched: false,
+    ));
+    await _storage.upsertAddress(event.walletId, metadata);
+    await _updateWalletAddressCount(event.walletId, event.timestamp);
+  }
+
   Future<void> _handleWatchAddressAdded(WatchAddressAddedEvent event) async {
     final metadata = await _preservingUsage(event.walletId, AddressMetadata(
       address: event.address,

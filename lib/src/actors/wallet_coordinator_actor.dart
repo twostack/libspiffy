@@ -392,6 +392,7 @@ class WalletCoordinatorActor extends Actor {
     required String walletName,
     String networkType,
     int addressGapLimit,
+    List<String> lockKeyWifs,
   })? _importWalletFromXpriv;
   final dynamic Function({
     required String walletId,
@@ -461,6 +462,7 @@ class WalletCoordinatorActor extends Actor {
       required String walletName,
       String networkType,
       int addressGapLimit,
+      List<String> lockKeyWifs,
     })?
         importWalletFromXpriv,
     dynamic Function({
@@ -855,6 +857,8 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleLockCoins(message));
       } else if (message is UnlockCoinsCommand) {
         unawaited(_handleUnlockCoins(message));
+      } else if (message is QuoteUnlockFeeCommand) {
+        unawaited(_handleQuoteUnlockFee(message)); // off the mailbox: an ARC round trip
       } else if (message is SettleBEEFCommand) {
         await _handleSettleBEEF(message);
       }
@@ -1214,6 +1218,7 @@ class WalletCoordinatorActor extends Actor {
           walletName: cmd.walletName,
           networkType: cmd.networkType,
           addressGapLimit: cmd.gapLimit,
+          lockKeyWifs: cmd.lockKeyWifs,
         );
       } else if (cmd.wif != null) {
         _importWalletFromWif!(walletId: cmd.walletId, wif: cmd.wif!, walletName: cmd.walletName, networkType: cmd.networkType);
@@ -2409,6 +2414,30 @@ class WalletCoordinatorActor extends Actor {
 
   /// Spends a locked coin back to the wallet (bead spiffyvault-mnz.2) and
   /// broadcasts the spend.
+  /// ARC's policy rate on the size of one unlock ([QuoteUnlockFeeCommand]).
+  Future<void> _handleQuoteUnlockFee(QuoteUnlockFeeCommand cmd) async {
+    UnlockFeeQuotedEvent answer({BigInt? fee, String? error}) => UnlockFeeQuotedEvent(
+        requestId: cmd.requestId,
+        lockingScriptLength: cmd.lockingScriptLength,
+        fee: fee,
+        success: error == null,
+        error: error,
+        errorCode: error == null ? null : SpiffyErrorCode.feeRateUnavailable);
+    final wm.FeeRateQuote quote;
+    try {
+      quote = await _arcActor.ask<wm.FeeRateQuote>(wm.GetFeeRateMessage(), CoordinatorRequest.networkTimeout);
+    } catch (e) {
+      _emitEvent(answer(error: 'ARC did not answer for its policy fee rate: $e'));
+      return;
+    }
+    final rate = quote.rate;
+    if (!quote.success || rate == null) {
+      _emitEvent(answer(error: "ARC's policy fee rate could not be read (${quote.error})"));
+      return;
+    }
+    _emitEvent(answer(fee: rate.feeFor(HodlockerLock.unlockSize(cmd.lockingScriptLength))));
+  }
+
   Future<void> _handleUnlockCoins(UnlockCoinsCommand cmd) async {
     CoinsUnlockedEvent answer({String? txid, BigInt? amount, String? error, SpiffyErrorCode? code}) =>
         CoinsUnlockedEvent(

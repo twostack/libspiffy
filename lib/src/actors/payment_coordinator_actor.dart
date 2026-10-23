@@ -405,13 +405,9 @@ class PaymentCoordinatorActor extends Actor {
         return sighash.preImage!;
       }
 
-      // The signed size: the unsigned transaction, plus the unlocking
-      // script at its largest (a 73-byte signature) and the longer length
-      // prefix it needs. The preimage's length does not depend on the fee.
-      final unsigned = build(BigInt.zero);
-      final preimageLength = preimageOf(unsigned).length;
-      final unlockingLength = (1 + 73) + (1 + 33) + _pushPrefix(preimageLength) + preimageLength;
-      final size = unsigned.serialize().length ~/ 2 + unlockingLength + _varIntSize(unlockingLength) - 1;
+      // The signed size, the unlocking script at its largest; the same size
+      // an unlock's fee is quoted for (QuoteUnlockFeeCommand).
+      final size = HodlockerLock.unlockSize(utxo.scriptPubKey.length ~/ 2);
       final fee = rate.feeFor(size);
       if (utxo.satoshis <= fee) {
         failure = '${msg.utxoKey} holds ${utxo.satoshis} sats, not more than the $fee sats its unlock costs';
@@ -515,12 +511,6 @@ class PaymentCoordinatorActor extends Actor {
       }
     }
   }
-
-  /// The bytes of the push opcode for [length] bytes of data.
-  static int _pushPrefix(int length) => length < 0x4c ? 1 : length <= 0xff ? 2 : length <= 0xffff ? 3 : 5;
-
-  /// The bytes of a Bitcoin varint holding [value].
-  static int _varIntSize(int value) => value < 0xfd ? 1 : value <= 0xffff ? 3 : value <= 0xffffffff ? 5 : 9;
 
   /// Waits until the read model shows none of [utxos] reserved by any of
   /// [holders] (the payment's reservation and the deferred spends it

@@ -10,6 +10,7 @@ import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/fee_rate.dart';
 import '../models/foreign_spend.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../models/blockchain_data_models.dart' show MerkleProofData;
@@ -124,6 +125,11 @@ class ARCActor extends Actor {
 
   // ARC service client (dynamic to allow mock services in tests)
   dynamic _arcService;
+
+  /// ARC's published mining fee, read once and kept for the actor's life
+  /// ([_publishedRate]). Null until a read is under way; a read that fails
+  /// is not kept, so the next quote asks again.
+  Future<FeeRate>? _publishedFee;
 
   // Orphan remediation tracking (transient — OK to lose on restart)
   final Map<String, int> _orphanRemediationAttempts = {}; // txid -> attempt count
@@ -290,6 +296,12 @@ class ARCActor extends Actor {
     _initializeARCService();
     _initializeBroadcastQueue();
     _startStatusMonitoring();
+    // Read the fee policy now, so the first payment does not wait for it.
+    if (_arcService != null) {
+      _publishedRate().then<void>((_) {}, onError: (Object e) {
+        _log.info("ARC's policy could not be read at start; the first fee quote asks again: $e");
+      }).ignore();
+    }
   }
 
   @override
@@ -501,6 +513,14 @@ class ARCActor extends Actor {
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
       await _applySubmitAnswer(msg.walletId, msg.txid, msg.txHex, response);
+      // Accepted and still on its way to the network: whoever asked to hear
+      // that hears it now; the reply below waits for the network's answer.
+      if (msg.acceptedTo != null &&
+          DeferredNetworkStatus.isInFlight(response.status.wireName) &&
+          inFlightFollowDelays.isNotEmpty &&
+          !_stopped) {
+        msg.acceptedTo!.tell(BroadcastAcceptedMessage(msg.txid, response.status.wireName));
+      }
       final replyTo = context.sender;
       await _settle(msg.txid, response, (answer) async {
         if (!identical(answer, response)) await _applySettledAnswer(msg.walletId, msg.txid, msg.txHex, answer);
@@ -869,15 +889,33 @@ class ARCActor extends Actor {
   /// The app's floor ([ArcServiceConfig.minimumFeeRate]) is paid instead
   /// when the policy is lower; it is a floor under a published rate, never a
   /// rate in place of one ARC could not be asked for.
+  ///
+  /// The published rate is read from ARC once, when the actor starts, and
+  /// kept for the life of the actor: a policy changes rarely, and asking
+  /// for it on every payment cost a phone about 0.9 s per payment. A read
+  /// that failed is not kept; the next quote asks ARC again.
   Future<FeeRateQuote> _quoteFeeRate() async {
     if (_arcService == null) return FeeRateQuote.failed('ARC service not available');
     try {
-      final published = (await _arcService!.getPolicy()).miningFee;
+      final published = await _publishedRate();
       final floor = _arcConfig?.minimumFeeRate;
       return FeeRateQuote(floor != null && floor.isAbove(published) ? floor : published);
     } catch (e) {
       return FeeRateQuote.failed("ARC's policy could not be read: $e");
     }
+  }
+
+  /// The rate ARC publishes, from the read this actor keeps (see
+  /// [_quoteFeeRate]). Quotes asked while a read is under way share it.
+  Future<FeeRate> _publishedRate() {
+    final kept = _publishedFee;
+    if (kept != null) return kept;
+    final read = Future(() async => (await _arcService!.getPolicy()).miningFee as FeeRate);
+    _publishedFee = read;
+    read.then<void>((_) {}, onError: (Object _) {
+      if (identical(_publishedFee, read)) _publishedFee = null;
+    }).ignore();
+    return read;
   }
 
   /// Check all non-terminal transactions against ARC.

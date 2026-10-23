@@ -372,6 +372,10 @@ class WalletCoordinatorActor extends Actor {
   /// How long a received payment's submission waits for ARC's answer.
   static const _paymentSubmitTimeout = Duration(minutes: 2);
 
+  /// Received payments submitted to ARC whose answer is awaited, by txid:
+  /// who to name in a [PaymentAcceptedEvent] when ARC accepts one first.
+  final Map<String, ({String walletId, String? invoiceId, String? requestId})> _acceptedPayments = {};
+
   /// How long the invoice coordinator has to answer a payment's mark-paid.
   static const _invoiceMarkPaidTimeout = Duration(seconds: 30);
 
@@ -968,6 +972,17 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleChannelOpenResent(message);
       } else if (message is ch.ServerOpenRecordedResponse) {
         _channelAdapter?.handleServerOpenRecorded(message);
+      } else if (message is wm.BroadcastAcceptedMessage) {
+        final payment = _acceptedPayments[message.txid];
+        if (payment != null) {
+          _emitEvent(PaymentAcceptedEvent(
+            walletId: payment.walletId,
+            invoiceId: payment.invoiceId,
+            txid: message.txid,
+            networkStatus: message.networkStatus,
+            requestId: payment.requestId,
+          ));
+        }
       } else if (message is wm.BroadcastSuccessMessage) {
         // Route to settlement tracking if this txid belongs to an in-flight
         // SettleBEEFCommand; otherwise ignore (e.g., retries from duraq).
@@ -3802,15 +3817,22 @@ class WalletCoordinatorActor extends Actor {
 
     dynamic reply;
     try {
+      // ARC's first answer, while it is still taking the payment to the
+      // network, is told here as BroadcastAcceptedMessage and emitted as
+      // PaymentAcceptedEvent; the reply waits for the network's answer.
+      _acceptedPayments[result.txid] = (walletId: walletId, invoiceId: invoiceId, requestId: requestId);
       reply = await _arcActor.ask<dynamic>(
           // With the BEEF it came in, ARC is sent its Extended Format: the
           // outputs it spends are the payer's, which no wallet here stores,
           // and Arcade refuses a raw transaction with 460. A receive parked
           // for a header and replayed carries its BEEF too.
-          wm.BroadcastTransactionMessage(walletId, row.rawHex, result.txid, beefHex: result.beefHex),
+          wm.BroadcastTransactionMessage(walletId, row.rawHex, result.txid,
+              beefHex: result.beefHex, acceptedTo: context.self),
           _paymentSubmitTimeout);
     } catch (e) {
       reply = wm.BroadcastFailedMessage(result.txid, 'ARC did not answer the submission: $e');
+    } finally {
+      _acceptedPayments.remove(result.txid);
     }
     // The network holding the payment makes its outputs spendable, and
     // ARCActor tells the wallet so as it answers. The answer waits for the

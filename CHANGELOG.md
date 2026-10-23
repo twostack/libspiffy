@@ -1,3 +1,10 @@
+## 5.13.0
+
+A payee can answer its payer as soon as ARC accepts a payment, and ARC's fee policy is read once, when the app starts
+
+- **`PaymentAcceptedEvent(walletId, invoiceId, txid, networkStatus, requestId)`:** a received payment validated, the read model holds it, and ARC accepted its submission while still taking it to the network (Arcade's `RECEIVED`). It comes before the payment's `BEEFValidationResultEvent`, which still comes with the status the network got to, and the invoice is still marked paid only then. A payee answers its payer at the first and tells it the outcome at the second; with Arcade that was a 5–9 s wait before any answer (spiffyvault-voo). A payment whose first ARC answer is already final (seen, mined, refused) gets no such event. `BroadcastTransactionMessage(acceptedTo:)` is told `BroadcastAcceptedMessage` when ARC's first answer is in flight; the sender is answered as before.
+- **ARC's fee policy is read when ARCActor starts and kept for its life.** Every payment asked ARC for its policy, about 0.9 s from a phone, and a policy changes rarely. A read that fails is not kept: the next fee quote asks ARC again, and a payment is still never built at a rate ARC did not publish. Tests that need their own policy now set it before the system starts.
+
 ## 5.12.1
 
 A payment is signed with the wallet's HD root derived once, not once for each coin it spends.

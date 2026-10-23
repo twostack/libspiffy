@@ -62,6 +62,46 @@ void main() {
     expect(reply.rate, isNull);
   });
 
+  // The policy is read once, when the actor starts, and kept for its life:
+  // every payment used to ask ARC, about 0.9 s from a phone.
+  Future<ActorRef> arcWith(ArcService service) async {
+    final walletManager = await system.spawn('wallet-manager', () => _Silent());
+    return system.spawn(
+      'arc',
+      () => ARCActor(
+        walletManager: walletManager,
+        storage: InMemoryWalletStorage(),
+        arcConfig: ArcServiceConfig(baseUrl: 'fake://arc'),
+        arcService: service,
+        statusCheckInterval: const Duration(minutes: 30),
+        failedCheckInterval: const Duration(minutes: 30),
+      ),
+    );
+  }
+
+  test('the policy is read when the actor starts and kept for every quote', () async {
+    final service = _CountingArc(const FeeRate(satoshis: 100, bytes: 1000));
+    final arc = await arcWith(service);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(service.reads, 1, reason: 'read at start, before any quote');
+    for (var i = 0; i < 3; i++) {
+      expect((await arc.ask<FeeRateQuote>(GetFeeRateMessage(), _ask)).rate, const FeeRate(satoshis: 100, bytes: 1000));
+    }
+    expect(service.reads, 1);
+  });
+
+  test('a policy that could not be read is asked for again, and then kept', () async {
+    final service = _CountingArc(const FeeRate(satoshis: 50, bytes: 1000), failures: 2);
+    final arc = await arcWith(service);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect((await arc.ask<FeeRateQuote>(GetFeeRateMessage(), _ask)).success, isFalse,
+        reason: 'no rate in place of one ARC did not publish');
+    final quote = await arc.ask<FeeRateQuote>(GetFeeRateMessage(), _ask);
+    expect(quote.rate, const FeeRate(satoshis: 50, bytes: 1000));
+    await arc.ask<FeeRateQuote>(GetFeeRateMessage(), _ask);
+    expect(service.reads, 3, reason: 'failed at start, failed once more, then read and kept');
+  });
+
   test('rates are compared per byte, exactly', () {
     const fiftyPerKb = FeeRate(satoshis: 50, bytes: 1000);
     expect(const FeeRate(satoshis: 1, bytes: 10).isAbove(fiftyPerKb), isTrue); // 100/kB
@@ -85,6 +125,22 @@ class _PolicyArc extends ArcService {
           'miningFee': {'satoshis': rate.satoshis, 'bytes': rate.bytes},
         },
       });
+}
+
+class _CountingArc extends _PolicyArc {
+  int reads = 0;
+  int failures;
+  _CountingArc(super.rate, {this.failures = 0});
+
+  @override
+  Future<ArcPolicyResponse> getPolicy() async {
+    reads++;
+    if (failures > 0) {
+      failures--;
+      throw ArcException('ARC is not answering');
+    }
+    return super.getPolicy();
+  }
 }
 
 class _ThrowingArc extends ArcService {

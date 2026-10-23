@@ -2322,6 +2322,35 @@ class BEEFValidationResultEvent extends CoordinatorReply {
   String? get failure => valid || awaitingHeader ? null : error ?? 'The payment did not validate';
 }
 
+/// A payment this wallet received validated, the read model holds it, and
+/// ARC accepted its submission, still taking it to the network
+/// ([networkStatus], e.g. Arcade's RECEIVED) (spiffyvault-voo).
+///
+/// Emitted before the [BEEFValidationResultEvent] of the same payment,
+/// which still comes, with the status the network got to: a payee can
+/// answer its payer now and tell it the outcome then. Nothing is decided by
+/// this event: the invoice is marked paid only when the network holds the
+/// payment. A payment whose first ARC answer is already final (seen, mined,
+/// refused) gets no such event.
+class PaymentAcceptedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String? invoiceId;
+  final String txid;
+  final String networkStatus;
+
+  /// The [ValidateBEEFCommand.requestId] of the payment, when known.
+  final String? requestId;
+
+  PaymentAcceptedEvent({
+    required this.walletId,
+    this.invoiceId,
+    required this.txid,
+    required this.networkStatus,
+    this.requestId,
+  });
+}
+
 /// SPV validation result for a received transaction
 class SPVValidationResultEvent extends CoordinatorEvent {
   @override

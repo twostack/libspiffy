@@ -429,6 +429,45 @@ void main() {
           'the invoice paid');
     });
 
+    // spiffyvault-voo: a payee answers its payer when Arcade accepts the
+    // payment and tells it the outcome when the network has answered.
+    test('voo: a payment Arcade answers RECEIVED is announced as accepted first, then answered with the network\'s status',
+        () async {
+      arc
+        ..answer = 'RECEIVED'
+        ..statusAnswer = 'SEEN_ON_NETWORK';
+      final order = <String>[];
+      final sub = system.coordinatorEvents!.listen((e) {
+        if (e is coord.PaymentAcceptedEvent && e.txid == p.id) order.add('accepted ${e.networkStatus}');
+        if (e is coord.BEEFValidationResultEvent && e.txid == p.id && !e.awaitingHeader) {
+          order.add('answered ${e.networkStatus}');
+        }
+      });
+      addTearDown(sub.cancel);
+
+      final invoiceId = await invoice();
+      pay(invoiceId: invoiceId);
+      await _until(() async => order.length == 2, 'both answers', timeout: const Duration(seconds: 20));
+
+      expect(order, ['accepted RECEIVED', 'answered SEEN_ON_NETWORK']);
+    });
+
+    test('voo: a payment ARC answers on the network at once is not announced as accepted first', () async {
+      arc.answer = 'SEEN_ON_NETWORK';
+      final accepted = <coord.PaymentAcceptedEvent>[];
+      final sub = system.coordinatorEvents!.listen((e) {
+        if (e is coord.PaymentAcceptedEvent && e.txid == p.id) accepted.add(e);
+      });
+      addTearDown(sub.cancel);
+      final answers = answersAboutP();
+
+      pay(invoiceId: await invoice());
+      final answer = await verdict(answers);
+
+      expect(answer.networkStatus, 'SEEN_ON_NETWORK');
+      expect(accepted, isEmpty);
+    });
+
     test('yyby: a payment that arrives already mined, with its own verified proof, pays its invoice',
         () async {
       await sendHeaders([a4], 4, 4);

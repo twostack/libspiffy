@@ -58,6 +58,11 @@ void main() {
   late LibSpiffyActorSystem libspiffy;
   late NetworkArc arc;
 
+  /// The rate ARC publishes when the system starts, when a test needs its
+  /// own (set from its group's setUpAll, which runs before setUp): ARCActor
+  /// reads the policy once, at start, and keeps it.
+  FeeRate? rateAtStart;
+
   /// Funded outpoints by key, so every signed input can be verified.
   late Map<String, ({String scriptHex, int satoshis})> funded;
 
@@ -81,7 +86,7 @@ void main() {
       isar: isar,
       dataDirectory: testDir.path,
       enableP2P: false,
-      arcService: arc = NetworkArc(),
+      arcService: arc = NetworkArc()..miningFee = rateAtStart ?? NetworkArc().miningFee,
       secureStorage: InMemorySecureStorage(),
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
@@ -461,38 +466,43 @@ void main() {
     // a plugin pay ARC's policy rate on their signed size, the rate the
     // payment asked ARC for. They used 148-byte guesses at a hardcoded
     // 100 sat/kB, under a comment naming a different rate.
-    test('lph4: the auto-provisioned split and earmarks pay ARC\'s policy rate on their signed size', () async {
-      const rate = FeeRate(satoshis: 500, bytes: 1000);
-      arc.miningFee = rate;
-      PluginRegistry().unregister(_pluginId);
-      PluginRegistry().register(_SpendAllPlugin(requiredFunding: 2));
+    const lph4Rate = FeeRate(satoshis: 500, bytes: 1000);
+    group('ARC publishes 500 sat/kB at start', () {
+      setUpAll(() => rateAtStart = lph4Rate);
+      tearDownAll(() => rateAtStart = null);
 
-      const walletId = 'lph4-auto-provision';
-      final root = await createMnemonicWallet(walletId);
-      await fundWithImportedParent(walletId, root, satoshis: 80000);
+      test('lph4: the auto-provisioned split and earmarks pay ARC\'s policy rate on their signed size', () async {
+        const rate = lph4Rate;
+        PluginRegistry().unregister(_pluginId);
+        PluginRegistry().register(_SpendAllPlugin(requiredFunding: 2));
 
-      final response = await pay(pluginPayment(walletId, 10000));
-      expect(response.success, isTrue, reason: response.error);
+        const walletId = 'lph4-auto-provision';
+        final root = await createMnemonicWallet(walletId);
+        await fundWithImportedParent(walletId, root, satoshis: 80000);
 
-      final txs = BEEF
-          .parse(response.beefBytes)
-          .txs
-          .map((bytes) => dartsv.Transaction.fromHex(hex.encode(bytes)))
-          .toList();
-      expect(txs, hasLength(4), reason: 'split, two earmarks, payment');
-      txs.forEach(registerOutputs);
-      // The split and the two earmarks; the payment's fee is the plugin's.
-      for (final tx in txs.take(3)) {
-        final spent = tx.inputs.fold<BigInt>(BigInt.zero,
-            (sum, i) => sum + BigInt.from(funded['${i.prevTxnId}:${i.prevTxnOutputIndex}']!.satoshis));
-        final paid = spent - tx.outputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis);
-        final signedBytes = tx.serialize().length ~/ 2;
-        // Old code: 100 sat/kB whatever ARC published.
-        expect(paid, greaterThanOrEqualTo(rate.feeFor(signedBytes)),
-            reason: '${tx.id}: a $signedBytes-byte signed transaction pays $paid');
-        expect(paid, lessThanOrEqualTo(rate.feeFor(signedBytes + 2 * tx.inputs.length)),
-            reason: '${tx.id}: paid for bytes the transaction does not have');
-      }
+        final response = await pay(pluginPayment(walletId, 10000));
+        expect(response.success, isTrue, reason: response.error);
+
+        final txs = BEEF
+            .parse(response.beefBytes)
+            .txs
+            .map((bytes) => dartsv.Transaction.fromHex(hex.encode(bytes)))
+            .toList();
+        expect(txs, hasLength(4), reason: 'split, two earmarks, payment');
+        txs.forEach(registerOutputs);
+        // The split and the two earmarks; the payment's fee is the plugin's.
+        for (final tx in txs.take(3)) {
+          final spent = tx.inputs.fold<BigInt>(BigInt.zero,
+              (sum, i) => sum + BigInt.from(funded['${i.prevTxnId}:${i.prevTxnOutputIndex}']!.satoshis));
+          final paid = spent - tx.outputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis);
+          final signedBytes = tx.serialize().length ~/ 2;
+          // Old code: 100 sat/kB whatever ARC published.
+          expect(paid, greaterThanOrEqualTo(rate.feeFor(signedBytes)),
+              reason: '${tx.id}: a $signedBytes-byte signed transaction pays $paid');
+          expect(paid, lessThanOrEqualTo(rate.feeFor(signedBytes + 2 * tx.inputs.length)),
+              reason: '${tx.id}: paid for bytes the transaction does not have');
+        }
+      });
     });
 
     test('ProvisionFundingMessage: a plugin provision from a mnemonic wallet is signed', () async {

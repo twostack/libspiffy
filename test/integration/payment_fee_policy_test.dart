@@ -64,6 +64,11 @@ void main() {
   late NetworkArc arc;
   late LibSpiffyActorSystem system;
 
+  /// ARC's policy cannot be read when the system starts. ARCActor reads the
+  /// policy once, at start, and keeps it, so a test of a policy nobody could
+  /// read sets this (from its group's setUpAll, which runs before setUp).
+  var policyDownAtStart = false;
+
   setUpAll(() async {
     await ensureIsarInitialized();
   });
@@ -77,7 +82,9 @@ void main() {
     );
     // 100 satoshis per 1,000 bytes: the rate the payment path used to
     // hardcode, so what differs is only the size it is charged on.
-    arc = NetworkArc()..miningFee = const FeeRate(satoshis: 100, bytes: 1000);
+    arc = NetworkArc()
+      ..miningFee = const FeeRate(satoshis: 100, bytes: 1000)
+      ..policyUnavailable = policyDownAtStart;
     system = LibSpiffyActorSystem();
     await system.initialize(
       actorSystem: LocalActorSystem(ActorSystemConfig()),
@@ -367,17 +374,21 @@ void main() {
     expect(event.errorCode, SpiffyErrorCode.addressInvalid);
   });
 
-  test('bg7n: a payment ARC\'s policy rate could not be read for is refused, not built at an invented rate', () async {
-    await receiveMined([(p2pkhScript, 100000)]);
-    arc.policyUnavailable = true;
+  group('ARC\'s policy cannot be read at start', () {
+    setUpAll(() => policyDownAtStart = true);
+    tearDownAll(() => policyDownAtStart = false);
 
-    final ready = await pay('bg7n-no-policy', 40000);
+    test('bg7n: a payment ARC\'s policy rate could not be read for is refused, not built at an invented rate', () async {
+      await receiveMined([(p2pkhScript, 100000)]);
 
-    expect(ready.success, isFalse);
-    expect(ready.error, contains('policy'));
-    expect(ready.errorCode, SpiffyErrorCode.feeRateUnavailable);
-    // Nothing was reserved or recorded for it: the UTXO is spendable.
-    await _until(() async => (await system.walletStorage.getPaymentUTXOs(_walletId)).length == 1, 'UTXO available');
+      final ready = await pay('bg7n-no-policy', 40000);
+
+      expect(ready.success, isFalse);
+      expect(ready.error, contains('policy'));
+      expect(ready.errorCode, SpiffyErrorCode.feeRateUnavailable);
+      // Nothing was reserved or recorded for it: the UTXO is spendable.
+      await _until(() async => (await system.walletStorage.getPaymentUTXOs(_walletId)).length == 1, 'UTXO available');
+    });
   });
 
   group('o7a4: payment privacy', () {

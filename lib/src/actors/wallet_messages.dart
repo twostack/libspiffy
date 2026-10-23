@@ -1455,7 +1455,15 @@ class BroadcastTransactionMessage implements Message {
   /// payment's are.
   final String? beefHex;
 
-  BroadcastTransactionMessage(this.walletId, this.txHex, this.txid, {this.retryOnFailure = true, this.beefHex});
+  /// Told [BroadcastAcceptedMessage] as soon as ARC accepts the submission
+  /// while it is still taking it to the network (an in-flight status, such
+  /// as Arcade's RECEIVED). The sender is answered as before, with the
+  /// status the network got to. A payee answers its payer at the first, and
+  /// says the second when it comes (spiffyvault-voo).
+  final ActorRef? acceptedTo;
+
+  BroadcastTransactionMessage(this.walletId, this.txHex, this.txid,
+      {this.retryOnFailure = true, this.beefHex, this.acceptedTo});
 
   @override
   String get correlationId => 'broadcast-$txid';
@@ -1621,6 +1629,24 @@ class TransactionStatusMessage extends ActorResponse {
   @override
   Map<String, dynamic> get metadata =>
       {'txid': txid, if (status != null) 'status': status};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// ARC accepted the submission of [txid] and is still taking it to the
+/// network ([networkStatus] is in flight): told to a
+/// [BroadcastTransactionMessage.acceptedTo] before the final answer.
+class BroadcastAcceptedMessage implements Message {
+  final String txid;
+  final String networkStatus;
+  BroadcastAcceptedMessage(this.txid, this.networkStatus);
+
+  @override
+  String get correlationId => 'broadcast-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'txid': txid, 'networkStatus': networkStatus};
   @override
   ActorRef? get replyTo => null;
   @override

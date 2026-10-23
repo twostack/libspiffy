@@ -1,3 +1,22 @@
+## 5.12.0
+
+Coins locked to a key outside the wallet's account are found and can be unlocked, the fee of an unlock can be quoted, and a mainnet wallet's import no longer fails when testnet scripts were read first. Needs eventador 4.2.0, which stores events one byte for each byte; with 4.1.0 an event of about 2 MiB (a transaction with many outputs and its parents) was written outside the journal's index, and the wallet's next write failed.
+
+Lock keys (bead spiffyvault-mnz.5). hodlocker.com locked a RelayX user's coins to the RelayX paymail key at `m/0'/236'/0'/0/0`, outside the account `m/44'/236'/0'` the wallet is imported from, so an import read those locks and dropped them.
+
+- **`AddLockKeyCommand(walletId, wif)` → `LockKeyAddedResponse`, `LockKeyAddedEvent`:** the wallet takes a private key outside its HD tree. The key goes to secure storage (`WalletKeys.lockKeysKey`), never into the journal; its address is one of the wallet's, so a HODLocker output locked to it is the wallet's coin. Idempotent; refused for a key of another network.
+- **`LockKeyPath(address)`:** the `KeyPath` of a lock key's address. The read model records the address with `AddressMetadata.lockKeyPurpose`, and the wallet signs for it with the stored key, as an unlock does.
+- **`ImportWalletCommand.lockKeyWifs`, `ImportWalletMessage.lockKeyWifs`, `importWalletFromXpriv(lockKeyWifs:)`:** keys handed to the wallet before the scan; an application derives them from the seed the account came from.
+
+Unlock fees (bead spiffyvault-mnz.7). A HODLocker unlock holds the whole locking script in its preimage, about 1,300 bytes, so a coin of a few satoshis costs more to unlock than it holds and `UnlockCoinsCommand` refuses it.
+
+- **`HodlockerLock.unlockSize(lockingScriptLength)`:** the signed size of an unlock; the unlock's fee is taken on it.
+- **`QuoteUnlockFeeCommand(lockingScriptLength)` → `UnlockFeeQuotedEvent`:** ARC's policy rate on that size, for an application to tell a lock worth unlocking from one that is not. Nothing is built.
+
+Fixed:
+
+- **`ScriptTypeRegistry`:** one registry for each network. It was one instance for the isolate, fixed to the first network asked for, so every later use for the other network threw (`already initialized with NetworkType.TEST, cannot reinitialize with NetworkType.MAIN`): a mainnet import read no parent transactions and then failed (bead spiffyvault-mnz.6).
+
 ## 5.11.1
 
 An import no longer fails at a transaction with many inputs. A mainnet wallet's import stopped at a transaction with 162 inputs: its parents were fetched one by one (94 seconds), and the wait for the wallet read model to apply the transaction had started before them, so its 30 seconds were over before the transaction was sent.

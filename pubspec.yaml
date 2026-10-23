@@ -3,7 +3,7 @@ description: >-
   An actor-based Bitcoin SV SPV wallet library: event-sourced wallets, BEEF
   payments with merkle-proof validation, ARC broadcast, payment channels and
   pluggable token scripts.
-version: 5.11.1
+version: 5.12.0
 repository: https://github.com/twostack/libspiffy
 issue_tracker: https://github.com/twostack/libspiffy/issues
 topics:
@@ -43,7 +43,7 @@ dependencies:
   duraq_isar: ^3.0.0
 
   # Event sourcing
-  eventador: ^4.1.0
+  eventador: ^4.2.0
 
   # SPV and P2P networking
   spiffynode: ^1.1.0

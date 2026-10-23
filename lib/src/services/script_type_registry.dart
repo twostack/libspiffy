@@ -19,30 +19,29 @@ import '../plugin/plugin_registry.dart';
 /// It delegates to the appropriate Script Templates for type-specific operations
 /// like spendability determination.
 class ScriptTypeRegistry {
-  // Use the singleton instance
-  static final ScriptTypeRegistry _instance = ScriptTypeRegistry._internal();
+  /// One registry for each network: the network is used only to write the
+  /// addresses [extractScriptMetadata] returns. A single instance fixed to
+  /// the first network it was asked for made every later use for the other
+  /// network throw, in the whole isolate: a mainnet import failed because a
+  /// testnet registry had been made first (bead spiffyvault-mnz.6).
+  static final Map<NetworkType, ScriptTypeRegistry> _instances = {};
 
-  NetworkType _networkType = NetworkType.TEST;
-  bool _initialized = false;
+  /// Whether dartsv's standard templates are registered (once, for all).
+  static bool _templatesRegistered = false;
 
-  ScriptTypeRegistry._internal() {
-    // Initialize the template registry with standard templates
-    TemplateRegistry.initialize();
-  }
+  final NetworkType _networkType;
 
-  /// Returns the singleton instance of the registry.
-  /// Once initialized with a network type, re-initialization with a different
-  /// type will throw a [StateError] to prevent silent misconfiguration.
-  factory ScriptTypeRegistry({NetworkType networkType = NetworkType.TEST}) {
-    if (_instance._initialized && _instance._networkType != networkType) {
-      throw StateError(
-        'ScriptTypeRegistry already initialized with ${_instance._networkType}, '
-        'cannot reinitialize with $networkType');
+  ScriptTypeRegistry._internal(this._networkType) {
+    if (!_templatesRegistered) {
+      // Initialize the template registry with standard templates
+      TemplateRegistry.initialize();
+      _templatesRegistered = true;
     }
-    _instance._networkType = networkType;
-    _instance._initialized = true;
-    return _instance;
   }
+
+  /// The registry for [networkType].
+  factory ScriptTypeRegistry({NetworkType networkType = NetworkType.TEST}) =>
+      _instances.putIfAbsent(networkType, () => ScriptTypeRegistry._internal(networkType));
 
   /// Register a custom script template
   ///

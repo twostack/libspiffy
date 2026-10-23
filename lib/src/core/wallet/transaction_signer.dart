@@ -51,7 +51,13 @@ class WalletTransactionSigner {
   /// [SignTransactionCommand.rawTransaction] with the input spending each of
   /// [SignTransactionCommand.utxoKeys] signed (input i spends key i), each
   /// checked against its UTXO's script with the script interpreter.
-  Future<dartsv.Transaction> signTransaction(WalletState currentState, SignTransactionCommand command) async {
+  ///
+  /// The wallet's HD root is derived once for the whole transaction
+  /// ([WalletKeys.withHdRoot]), not once per input.
+  Future<dartsv.Transaction> signTransaction(WalletState currentState, SignTransactionCommand command) =>
+      keys.withHdRoot(command.walletId, () => _signTransaction(currentState, command));
+
+  Future<dartsv.Transaction> _signTransaction(WalletState currentState, SignTransactionCommand command) async {
     dartsv.Transaction? signedTx;
 
     // Business rule: Wallet must exist

@@ -64,6 +64,9 @@ class WalletKeys {
 
   final Map<String, ({Future<dartsv.SVPrivateKey> key, DateTime at})> _anchorKeys = {};
 
+  /// HD roots held while a [withHdRoot] call runs, by wallet id.
+  final Map<String, _HeldRoot> _heldRoots = {};
+
   // ---------------------------------------------------------------------------
   // Key material in secure storage
   // ---------------------------------------------------------------------------
@@ -126,6 +129,7 @@ class WalletKeys {
   /// path and the original error must reach the caller.
   Future<void> removeKeyMaterial(String walletId, {required Object cause}) async {
     forgetAnchorKeys(walletId);
+    _heldRoots.remove(walletId);
     for (final key in keyMaterialKeys(walletId)) {
       try {
         await secureStorage.delete(key);
@@ -408,9 +412,36 @@ class WalletKeys {
   /// destination with (fresh for every destination).
   static String payerKeyPath(int index) => "m/3'/1'/$index'";
 
-  /// The HD private key the wallet's key paths are relative to: from the
-  /// xpriv, else from the mnemonic (and the passphrase it was created with).
-  Future<dartsv.HDPrivateKey> _hdPrivateKey(String walletId, WalletState currentState) async {
+  /// Runs [body] with the HD root of [walletId] derived at most once.
+  ///
+  /// Every key of an HD wallet is derived from its root, and a mnemonic
+  /// wallet's root is the mnemonic stretched by PBKDF2: about 1.1 s on a
+  /// phone, with four secure-storage reads. A transaction derived it again
+  /// for each input it signed, so a payment from five coins spent over five
+  /// seconds there. Inside [body] the first derivation is shared; the root is
+  /// dropped when the last overlapping call for the wallet returns, so it is
+  /// never kept between operations (see [anchorKeyLifetime]).
+  Future<T> withHdRoot<T>(String walletId, Future<T> Function() body) async {
+    final held = _heldRoots.putIfAbsent(walletId, _HeldRoot.new);
+    held.holders++;
+    try {
+      return await body();
+    } finally {
+      if (--held.holders == 0 && identical(_heldRoots[walletId], held)) _heldRoots.remove(walletId);
+    }
+  }
+
+  /// The HD private key the wallet's key paths are relative to: the one a
+  /// [withHdRoot] call holds, else derived now.
+  Future<dartsv.HDPrivateKey> _hdPrivateKey(String walletId, WalletState currentState) {
+    final held = _heldRoots[walletId];
+    if (held == null) return _deriveHdPrivateKey(walletId, currentState);
+    return held.root ??= _deriveHdPrivateKey(walletId, currentState);
+  }
+
+  /// The HD root from the xpriv, else from the mnemonic (and the passphrase
+  /// it was created with).
+  Future<dartsv.HDPrivateKey> _deriveHdPrivateKey(String walletId, WalletState currentState) async {
     final xpriv = await secureStorage.getXPriv(walletId);
     if (xpriv != null) return dartsv.HDPrivateKey.fromXpriv(xpriv);
     final mnemonic = await secureStorage.getMnemonic(walletId);
@@ -975,4 +1006,10 @@ class WalletKeys {
       throw StateError('Unsupported wallet type: ${currentState.walletType}');
     }
   }
+}
+
+/// One wallet's HD root while [WalletKeys.withHdRoot] calls hold it.
+class _HeldRoot {
+  Future<dartsv.HDPrivateKey>? root;
+  int holders = 0;
 }

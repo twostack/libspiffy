@@ -1,3 +1,7 @@
+## Unreleased
+
+- **A transaction is signed with the wallet's HD root derived once.** A mnemonic wallet's root is the mnemonic stretched by PBKDF2, about 1.1 s on a phone with four secure-storage reads, and `WalletTransactionSigner.signTransaction` derived it again for every input it signed: a two-input payment spent 2.65 s signing on a Pixel. `WalletKeys.withHdRoot(walletId, body)` holds the root while `body` runs and drops it when the last overlapping call returns, so it is still never kept between operations. Signing a transaction now derives it once (bead libspiffy-kbhf).
+
 ## 5.12.0
 
 Coins locked to a key outside the wallet's account are found and can be unlocked, the fee of an unlock can be quoted, and a mainnet wallet's import no longer fails when testnet scripts were read first. Needs eventador 4.2.0, which stores events one byte for each byte; with 4.1.0 an event of about 2 MiB (a transaction with many outputs and its parents) was written outside the journal's index, and the wallet's next write failed.

@@ -298,6 +298,19 @@ await coordinator.ask(ImportTransactionCommand(
 
 Without the index the import is refused: the payment pays none of the wallet's addresses, so it is not the wallet's transaction.
 
+### Signing a Message with an Address Key
+
+`SignMessageCommand` proves the wallet holds the key of one of its addresses, to someone who checks the signature against that address: the owner of a token held there, for example. The wallet signs a Bitcoin Signed Message (the "Bitcoin Signed Message" prefix, double SHA-256, a compact recoverable signature): it adds the prefix and hashes the message itself, so a key never signs a digest the caller chose, such as a transaction's sighash. Name the message's purpose in it, so that a signature for one is no signature for another. A key the wallet does not hold is refused, as are watch-only wallets.
+
+```dart
+final signed = await coordinator.ask(SignMessageCommand(
+  walletId: 'carol',
+  pubkeyHash: hex.encode(hash160(publicKey)), // the address's HASH160
+  message: utf8.encode('referrals/CreateLink\n$issuer\n$tokenId\n$nonce'),
+));
+// signed.signature: base64; Message(message).verifyFromAddress(address, signed.signature)
+```
+
 ### Paying an Offline Payee Directly (Type-42)
 
 A payer can pay a payee that is offline with no service in between (spv-understanding.md, "Payment modes"). The payee publishes a public key, its **anchor key**, and the payer derives a fresh address from it for every payment with BRC-42 ("type-42").
@@ -689,6 +702,7 @@ Every command and query below is answered with one reply of the type named, carr
 | `SettleBEEFCommand` | `BEEFSettledEvent` |
 | `IssueAnchorKeyCommand` | `AnchorPublicKeyEvent` |
 | `SignWithAnchorKeyCommand` | `AnchorSignedEvent` |
+| `SignMessageCommand` | `MessageSignedEvent` |
 | `Brc100KeyOperationCommand` | `Brc100KeyOperationEvent` |
 | `DeriveType42DestinationCommand` | `Type42DestinationEvent`: an address to pay and its hand-off |
 | `GenerateAddressCommand` | `AddressGeneratedEvent` |

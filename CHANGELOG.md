@@ -1,3 +1,9 @@
+## 5.14.0
+
+A wallet signs a message with the key of one of its addresses
+
+- **`SignMessageCommand(walletId, pubkeyHash, message)`, answered with `MessageSignedEvent(publicKey, signature)`:** the message signed as a Bitcoin Signed Message (compact, base64, as dartsv's `Message.sign`) by the wallet key whose public key hashes to `pubkeyHash`. It proves the wallet holds that address's key, for a token held there, say (overnode_v2-l6bx.7). The wallet adds the message prefix and hashes the message, so no caller can have a key sign a digest of its choosing. A hash the wallet holds no key for is refused, and so are watch-only wallets and a WIF wallet whose one key is another. Journals nothing.
+
 ## 5.13.0
 
 A payee can answer its payer as soon as ARC accepts a payment, and ARC's fee policy is read once, when the app starts

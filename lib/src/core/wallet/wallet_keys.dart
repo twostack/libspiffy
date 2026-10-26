@@ -797,6 +797,32 @@ class WalletKeys {
         LockKeyPath(:final address) => lockKey(walletId, address),
       };
 
+  /// [SignMessageCommand]: [command]'s message signed as a Bitcoin Signed
+  /// Message with the wallet key whose public key hashes to its
+  /// `pubkeyHash`. Throws when the wallet holds no key for that hash: one
+  /// it never generated, discovered or recorded, a watch-only wallet, or a
+  /// WIF wallet whose one key is another.
+  Future<({String publicKeyHex, String signature})> signMessage(
+      WalletState currentState, SignMessageCommand command) async {
+    final hash = command.pubkeyHash.toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{40}$').hasMatch(hash)) {
+      throw ArgumentError('A public key hash is 40 hex characters, not "${command.pubkeyHash}"');
+    }
+    final network = NetworkName.toDartsv(currentState.networkType);
+    final address = dartsv.Address.fromPubkeyHash(hash, network).toBase58();
+    final dartsv.SVPrivateKey key;
+    try {
+      key = await privateKeyForAddress(address, command.walletId, currentState);
+    } on StateError catch (e) {
+      throw StateError('Wallet ${command.walletId} holds no key with public key hash $hash: ${e.message}');
+    }
+    final publicKeyHex = key.publicKey.toHex();
+    if (hex.encode(dartsv.hash160(hex.decode(publicKeyHex))) != hash) {
+      throw StateError('Wallet ${command.walletId} holds no key with public key hash $hash');
+    }
+    return (publicKeyHex: publicKeyHex, signature: dartsv.Message(command.message).sign(key));
+  }
+
   /// Retrieve the private key for a given address from secure storage
   /// Supports WIF, XPRIV, and HD wallets.
   ///

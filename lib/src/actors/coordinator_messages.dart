@@ -641,6 +641,29 @@ class SignWithAnchorKeyCommand extends CoordinatorRequest<AnchorSignedEvent> {
   Map<String, dynamic> get metadata => {'walletId': walletId};
 }
 
+/// Signs [message] as a Bitcoin Signed Message with the wallet key whose
+/// public key hashes to [pubkeyHash] (40 hex), to prove the wallet holds
+/// the key of that address — the owner of a token at it, say. The wallet
+/// adds the message prefix and hashes the message, so a key never signs a
+/// digest the caller chose; the message should name its purpose (domain
+/// separation). A key the wallet does not hold, or only watches, is
+/// refused. Answered with [MessageSignedEvent].
+class SignMessageCommand extends CoordinatorRequest<MessageSignedEvent> {
+  final String walletId;
+  final String pubkeyHash;
+  final List<int> message;
+
+  SignMessageCommand({
+    required this.walletId,
+    required this.pubkeyHash,
+    required List<int> message,
+    super.requestId,
+  }) : message = frozenList(message);
+
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+}
+
 /// Runs the BRC-100 key operation [request] with a BRC-42 child of the
 /// wallet's anchor key for [anchorContext], the anchor acting as BRC-100's
 /// root key: an anchor issued for a BRC-100 identity signs (BRC-3),
@@ -2645,6 +2668,33 @@ class AnchorSignedEvent extends CoordinatorReply {
     this.requestId,
     this.publicKey,
     this.signatureDer,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String? get failure => success ? null : error ?? 'Nothing was signed';
+}
+
+/// Answer to [SignMessageCommand]: the Bitcoin Signed Message [signature]
+/// (compact, base64, as dartsv's `Message.sign` makes it and
+/// `Message.verifyFromAddress` checks it) by the key [publicKey], or why
+/// there is none.
+class MessageSignedEvent extends CoordinatorReply {
+  @override
+  final String walletId;
+  @override
+  final String? requestId;
+  final String? publicKey;
+  final String? signature;
+  final bool success;
+  final String? error;
+
+  MessageSignedEvent({
+    required this.walletId,
+    this.requestId,
+    this.publicKey,
+    this.signature,
     required this.success,
     this.error,
   });

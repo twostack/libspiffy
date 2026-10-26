@@ -101,8 +101,10 @@ const _sources = <String, String?>{
 /// `RecordType42DestinationsCommand`s, `Type42DestinationsRecordedResponse
 /// .addresses` and `.journaled`, `Type42DestinationsRecordedEvent
 /// .addresses`), 190 with lock keys given to an imported wallet
-/// (spiffyvault-mnz.5: `ImportWalletCommand.lockKeyWifs`).
-const _expectedFields = 190;
+/// (spiffyvault-mnz.5: `ImportWalletCommand.lockKeyWifs`), 192 with
+/// messages signed by an address key (overnode_v2-l6bx.7: both
+/// `SignMessageCommand.message`s).
+const _expectedFields = 192;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

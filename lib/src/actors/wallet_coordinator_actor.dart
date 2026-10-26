@@ -815,6 +815,8 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleIssueAnchorKey(message)); // off the mailbox: a wallet round trip
       } else if (message is SignWithAnchorKeyCommand) {
         unawaited(_handleSignWithAnchorKey(message)); // off the mailbox: a wallet round trip
+      } else if (message is SignMessageCommand) {
+        unawaited(_handleSignMessage(message)); // off the mailbox: a wallet round trip
       } else if (message is Brc100KeyOperationCommand) {
         unawaited(_handleBrc100KeyOperation(message)); // off the mailbox: a wallet round trip
       } else if (message is DeriveType42DestinationCommand) {
@@ -1972,6 +1974,29 @@ class WalletCoordinatorActor extends Actor {
       ));
     } catch (e) {
       _emitEvent(AnchorSignedEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
+    }
+  }
+
+  Future<void> _handleSignMessage(SignMessageCommand cmd) async {
+    final requestId = cmd.requestId;
+    try {
+      final response = await _askWallet<wm.MessageSignedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.SignMessageCommand(walletId: cmd.walletId, pubkeyHash: cmd.pubkeyHash, message: cmd.message),
+        ),
+        const Duration(seconds: 30),
+      );
+      _emitEvent(MessageSignedEvent(
+        walletId: cmd.walletId,
+        requestId: requestId,
+        publicKey: response.success ? response.publicKeyHex : null,
+        signature: response.signature,
+        success: response.success,
+        error: response.error,
+      ));
+    } catch (e) {
+      _emitEvent(MessageSignedEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
     }
   }
 

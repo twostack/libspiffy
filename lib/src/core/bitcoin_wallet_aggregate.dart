@@ -593,6 +593,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       sender.tell(Type42DestinationDerivedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is IssueAnchorKeyCommand || command is SignWithAnchorKeyCommand) {
       sender.tell(AnchorKeyResponse(walletId: (command as WalletCommand).walletId, success: false, error: errorMessage));
+    } else if (command is SignMessageCommand) {
+      sender.tell(MessageSignedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is LookupType42AddressesCommand) {
       sender.tell(Type42AddressesResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is Brc100KeyOperationCommand) {
@@ -728,6 +730,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           walletId: cmd.walletId,
           publicKeyHex: anchor.publicKey.toHex(),
           signatureDerHex: hex.encode(signature.toDER()),
+          success: true,
+        ));
+        return const [];
+      case final SignMessageCommand cmd:
+        final signed = await _keys.signMessage(currentState, cmd);
+        _replyTo(cmd)?.tell(MessageSignedResponse(
+          walletId: cmd.walletId,
+          publicKeyHex: signed.publicKeyHex,
+          signature: signed.signature,
           success: true,
         ));
         return const [];

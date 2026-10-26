@@ -445,6 +445,31 @@ class SignWithAnchorKeyCommand extends WalletCommand {
   String get commandType => 'SignWithAnchorKeyCommand';
 }
 
+/// Signs [message] as a Bitcoin Signed Message with the wallet key whose
+/// public key hashes to [pubkeyHash] (40 hex): proof, to whoever checks it
+/// against that key's address, that this wallet holds it. Journals nothing.
+///
+/// The wallet adds the "Bitcoin Signed Message" prefix and hashes the
+/// message itself, so no caller can have a key sign a digest of its
+/// choosing (a transaction's sighash, say); the message should still name
+/// its purpose, so that a signature for one is no signature for another.
+class SignMessageCommand extends WalletCommand {
+  final String pubkeyHash;
+  final List<int> message;
+
+  SignMessageCommand({
+    required super.walletId,
+    required this.pubkeyHash,
+    required List<int> message,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : message = frozenList(message);
+
+  @override
+  String get commandType => 'SignMessageCommand';
+}
+
 /// Runs the BRC-100 key operation [request] with a BRC-42 child of the
 /// wallet's anchor key for [anchorContext]: the anchor is the root key of
 /// BRC-100's key derivation, so an anchor issued as a BRC-100 identity

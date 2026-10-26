@@ -1263,6 +1263,27 @@ class AnchorKeyResponse extends ActorResponse {
   }) : super(metadata: {'walletId': walletId, 'success': success});
 }
 
+/// Reply of the wallet aggregate to SignMessageCommand: the signing key's
+/// public key (compressed hex) and the Bitcoin Signed Message signature
+/// (compact, base64). Empty on failure.
+class MessageSignedResponse extends ActorResponse {
+  final String walletId;
+  final String publicKeyHex;
+  final String? signature;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  MessageSignedResponse({
+    required this.walletId,
+    this.publicKeyHex = '',
+    this.signature,
+    required this.success,
+    this.error,
+  }) : super(metadata: {'walletId': walletId, 'success': success});
+}
+
 /// Reply of the wallet aggregate to Brc100KeyOperationCommand: the
 /// operation's [result], or why there is none.
 class Brc100KeyOperationResponse extends ActorResponse {

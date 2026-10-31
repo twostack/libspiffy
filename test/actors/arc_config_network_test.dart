@@ -13,9 +13,9 @@ import 'package:libspiffy/libspiffy.dart';
 
 import '../integration/isar_test_helper.dart';
 
-const _taalTestnet = 'https://arc-test.taal.com/v1';
-// Mainnet defaults to GorillaPool, which needs no API key.
-const _gorillaPoolMainnet = 'https://arc.gorillapool.io/v1';
+const _arcadeTestnet = 'https://arcade-v2-testnet-us-1.bsvblockchain.tech';
+// Both networks default to the BSV Association's Arcade, which needs no API key.
+const _arcadeMainnet = 'https://arcade-v2-us-1.bsvblockchain.tech';
 
 void main() {
   setUpAll(() async {
@@ -51,16 +51,16 @@ void main() {
     }
   }
 
-  test("networkType 'test' defaults to the TAAL testnet ARC endpoint", () async {
-    expect(await resolvedArcBaseUrl('test'), equals(_taalTestnet));
+  test("networkType 'test' defaults to the testnet Arcade", () async {
+    expect(await resolvedArcBaseUrl('test'), equals(_arcadeTestnet));
   });
 
-  test("networkType 'main' defaults to the GorillaPool mainnet ARC endpoint", () async {
-    expect(await resolvedArcBaseUrl('main'), equals(_gorillaPoolMainnet));
+  test("networkType 'main' defaults to the mainnet Arcade", () async {
+    expect(await resolvedArcBaseUrl('main'), equals(_arcadeMainnet));
   });
 
   test("networkType 'mainnet' is treated like 'main'", () async {
-    expect(await resolvedArcBaseUrl('mainnet'), equals(_gorillaPoolMainnet));
+    expect(await resolvedArcBaseUrl('mainnet'), equals(_arcadeMainnet));
   });
 
   test('an explicit arcConfig is used as given', () async {

@@ -492,11 +492,12 @@ class LibSpiffyActorSystem {
     // 6. Store ARC configuration for actors
     // ARCActor used to fall back to TAAL *mainnet* whenever no config was
     // given, even though networkType defaults to 'test'.
-    // Mainnet defaults to GorillaPool, which needs no API key.
+    // Both networks default to the BSV Association's Arcade, which needs no
+    // API key: ARC is deprecated on 30 November 2026.
     _arcConfig = arcConfig ??
         (NetworkName.isMainnet(networkType)
-            ? ArcServiceConfig.gorillaPoolMainnet()
-            : ArcServiceConfig.taalTestnet());
+            ? ArcServiceConfig.bsvaArcadeMainnet()
+            : ArcServiceConfig.bsvaArcadeTestnet());
     _arcService = arcService;  // ← Store mock service for testing
     
     // 6.5. Store blockchain data source for imports
@@ -1478,7 +1479,7 @@ class LibSpiffyActorSystem {
   bool get ownsActorSystem => _ownsActorSystem;
 
   /// The ARC configuration resolved by [initialize] (explicit [arcConfig],
-  /// otherwise the TAAL endpoint for [networkType]).
+  /// otherwise the BSV Association's Arcade for [networkType]).
   ArcServiceConfig? get arcConfig => _arcConfig;
 
   /// Broadcast an import notification to [importNotifications] subscribers.

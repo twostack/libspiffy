@@ -70,7 +70,7 @@ export 'src/services/crypto_service.dart';      // Comprehensive crypto service 
 export 'src/services/dartsv_crypto_service.dart'; // DartSV-based implementation with HD wallets
 
 // 🚀 ARC SERVICE INTEGRATION - Production-ready transaction broadcasting
-export 'src/services/arc_service_config.dart';  // ARC node configuration (TAAL testnet/mainnet)
+export 'src/services/arc_service_config.dart';  // Broadcaster configuration (Arcade mainnet/testnet)
 export 'src/services/arc_service.dart';         // Complete ARC API with BEEF support
 
 // 🚀 SCRIPT ANALYSIS - Universal Bitcoin script support

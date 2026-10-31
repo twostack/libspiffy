@@ -32,7 +32,8 @@ class ArcServiceConfig {
     this.minimumFeeRate,
   });
 
-  /// Configuration for the TAAL testnet ARC service
+  /// Configuration for the TAAL testnet ARC service. ARC is deprecated on
+  /// 30 November 2026; use [bsvaArcadeTestnet].
   static ArcServiceConfig taalTestnet({String? apiKey, FeeRate? minimumFeeRate}) =>
       ArcServiceConfig(
         baseUrl: 'https://arc-test.taal.com/v1',
@@ -40,7 +41,8 @@ class ArcServiceConfig {
         minimumFeeRate: minimumFeeRate,
       );
 
-  /// Configuration for the TAAL mainnet ARC service
+  /// Configuration for the TAAL mainnet ARC service. ARC is deprecated on
+  /// 30 November 2026; use [bsvaArcadeMainnet].
   static ArcServiceConfig taalMainnet({String? apiKey, FeeRate? minimumFeeRate}) =>
       ArcServiceConfig(
         baseUrl: 'https://arc.taal.com/v1',
@@ -48,7 +50,8 @@ class ArcServiceConfig {
         minimumFeeRate: minimumFeeRate,
       );
 
-  /// Configuration for the GorillaPool mainnet ARC service (no API key).
+  /// Configuration for the GorillaPool mainnet ARC service (no API key). ARC
+  /// is deprecated on 30 November 2026; use [bsvaArcadeMainnet].
   static ArcServiceConfig gorillaPoolMainnet({String? apiKey, FeeRate? minimumFeeRate}) =>
       ArcServiceConfig(
         baseUrl: 'https://arc.gorillapool.io/v1',
@@ -56,7 +59,8 @@ class ArcServiceConfig {
         minimumFeeRate: minimumFeeRate,
       );
 
-  /// Configuration for the GorillaPool testnet ARC service (no API key).
+  /// Configuration for the GorillaPool testnet ARC service (no API key). ARC
+  /// is deprecated on 30 November 2026; use [bsvaArcadeTestnet].
   static ArcServiceConfig gorillaPoolTestnet({String? apiKey, FeeRate? minimumFeeRate}) =>
       ArcServiceConfig(
         baseUrl: 'https://testnet.arc.gorillapool.io/v1',
@@ -71,6 +75,19 @@ class ArcServiceConfig {
   static ArcServiceConfig bsvaArcadeTestnet({String? apiKey, FeeRate? minimumFeeRate}) =>
       ArcServiceConfig(
         baseUrl: 'https://arcade-v2-testnet-us-1.bsvblockchain.tech',
+        apiKey: apiKey,
+        minimumFeeRate: minimumFeeRate,
+      );
+
+  /// Configuration for the BSV Association's mainnet Arcade (no API key).
+  ///
+  /// The mainnet default: ARC is deprecated on 30 November 2026, and the
+  /// TAAL and GorillaPool ARC presets above stop working with it. Arcade
+  /// publishes the network's own rate (1 sat/kB when this was written), so an
+  /// app that wants to pay more sets [minimumFeeRate].
+  static ArcServiceConfig bsvaArcadeMainnet({String? apiKey, FeeRate? minimumFeeRate}) =>
+      ArcServiceConfig(
+        baseUrl: 'https://arcade-v2-us-1.bsvblockchain.tech',
         apiKey: apiKey,
         minimumFeeRate: minimumFeeRate,
       );

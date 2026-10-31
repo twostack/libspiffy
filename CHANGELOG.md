@@ -1,3 +1,11 @@
+## 5.15.0 (unreleased)
+
+Both networks broadcast through the BSV Association's Arcade by default: ARC is deprecated on 30 November 2026
+
+- **`ArcServiceConfig.bsvaArcadeMainnet()`:** the mainnet Arcade at `https://arcade-v2-us-1.bsvblockchain.tech`, no API key, the ARC API at its root as on testnet. It publishes the network's own rate (1 sat/kB today, where GorillaPool's ARC publishes 100), so an app that wants to pay more passes `minimumFeeRate`.
+- **`LibSpiffyActorSystem` with no `arcConfig` now uses Arcade on both networks:** mainnet was GorillaPool's ARC and testnet TAAL's, which answers 401 without an API key. An app that passes its own config is unchanged.
+- The TAAL and GorillaPool presets stay, marked in their docs as ending with ARC.
+
 ## 5.14.0
 
 A wallet signs a message with the key of one of its addresses

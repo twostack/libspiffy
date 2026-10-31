@@ -311,9 +311,10 @@ class ArcMerkleProofResponse {
 /// ARC is the successor to mAPI (merchant API) and implements the BIP-239 
 /// standard for BEEF (Background Evaluation Extended Format) transaction submission.
 /// 
-/// **TAAL ARC Endpoints:**
-/// - Mainnet: https://arc.taal.com/v1
-/// - Testnet: https://arc-test.taal.com/v1
+/// **Endpoints:** the BSV Association's Arcade, which serves the ARC API at
+/// its root (ARC itself is deprecated on 30 November 2026):
+/// - Mainnet: https://arcade-v2-us-1.bsvblockchain.tech
+/// - Testnet: https://arcade-v2-testnet-us-1.bsvblockchain.tech
 /// 
 /// **Authentication:**
 /// All requests include an Authorization header when an API key is provided.
@@ -331,8 +332,8 @@ class ArcService {
   
   /// Create a new ARC service
   /// 
-  /// [baseUrl] - The base URL of the ARC API (e.g., https://arc.taal.com/v1 for mainnet,
-  ///             https://arc-test.taal.com/v1 for testnet)
+  /// [baseUrl] - The base URL of the ARC API (e.g.,
+  ///             https://arcade-v2-us-1.bsvblockchain.tech for mainnet)
   /// [apiKey] - Optional API key for authentication (required for TAAL production use)
   ArcService({
     required this.baseUrl,

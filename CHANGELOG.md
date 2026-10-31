@@ -1,4 +1,4 @@
-## 5.15.0 (unreleased)
+## 5.15.0
 
 Both networks broadcast through the BSV Association's Arcade by default: ARC is deprecated on 30 November 2026
 

@@ -1,4 +1,4 @@
-## 5.16.0 (unreleased)
+## 5.16.0
 
 Payments to an address show while still in the mempool, and a payment someone sent that the network never takes stops showing as on the way for ever
 

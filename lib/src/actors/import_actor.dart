@@ -12,6 +12,7 @@ import '../services/address_discovery_service.dart';
 import '../services/import_order.dart';
 import '../services/spent_output_repair.dart';
 import '../services/transaction_import_service.dart';
+import '../services/unmined_payment_finder.dart';
 import '../services/script_type_registry.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
@@ -96,6 +97,10 @@ class ImportActor extends Actor {
   int _skippedTransactions = 0;
   int _failedTransactions = 0;
 
+  /// What the running named-address scan found in the mempool
+  /// (spiffyvault-bld), as BEEFs for the wallet to check.
+  List<String> _unminedPaymentBeefs = const [];
+
   /// The addresses the running import's scan derived and found unused, by
   /// address: where it looks for the owner of a HODLocker output, whose key
   /// has no history of its own (bead spiffyvault-mnz.1). An owner found here
@@ -135,7 +140,12 @@ class ImportActor extends Actor {
         _walletManagerActor = walletManagerActor,
         _walletProjection = walletProjection,
         _eventBroadcaster = eventBroadcaster,
-        _ackTimeout = ackTimeout;
+        _ackTimeout = ackTimeout {
+    _unminedFinder = UnminedPaymentFinder(dataSource: dataSource, importService: _importService, storage: storage);
+  }
+
+  /// Looks for a named-address scan's payments still in the mempool.
+  late final UnminedPaymentFinder _unminedFinder;
 
   /// True while an import job is running.
   bool get isImporting => _currentImportWalletId != null;
@@ -221,6 +231,7 @@ class ImportActor extends Actor {
     _processedTransactions = 0;
     _skippedTransactions = 0;
     _failedTransactions = 0;
+    _unminedPaymentBeefs = const [];
     _logger.info('▶️  Starting ${message.resume ? 'resumed ' : ''}import for wallet: '
         '${message.walletId}, network: ${message.networkType}');
     // Deliberately not awaited: the job runs outside the message handler so
@@ -259,6 +270,16 @@ class ImportActor extends Actor {
       await _importTransactions(message, discoveredAddresses);
       _logger.info('   ✅ Imported $_processedTransactions transactions');
       _throwIfCancelled();
+
+      // A named-address scan also looks for payments still in the mempool
+      // (spiffyvault-bld): mined history alone showed a payment only once a
+      // block held it.
+      final named = message.addresses;
+      if (named != null && named.isNotEmpty) {
+        final unmined = await _cancellable(_unminedFinder.find(walletId, named));
+        _unminedPaymentBeefs = [for (final p in unmined) p.beefHex];
+        _throwIfCancelled();
+      }
 
       _logger.info('🏁 Phase 4/4: Completing import...');
       await _completeImport(message);
@@ -1262,6 +1283,7 @@ class ImportActor extends Actor {
       transactionsSkipped: _skippedTransactions,
       transactionsFailed: _failedTransactions,
       importedUtxos: [], // UTXOs are tracked via ReceiveUTXOCommand
+      unminedPaymentBeefs: _unminedPaymentBeefs,
     ));
 
     _reportProgress(ImportStep.done, 

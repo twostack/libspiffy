@@ -14,6 +14,7 @@ import '../models/invoice_output_spec.dart';
 import '../models/invoice_read_model.dart';
 import 'invoice_messages.dart';
 import 'wallet_messages.dart';
+import '../utils/even_split.dart';
 
 /// Coordinator actor for invoice management using CQRS pattern
 /// 
@@ -554,10 +555,11 @@ class InvoiceCoordinatorActor extends Actor {
   List<InvoiceOutputSpec> _buildFinalOutputs(_PendingInvoiceRequest request) {
     if (request.outputs == null || request.outputs!.isEmpty) {
       // Legacy mode - create P2PKH outputs from addresses
-      final amountPerAddress = request.amount ~/ BigInt.from(request.collectedAddresses.length);
-      return request.collectedAddresses
-          .map((addr) => P2PKHOutputSpec(address: addr, amount: amountPerAddress))
-          .toList();
+      final addresses = request.collectedAddresses;
+      final amounts = evenSplit(request.amount, addresses.length);
+      return [
+        for (var i = 0; i < addresses.length; i++) P2PKHOutputSpec(address: addresses[i], amount: amounts[i]),
+      ];
     }
 
     // Fill in empty addresses in P2PKH outputs

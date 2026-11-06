@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/persistent_map.dart';
+import '../utils/even_split.dart';
 
 /// Base class for all invoice commands
 abstract class InvoiceCommand extends Command {
@@ -50,10 +51,10 @@ class CreateInvoiceCommand extends InvoiceCommand {
     }
     // Convert legacy addresses/amount to P2PKH outputs
     if (addresses.isEmpty) return [];
-    final amountPerAddress = amount ~/ BigInt.from(addresses.length);
-    return addresses
-        .map((addr) => P2PKHOutputSpec(address: addr, amount: amountPerAddress))
-        .toList();
+    final amounts = evenSplit(amount, addresses.length);
+    return [
+      for (var i = 0; i < addresses.length; i++) P2PKHOutputSpec(address: addresses[i], amount: amounts[i]),
+    ];
   }
 
   /// Get effective total amount

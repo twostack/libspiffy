@@ -26,6 +26,7 @@ import '../storage/read_model_storage.dart';
 import '../storage/transaction_row_rules.dart';
 import '../utils/beef.dart';
 import '../utils/extended_format.dart';
+import '../utils/tx_finality.dart';
 import 'spv_messages.dart' show BlockHeaderStoredMessage;
 import 'submission_watcher_actor.dart';
 import 'wallet_messages.dart';
@@ -257,6 +258,13 @@ class ARCActor extends Actor {
   /// When each transaction may next be looked up at [_proofSource], by txid.
   final Map<String, DateTime> _proofLookupDue = {};
 
+  /// How often a payment handed to the wallet that ARC does not know is
+  /// sent to ARC again ([_resendHandedOver], spiffyvault-95e).
+  final Duration unknownResendInterval;
+
+  /// When each such payment may next be sent again, by txid.
+  final Map<String, DateTime> _resendDue = {};
+
   /// Spawned on the first submission answered in flight.
   ActorRef? _watcher;
   int _followSeq = 0;
@@ -282,6 +290,7 @@ class ARCActor extends Actor {
     this.proofLookupAfter = const Duration(hours: 1),
     this.proofLookupInterval = const Duration(minutes: 10),
     this.inFlightFollowDelays = defaultInFlightFollowDelays,
+    this.unknownResendInterval = const Duration(minutes: 30),
   })  : _walletManager = walletManager,
         _proofSource = proofSource,
         _storage = storage,
@@ -959,7 +968,10 @@ class ARCActor extends Actor {
         scannedIds.add(tx.txid);
         _log.fine('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
         if (await _failResolvedDeferredRow(walletId, tx)) continue;
-        final check = await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+        var check = await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+        if (check.status == DeferredNetworkStatus.notFound) {
+          check = await _resendHandedOver(walletId, tx) ?? check;
+        }
         var outcome = check.outcome;
         if (outcome != _CheckOutcome.changed &&
             (tx.status == TransactionStatus.broadcast || tx.status == TransactionStatus.pending) &&
@@ -985,6 +997,7 @@ class ARCActor extends Actor {
       }
       // Forget back-off state of transactions that are no longer pending.
       _pendingBackoff.removeWhere((txid, _) => !pendingIds.contains(txid));
+      _resendDue.removeWhere((txid, _) => !scannedIds.contains(txid) && !pendingIds.contains(txid));
       _proofLookupDue.removeWhere((txid, _) => !scannedIds.contains(txid));
       if (checked > 0) {
         _log.info('Checked $checked of ${transactions.length} non-terminal transaction(s)');
@@ -1565,6 +1578,67 @@ class ARCActor extends Actor {
   }
 
   // ==========================================================================
+  // PAYMENTS HANDED TO THE WALLET THAT ARC DOES NOT KNOW (spiffyvault-95e)
+  // ==========================================================================
+
+  /// [tx], a payment handed to [walletId] that ARC answered not found for,
+  /// is sent to ARC again: the payer may never have broadcast it, or ARC
+  /// dropped it. Its coins were on the way for ever. ARC's answer is acted
+  /// on as any submission's: SEEN_ON_NETWORK makes them available, REJECTED
+  /// fails the row and voids them (spiffyvault-izz), and a competing spend
+  /// that is mined voids them through [_resolveIfInputSpent].
+  ///
+  /// Only an incoming transaction (it adds to the wallet) that is not a
+  /// deferred payment of this wallet, and only a final one: a transaction
+  /// whose lock time is still to come is refused by the network until then,
+  /// and that refusal is no verdict on it. Sent at most once per
+  /// [unknownResendInterval]. Returns the status check of ARC's answer, or
+  /// null when nothing was sent or ARC refused the submission outright.
+  Future<_StatusCheck?> _resendHandedOver(String walletId, BitcoinTransaction tx) async {
+    if (_arcService == null) return null;
+    if (tx.status != TransactionStatus.pending && tx.status != TransactionStatus.broadcast) return null;
+    if (!tx.isIncoming || tx.rawHex.isEmpty) return null;
+    final now = _clock();
+    final due = _resendDue[tx.txid];
+    if (due != null && now.isBefore(due)) return null;
+    if (await _storage.getDeferredPayment(walletId, tx.txid) != null) return null;
+    if (!_isFinal(tx.rawHex, await _bestHeightOrNull(), now)) return null;
+    _resendDue[tx.txid] = now.add(unknownResendInterval);
+
+    _log.info('ARC does not know ${tx.txid}, a payment handed to wallet $walletId; sending it again');
+    try {
+      final answer = await _arcService!.submitTransaction(await _submitForm(tx.rawHex, null));
+      _log.info('ARC answered ${answer.status.wireName} for the resent ${tx.txid}');
+      final proof = await _applySubmitAnswer(walletId, tx.txid, tx.rawHex, answer);
+      return _StatusCheck(_CheckOutcome.changed, status: answer.status.wireName, proofStatus: proof);
+    } catch (e) {
+      _log.info('ARC did not take the resent ${tx.txid}: $e');
+      return null;
+    }
+  }
+
+  /// [isFinalTransaction] for [rawHex]; an unreadable transaction is not
+  /// final, and is not sent.
+  static bool _isFinal(String rawHex, int? bestHeight, DateTime now) {
+    try {
+      return isFinalTransaction(dartsv.Transaction.fromHex(rawHex), bestHeight: bestHeight, now: now);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// The stored chain's height, or null when there is none or it cannot be
+  /// read.
+  Future<int?> _bestHeightOrNull() async {
+    try {
+      final height = await _storage.getBestHeight();
+      return height > 0 ? height : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ==========================================================================
   // UNSETTLED TRANSACTIONS WITH AN INPUT SPENT ELSEWHERE
   // ==========================================================================
 
@@ -2082,6 +2156,16 @@ class ARCActor extends Actor {
         walletId: walletId,
         txid: txid,
         newStatus: txStatus,
+      )));
+    }
+    // A payment handed to the wallet that ARC rejects stops counting as on
+    // the way: its pending outputs are voided (bead spiffyvault-izz). The
+    // wallet does nothing for one it built itself.
+    if (arcStatus == ArcTransactionStatus.rejected) {
+      _walletManager.tell(WalletCommandMessage(walletId, VoidRejectedTransactionCommand(
+        walletId: walletId,
+        txid: txid,
+        networkStatus: arcStatus.wireName,
       )));
     }
   }

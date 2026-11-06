@@ -1767,6 +1767,11 @@ class ImportCompleteEvent extends CoordinatorReply {
   /// [ImportWalletCommand] with `resume: true` to try them again.
   final int transactionsFailed;
 
+  /// Payments to a named-address scan's addresses that are still in the
+  /// mempool, which the wallet checked and took as on the way
+  /// (spiffyvault-bld). Each also had its own [BEEFValidationResultEvent].
+  final int unminedPayments;
+
   ImportCompleteEvent({
     required this.walletId,
     required this.success,
@@ -1776,6 +1781,7 @@ class ImportCompleteEvent extends CoordinatorReply {
     this.transactionCount = 0,
     this.transactionsSkipped = 0,
     this.transactionsFailed = 0,
+    this.unminedPayments = 0,
     this.requestId,
   });
 

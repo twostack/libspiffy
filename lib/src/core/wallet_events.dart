@@ -2334,6 +2334,12 @@ class WalletImportCompletedEvent extends WalletImportNotification {
 
   final List<Map<String, dynamic>> importedUtxos;
 
+  /// A named-address scan's payments to those addresses that are still in
+  /// the mempool, each as a BEEF (hex) the wallet is still to check
+  /// (spiffyvault-bld). The coordinator checks each as a received payment
+  /// before it reports the import complete.
+  final List<String> unminedPaymentBeefs;
+
   WalletImportCompletedEvent({
     required super.walletId,
     required this.totalAddresses,
@@ -2341,9 +2347,11 @@ class WalletImportCompletedEvent extends WalletImportNotification {
     this.transactionsSkipped = 0,
     this.transactionsFailed = 0,
     required List<Map<String, dynamic>> importedUtxos,
+    List<String> unminedPaymentBeefs = const [],
     super.timestamp,
     super.metadata,
-  }) : importedUtxos = frozenMapList(importedUtxos);
+  })  : importedUtxos = frozenMapList(importedUtxos),
+        unminedPaymentBeefs = frozenList(unminedPaymentBeefs);
 
   /// True when every transaction found for the wallet is recorded.
   bool get isComplete => transactionsFailed == 0;
@@ -2867,6 +2875,56 @@ class TransactionVoidedEvent extends WalletEvent {
         txid: map['txid'] as String,
         spentInput: map['spentInput'] as String,
         spentBy: map['spentBy'] as String,
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// ARC reported [txid], a transaction handed to this wallet, REJECTED: its
+/// pending outputs are voided (see [VoidRejectedTransactionCommand]). A later
+/// SEEN_ON_NETWORK or proof of [txid] makes them available again.
+class RejectedTransactionVoidedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.rejected_voided';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+
+  /// ARC's wire name for the status (`REJECTED`).
+  final String networkStatus;
+
+  RejectedTransactionVoidedEvent({
+    required String walletId,
+    required this.txid,
+    this.networkStatus = 'REJECTED',
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  /// Why, in words, for logs and the wallet's record.
+  String get reason => 'ARC reported it $networkStatus';
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'networkStatus': networkStatus,
+      };
+
+  static RejectedTransactionVoidedEvent fromMap(Map<String, dynamic> map) => RejectedTransactionVoidedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        networkStatus: (map['networkStatus'] as String?) ?? 'REJECTED',
         eventId: map['eventId'] as String?,
         timestamp: _deferredDate(map['timestamp']),
         version: map['version'] as int?,

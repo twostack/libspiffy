@@ -229,6 +229,7 @@ class WalletCoordinatorActor extends Actor {
         domain_events.DeferredTransactionCancelledEvent(:final walletId) => walletId,
         domain_events.DeferredSpendReclaimedEvent(:final walletId) => walletId,
         domain_events.TransactionVoidedEvent(:final walletId) => walletId,
+        domain_events.RejectedTransactionVoidedEvent(:final walletId) => walletId,
         _ => null,
       };
 
@@ -1191,15 +1192,19 @@ class WalletCoordinatorActor extends Actor {
           ));
         } else if (event is domain_events.WalletImportCompletedEvent) {
           _eventSubscriptions.remove(cmd.walletId)?.cancel();
-          _emitEvent(ImportCompleteEvent(
-            walletId: cmd.walletId,
-            success: true,
-            addressCount: event.totalAddresses,
-            transactionCount: event.totalTransactions,
-            transactionsSkipped: event.transactionsSkipped,
-            transactionsFailed: event.transactionsFailed,
-            requestId: cmd.requestId,
-          ));
+          unawaited(() async {
+            final unmined = await _checkUnminedPayments(cmd.walletId, event.unminedPaymentBeefs);
+            _emitEvent(ImportCompleteEvent(
+              walletId: cmd.walletId,
+              success: true,
+              addressCount: event.totalAddresses,
+              transactionCount: event.totalTransactions,
+              transactionsSkipped: event.transactionsSkipped,
+              transactionsFailed: event.transactionsFailed,
+              unminedPayments: unmined,
+              requestId: cmd.requestId,
+            ));
+          }());
         } else if (event is domain_events.WalletImportFailedEvent) {
           _eventSubscriptions.remove(cmd.walletId)?.cancel();
           _emitEvent(failed(event.error, event.errorCode));
@@ -1544,6 +1549,32 @@ class WalletCoordinatorActor extends Actor {
       requestId: cmd.requestId,
     ));
   }
+
+  /// Checks each of [beefs], a scan's payments still in the mempool
+  /// (spiffyvault-bld), as a received payment of [walletId], one after
+  /// another, and returns how many the wallet took. Each is answered on the
+  /// event stream with its own [BEEFValidationResultEvent], as any payment
+  /// handed to the wallet is. One that is refused or not answered in time
+  /// is passed over: the block brings it to a later scan.
+  Future<int> _checkUnminedPayments(String walletId, List<String> beefs) async {
+    var taken = 0;
+    for (final beefHex in beefs) {
+      final requestId = 'scan-unmined-${++_unminedCheckSeq}';
+      final reply = awaitReply(requestId);
+      _validateBEEF(ValidateBEEFCommand(walletId: walletId, beefHex: beefHex, requestId: requestId));
+      try {
+        final answer = await reply.timeout(CoordinatorRequest.paymentTimeout);
+        if (answer is BEEFValidationResultEvent && answer.valid) taken++;
+      } catch (e) {
+        _awaitedReplies.remove(requestId);
+        _log.info('An unmined payment to wallet $walletId was not taken: $e');
+      }
+    }
+    if (beefs.isNotEmpty) _log.info('$taken of ${beefs.length} unmined payment(s) taken by wallet $walletId');
+    return taken;
+  }
+
+  int _unminedCheckSeq = 0;
 
   void _validateBEEF(ValidateBEEFCommand cmd) {
     _log.info('Validating BEEF for wallet ${cmd.walletId}');

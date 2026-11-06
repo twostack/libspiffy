@@ -103,8 +103,9 @@ const _sources = <String, String?>{
 /// .addresses`), 190 with lock keys given to an imported wallet
 /// (spiffyvault-mnz.5: `ImportWalletCommand.lockKeyWifs`), 192 with
 /// messages signed by an address key (overnode_v2-l6bx.7: both
-/// `SignMessageCommand.message`s).
-const _expectedFields = 192;
+/// `SignMessageCommand.message`s), 193 with a scan's payments still in the
+/// mempool (spiffyvault-bld: `WalletImportCompletedEvent.unminedPaymentBeefs`).
+const _expectedFields = 193;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

@@ -1,5 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:convert/convert.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar_community/isar.dart';
@@ -222,11 +226,20 @@ class MockTestnetDataSource implements BlockchainDataSource {
     return history;
   }
 
-  @override
-  Future<List<UtxoInfo>> getUtxos(String address) async {
-    // For simplicity, return empty list (not needed for import tests)
-    return [];
+  /// Unspent outputs by address (a named-address scan reads the unmined
+  /// ones, spiffyvault-bld).
+  final Map<String, List<UtxoInfo>> utxos = {};
+
+  /// Add [rawHex], a transaction not mined yet, paying [address].
+  String addUnmined(String address, String rawHex) {
+    final txid = dartsv.Transaction.fromHex(rawHex).id;
+    _rawTransactions[txid] = rawHex;
+    utxos.putIfAbsent(address, () => []).add(UtxoInfo(txid: txid, vout: 0, value: 1000, address: address));
+    return txid;
   }
+
+  @override
+  Future<List<UtxoInfo>> getUtxos(String address) async => utxos[address] ?? const [];
 
   @override
   Future<int> getCurrentBlockHeight() async {
@@ -867,6 +880,30 @@ void main() {
         final utxos = await context.storage.getUTXOs(walletId);
         expect(utxos.length, 1);
         expect(utxos.single.address, kTestRootAddress, reason: 'the coin is named by the scanned address');
+      } finally {
+        await context.dispose();
+      }
+    });
+
+    test('spiffyvault-bld: a payment still in the mempool comes back as a BEEF for the wallet to check', () async {
+      final context = await setupTestContext();
+      try {
+        final walletId = await emptyWallet(context);
+        final payment = dartsv.Transaction()
+          ..addInput(dartsv.TransactionInput(kTx2Id, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER))
+          ..addOutput(dartsv.TransactionOutput(
+              BigInt.from(1000), dartsv.SVScript.fromHex('76a9149d02ce72bbdc1713d5537a0705d8ec7d9702c81088ac')));
+        final txid = context.mockDataSource.addUnmined(kTestRootAddress, payment.serialize());
+
+        final scan = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(
+            walletId: walletId, walletName: 'Scan', networkType: 'test', addresses: [kTestRootAddress]);
+        final done = await scan as WalletImportCompletedEvent;
+
+        expect(done.totalTransactions, 2, reason: 'the mined history is recorded as before');
+        final beef = BEEF.parse(Uint8List.fromList(hex.decode(done.unminedPaymentBeefs.single)));
+        expect([for (final tx in beef.txs) hex.encode(beef.calculateTxid(tx))], [kTx2Id, txid]);
+        expect(beef.hasMerkle, [true, false]);
       } finally {
         await context.dispose();
       }

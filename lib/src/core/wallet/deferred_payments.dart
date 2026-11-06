@@ -991,6 +991,39 @@ class DeferredPayments {
     state.lastModified = event.timestamp;
   }
 
+  /// ARC reported a transaction handed to this wallet REJECTED
+  /// ([VoidRejectedTransactionCommand], bead spiffyvault-izz): its pending
+  /// outputs are voided. No event for a transaction this wallet built, or
+  /// when nothing of it is pending.
+  List<Event> voidRejected(WalletState currentState, VoidRejectedTransactionCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot void a transaction of non-existent wallet');
+    }
+    if (record(currentState, command.txid) != null || OutgoingTransactions.isRecorded(currentState, command.txid)) {
+      return const [];
+    }
+    final pending = currentState.utxos.values.any((u) => u.txid == command.txid && u.status == UTXOStatus.pending);
+    if (!pending) return const [];
+    return [
+      RejectedTransactionVoidedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        networkStatus: command.networkStatus,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      ),
+    ];
+  }
+
+  static void applyRejectedVoided(WalletStateBuilder state, RejectedTransactionVoidedEvent event) {
+    _voidOwnOutputs(state, event.txid, event.timestamp);
+    final voided = state.metadata[_voidedKey];
+    final records = voided is Map ? frozenRecord(voided) : freezeMap(<String, dynamic>{});
+    state.metadata = state.metadata.put(_voidedKey, records.put(event.txid, event.reason));
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
   /// A deferred payment failed or was cancelled: each released input still
   /// reserved by it returns to its recorded status, and the transaction's own
   /// pending outputs — its change — become [UTXOStatus.voided], since that

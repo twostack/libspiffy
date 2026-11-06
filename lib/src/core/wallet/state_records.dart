@@ -31,7 +31,8 @@ abstract final class WalletMetadataKeys {
   static const String deferredHolds = 'deferredHolds';
 
   /// txid -> why a transaction handed to the wallet was voided
-  /// (`TransactionVoidedEvent`): an input already spent elsewhere.
+  /// (`TransactionVoidedEvent`: an input already spent elsewhere;
+  /// `RejectedTransactionVoidedEvent`: ARC reported it REJECTED).
   static const String voidedTransactions = 'voidedTransactions';
 
   /// txid -> how many ancestors are kept for a transaction this wallet

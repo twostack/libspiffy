@@ -311,6 +311,34 @@ void main() {
       );
     });
 
+    test('ARC rejecting a transaction handed to the wallet voids its pending outputs, once (spiffyvault-izz)', () async {
+      final wallet = _Wallet();
+      final command = VoidRejectedTransactionCommand(walletId: _w, txid: _received);
+
+      final events = await wallet.handle(command);
+      final voided = events.single as RejectedTransactionVoidedEvent;
+      expect(voided.reason, 'ARC reported it REJECTED');
+      expect(wallet.utxo('$_received:0').status, UTXOStatus.voided);
+      expect(await wallet.handle(command), isEmpty);
+
+      // REJECTED can be stale: the network taking it after all makes the
+      // output available.
+      await wallet.handle(ApplyDeferredSpendCommand(walletId: _w, txid: _received));
+      expect(wallet.utxo('$_received:0').status, UTXOStatus.available);
+    });
+
+    test('ARC rejecting a deferred payment of the wallet voids nothing here', () async {
+      final wallet = _Wallet();
+      final stuck = await wallet.payDeferred([_spentOutput]);
+      expect(await wallet.handle(VoidRejectedTransactionCommand(walletId: _w, txid: stuck)), isEmpty);
+    });
+
+    test('the rejected-voided event survives a round trip through its map', () {
+      final event = RejectedTransactionVoidedEvent(walletId: _w, txid: _received, version: 7);
+      final back = RejectedTransactionVoidedEvent.fromMap({...event.toMap(), 'walletId': _w});
+      expect((back.txid, back.networkStatus), (_received, 'REJECTED'));
+    });
+
     test('the voided event survives a round trip through its map', () {
       final event = TransactionVoidedEvent(
           walletId: _w, txid: _received, spentInput: _spentOutput, spentBy: 'e5' * 32, version: 7);
@@ -330,6 +358,20 @@ void main() {
 
       await projection.handle(TransactionVoidedEvent(
           walletId: _w, txid: received.txid, spentInput: _spentOutput, spentBy: 'e5' * 32, version: 9));
+
+      expect((await storage.getTransaction(received.txid, walletId: _w))!.status, TransactionStatus.failed);
+      expect((await storage.getUTXO(_w, received.txid, 0))!.status, UTXOStatus.voided);
+    });
+
+    test('a transaction ARC rejected: its row fails and its pending output is voided (spiffyvault-izz)', () async {
+      final storage = InMemoryWalletStorage();
+      await storage.storeWallet(_w, 'W');
+      final received = _row(_spending([_spentOutput]), TransactionStatus.broadcast);
+      await storage.storeTransaction(_w, received);
+      await storage.upsertUTXO(_w, _utxo('${received.txid}:0', UTXOStatus.pending));
+      final projection = WalletProjection(projectionId: 'p', eventStore: _NoopEventStore(), storage: storage);
+
+      await projection.handle(RejectedTransactionVoidedEvent(walletId: _w, txid: received.txid, version: 9));
 
       expect((await storage.getTransaction(received.txid, walletId: _w))!.status, TransactionStatus.failed);
       expect((await storage.getUTXO(_w, received.txid, 0))!.status, UTXOStatus.voided);

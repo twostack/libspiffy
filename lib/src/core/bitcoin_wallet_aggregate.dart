@@ -812,6 +812,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return OutgoingTransactions.applyDeferredSpend(currentState, cmd);
       case final VoidUnsettledTransactionCommand cmd:
         return _deferred.voidUnsettled(currentState, cmd);
+      case final VoidRejectedTransactionCommand cmd:
+        return _deferred.voidRejected(currentState, cmd);
       case final RecordTransactionAncestorsCommand cmd:
         return OutgoingTransactions.recordAncestors(currentState, cmd);
       default:
@@ -918,6 +920,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         DeferredPayments.applyCompleted(state, completed);
       case final TransactionVoidedEvent voided:
         DeferredPayments.applyVoided(state, voided);
+      case final RejectedTransactionVoidedEvent voided:
+        DeferredPayments.applyRejectedVoided(state, voided);
       case final TransactionAncestorsRecordedEvent recorded:
         OutgoingTransactions.applyAncestorsRecorded(state, recorded);
       default:

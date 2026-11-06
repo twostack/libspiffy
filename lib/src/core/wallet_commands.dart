@@ -1689,6 +1689,37 @@ class VoidUnsettledTransactionCommand extends WalletCommand {
   String get commandType => 'VoidUnsettledTransactionCommand';
 }
 
+/// Records that ARC reported [txid], a transaction handed to this wallet,
+/// REJECTED (bead spiffyvault-izz): its pending outputs become
+/// [UTXOStatus.voided], so they stop counting as funds on the way. Its row is
+/// failed by [UpdateTransactionStatusCommand], as before.
+///
+/// REJECTED is not the last word (bead libspiffy-5bju): a later
+/// SEEN_ON_NETWORK or a merkle proof of [txid] makes its voided outputs
+/// available, as for any voided output.
+///
+/// No event for a transaction this wallet built (a deferred payment fails
+/// through [RecordTransactionNetworkStatusCommand], an ordinary one is
+/// settled by its own status), or when nothing of [txid] is pending.
+class VoidRejectedTransactionCommand extends WalletCommand {
+  final String txid;
+
+  /// ARC's wire name for the status (`REJECTED`).
+  final String networkStatus;
+
+  VoidRejectedTransactionCommand({
+    required String walletId,
+    required this.txid,
+    this.networkStatus = 'REJECTED',
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'VoidRejectedTransactionCommand';
+}
+
 /// Keeps the ancestors of [txid], a transaction this wallet recorded, that
 /// the BEEF it was settled with carried (`SettleBEEFCommand`, bead
 /// libspiffy-yiba): the parents of inputs the wallet does not own, a

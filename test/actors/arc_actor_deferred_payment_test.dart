@@ -60,7 +60,10 @@ void main() {
   late ActorRef arcActor;
 
   Future<void> storeTx(String txid, String rawHex,
-          {TransactionStatus status = TransactionStatus.pending, String wallet = _wallet, DateTime? createdAt}) =>
+          {TransactionStatus status = TransactionStatus.pending,
+          String wallet = _wallet,
+          DateTime? createdAt,
+          int netAmount = 0}) =>
       storage.storeTransaction(
         wallet,
         BitcoinTransaction(
@@ -73,7 +76,7 @@ void main() {
           fee: BigInt.zero,
           receivingAddresses: const [],
           sendingAddresses: const [],
-          netAmount: BigInt.zero,
+          netAmount: BigInt.from(netAmount),
           createdAt: createdAt ?? DateTime.utc(2026),
           updatedAt: createdAt ?? DateTime.utc(2026),
           lockTime: 0,
@@ -414,6 +417,81 @@ void main() {
 
       expect(statuses(), ['REJECTED/arc']);
       expect(applied(), isEmpty);
+    });
+
+    test('spiffyvault-izz: a received payment ARC reports REJECTED is failed and its outputs voided', () async {
+      // Handed to this wallet: no deferred payment of ours.
+      await storeTx(kFixtureTxid, kFixtureTxHex, status: TransactionStatus.broadcast);
+      await storeUtxo('$kFixtureTxid:1', UTXOStatus.pending);
+      arc.statuses[kFixtureTxid] = status('REJECTED');
+      await spawnActor();
+
+      await scan();
+
+      expect(walletManager.commands.whereType<UpdateTransactionStatusCommand>().map((c) => (c.txid, c.newStatus)),
+          contains((kFixtureTxid, TransactionStatus.failed)));
+      final voided = walletManager.commands.whereType<VoidRejectedTransactionCommand>().single;
+      expect((voided.txid, voided.networkStatus), (kFixtureTxid, 'REJECTED'));
+    });
+
+    group('spiffyvault-95e: a received payment ARC does not know', () {
+      // The fixture's lock time is a block height below kFixtureHeight, as
+      // wallets set it: past once that block is stored.
+      Future<void> received({int netAmount = 5000, int tip = kFixtureHeight}) async {
+        await storage.storeBlockHeader(fixtureHeader(), tip);
+        await storeTx(kFixtureTxid, kFixtureTxHex, netAmount: netAmount);
+        await storeUtxo('$kFixtureTxid:1', UTXOStatus.pending);
+      }
+
+      List<String> updates() => [
+            for (final c in walletManager.commands.whereType<UpdateTransactionStatusCommand>())
+              if (c.txid == kFixtureTxid) c.newStatus.name,
+          ];
+
+      test('is sent to ARC again, and what ARC answers is acted on; not again within the interval', () async {
+        await received();
+        await spawnActor();
+
+        await scan();
+        expect(arc.submitted, hasLength(1));
+        expect(updates(), contains(TransactionStatus.seenOnNetwork.name));
+
+        await scan();
+        expect(arc.submitted, hasLength(1), reason: 'once per unknownResendInterval');
+      });
+
+      test('ARC rejecting the resent payment fails it and voids its outputs (izz)', () async {
+        await received();
+        arc.submitStatus = 'REJECTED';
+        await spawnActor();
+
+        await scan();
+
+        expect(arc.submitted, hasLength(1));
+        expect(updates(), contains(TransactionStatus.failed.name));
+        expect(walletManager.commands.whereType<VoidRejectedTransactionCommand>().single.txid, kFixtureTxid);
+      });
+
+      test('a transaction whose lock time is still to come is not resent', () async {
+        await received(tip: 1239000);
+        await spawnActor();
+        await scan();
+        expect(arc.submitted, isEmpty);
+      });
+
+      test('a transaction the wallet sent is not resent', () async {
+        await received(netAmount: -5000);
+        await spawnActor();
+        await scan();
+        expect(arc.submitted, isEmpty);
+      });
+
+      test('a deferred payment of the wallet is not resent: the payee broadcasts it', () async {
+        await handedOver();
+        await spawnActor();
+        await scan();
+        expect(arc.submitted, isEmpty);
+      });
     });
 
     test('pkum: a contested payment the scan meets reaches the wallet with ARC\'s competing txids', () async {

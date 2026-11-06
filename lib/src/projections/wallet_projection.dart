@@ -87,6 +87,7 @@ class WalletProjection extends Projection<void> {
         DeferredSpendReclaimedEvent,
         DeferredSpendCompletedEvent,
         TransactionVoidedEvent,
+        RejectedTransactionVoidedEvent,
         TransactionAncestorsRecordedEvent,
       ];
   
@@ -214,7 +215,10 @@ class WalletProjection extends Projection<void> {
         await _handleDeferredSpendCompleted(completed);
         return true;
       case final TransactionVoidedEvent voided:
-        await _handleTransactionVoided(voided);
+        await _handleTransactionVoided(voided.walletId, voided.txid, voided.timestamp);
+        return true;
+      case final RejectedTransactionVoidedEvent voided:
+        await _handleTransactionVoided(voided.walletId, voided.txid, voided.timestamp);
         return true;
       case final TransactionAncestorsRecordedEvent recorded:
         // The ancestors a settled BEEF carried (bead libspiffy-yiba), kept
@@ -1162,14 +1166,17 @@ class WalletProjection extends Projection<void> {
   /// pending outputs are voided, as the aggregate does it
   /// (`DeferredPayments.applyVoided`). A confirmed row is left as it is: a
   /// proof outranks the resolution.
-  Future<void> _handleTransactionVoided(TransactionVoidedEvent event) async {
-    final row = await _storage.getTransaction(event.txid, walletId: event.walletId);
+  ///
+  /// The same for a transaction handed to the wallet that ARC reported
+  /// REJECTED (`RejectedTransactionVoidedEvent`, bead spiffyvault-izz).
+  Future<void> _handleTransactionVoided(String walletId, String txid, DateTime at) async {
+    final row = await _storage.getTransaction(txid, walletId: walletId);
     if (row != null && row.status != TransactionStatus.confirmed && row.status != TransactionStatus.failed) {
-      await _storage.storeTransaction(event.walletId, row.copyWith(status: TransactionStatus.failed, updatedAt: event.timestamp));
+      await _storage.storeTransaction(walletId, row.copyWith(status: TransactionStatus.failed, updatedAt: at));
     }
-    final rows = _utxoRows(event.walletId);
-    if (await _voidOwnOutputs(event.walletId, event.txid, event.timestamp, rows)) {
-      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, await rows.unspent());
+    final rows = _utxoRows(walletId);
+    if (await _voidOwnOutputs(walletId, txid, at, rows)) {
+      await _recalculateAndPersistForWallet(walletId, at, await rows.unspent());
     }
   }
 

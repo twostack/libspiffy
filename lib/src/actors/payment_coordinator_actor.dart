@@ -40,6 +40,7 @@ import 'projection_barrier.dart';
 import 'payment_messages.dart';
 import 'wallet_messages.dart';
 import '../core/spiffy_error.dart';
+import '../utils/even_split.dart';
 
 /// Coordinator actor for payment operations with SPV BEEF construction
 /// 
@@ -1165,11 +1166,11 @@ class PaymentCoordinatorActor extends Actor {
         throw ArgumentError('A payment needs at least one output: '
             'the invoice has no addresses and no outputs');
       }
-      final amountPerAddress = msg.amount ~/ BigInt.from(msg.addresses.length);
+      // The last address takes the remainder (spiffyvault-bnb).
+      final amounts = evenSplit(msg.amount, msg.addresses.length);
       return [
-        for (final address in msg.addresses)
-          _PaymentOutput(
-              _p2pkhTo(address, network), amountPerAddress, address),
+        for (var i = 0; i < msg.addresses.length; i++)
+          _PaymentOutput(_p2pkhTo(msg.addresses[i], network), amounts[i], msg.addresses[i]),
       ];
     }
     return [

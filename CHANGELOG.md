@@ -1,4 +1,4 @@
-## 5.15.1 (unreleased)
+## 5.15.1
 
 A payment whose ancestors share a block, sent by a wallet built on the BSV SDK, is accepted
 

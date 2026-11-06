@@ -1,3 +1,9 @@
+## 5.15.1 (unreleased)
+
+A payment whose ancestors share a block, sent by a wallet built on the BSV SDK, is accepted
+
+- **A BUMP that leaves out the nodes its lower levels determine is walked to its root.** The BSV SDK merges the proofs of two transactions mined in the same block into one BUMP and trims every node the walk can compute from the levels below (`MerklePath.trim()`); a whole level can be empty. `BUMP.siblingAt` looked a node up only where it was stored, so such a BUMP failed with "Missing sibling" and the payment was refused as "Ancestor transaction at index 0 failed merkle proof validation". Found when the demo shop's till (wallet-toolbox) swept two phone payments to a phone. A missing node is now computed from its two children, as the SDK does; the root it leads to is still checked against the block header, so a tampered hash below it is refused as before.
+
 ## 5.15.0
 
 Both networks broadcast through the BSV Association's Arcade by default: ARC is deprecated on 30 November 2026

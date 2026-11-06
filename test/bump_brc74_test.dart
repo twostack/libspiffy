@@ -393,4 +393,90 @@ void main() {
       }
     });
   });
+
+  // A BUMP proving several txids of one block may leave out every node its
+  // lower levels determine: the BSV SDK's MerklePath.trim() does, so the
+  // combined BUMPs a BRC-100 wallet sends lack them. The walk computes such a
+  // node from its two children; the root still decides.
+  group('combined BUMPs with computable nodes left out', () {
+    test('real testnet BUMP from the BSV SDK: both txids reach the block root', () {
+      // Block 1761442: two payments' ancestors, merged by @bsv/sdk Beef.mergeBeef
+      // (level 5 is empty). Refused by the phone before the fix.
+      final bump = BUMP.fromHex(
+          'fea2e01a0007041e003946bbf731618e07f05a7195c022523c76c04bff93424de6d579bae1082164e51f02d8d79dd71d0f72b8a45ce76bf65406c4b2166a154fe18af0e36fa282dbf4da993a028b434a4debc849a4e5cc1dc02e924135d3a9f0af72e2b44ae7671a954733b2bd3b0031f59985ab9abbef3cbea10b79cb7b5b65afeb77a889b887edade6e2c58a019a020e00d7ef991187ce2cb7479333d5cb2c1b1f7dc06e47f062d46be6b9a7e49b9272c51c004378ca8244a0a2a00ad9e96f42fab8114d8b9201f08ca3d388a82e8703e6f63602060064b5898c0daa701d813f4c58a799dec830b3e9716294b4dc6e6c31b7393a32bf0f00df51413e48413193f76c93d23000f3b77981418f9952360ae694affe6df4984c02020050f2a7db2729621c6ef51cdef9c2921eb0391ba5f9db1fd743c3f3f4005e66600600754c74763de2efa327cd982e68f1bc694945823c36c99d8c4d12308d74bec5350200001ac7d5587a0ae84df1f3129f9a9cd53840024e87699d6e531c754d9bbb17552d0200d38c7b48bf9cfbfe19ce0e311ab5f781c4b07e954c97a5f21a05e22cbe2d7b8c00010100e96c71799e18dd8f351a8c4a0a0bdadf9d6b3c12d1b284cd738f29593a2b45df');
+      expect(bump.blockHeight, 1761442);
+      expect(bump.path[5].leaves, isEmpty);
+      // The block's merkle root as WhatsOnChain shows it.
+      final root = internal('87ca7409d2e46b8f2a88485379cba5bf5491ca5d4efcb41008d309db7f83c191');
+      for (final txid in [
+        '99daf4db82a26fe3f08ae14f156a16b2c40654f66be75ca4b8720f1dd79dd7d8',
+        'bdb23347951a67e74ab4e272aff0a9d33541922ec01dcce5a449c8eb4d4a438b',
+      ]) {
+        expect(bump.validateMerklePath(internal(txid), expectedMerkleRoot: root), isTrue, reason: txid);
+      }
+    });
+
+    // 8 leaves, txids at 0 and 3: level 1 is left out entirely, since both of
+    // its nodes on the two walks come from level 0.
+    BUMP trimmedEight({Uint8List? leaf2}) => BUMP(blockHeight: 100, path: [
+          Level(leaves: [
+            Leaf(offset: 0, duplicate: false, isTxid: true, hash: eight[0]),
+            Leaf(offset: 1, duplicate: false, isTxid: false, hash: eight[1]),
+            Leaf(offset: 2, duplicate: false, isTxid: false, hash: leaf2 ?? eight[2]),
+            Leaf(offset: 3, duplicate: false, isTxid: true, hash: eight[3]),
+          ]),
+          Level(leaves: []),
+          Level(leaves: [
+            Leaf(offset: 1, duplicate: false, isTxid: false,
+                hash: hashPair(hashPair(eight[4], eight[5]), hashPair(eight[6], eight[7]))),
+          ]),
+        ]);
+
+    test('a level left out is computed from the one below, and survives a round trip', () {
+      final bump = BUMP.fromBytes(trimmedEight().serialize());
+      expect(bump.validateMerklePath(eight[0], expectedMerkleRoot: rootEight), isTrue);
+      expect(bump.validateMerklePath(eight[3], expectedMerkleRoot: rootEight), isTrue);
+      expect(CryptoUtils.convertBumpToBrc71Path(bump, display(eight[0]))['path'],
+          tscNodes(eight, 0));
+    });
+
+    test('a computed node carries a tampered hash below it into a wrong root', () {
+      final bump = trimmedEight(leaf2: leaf(99));
+      expect(bump.validateMerklePath(eight[0], expectedMerkleRoot: rootEight), isFalse);
+      expect(bump.validateMerklePath(eight[3], expectedMerkleRoot: rootEight), isFalse);
+    });
+
+    test('a node whose children are not both there is still missing', () {
+      final full = trimmedEight();
+      final bump = BUMP(blockHeight: 100, path: [
+        Level(leaves: full.path[0].leaves.where((l) => l.offset != 2).toList()),
+        ...full.path.skip(1),
+      ]);
+      expect(bump.validateMerklePath(eight[0], expectedMerkleRoot: rootEight), isFalse);
+      expect(() => bump.computeMerkleRoot(eight[0]), throwsA(isA<BUMPException>()));
+    });
+
+    test('odd levels: a computed node pairs a duplicate leaf with its partner', () {
+      // 5 leaves, txids at 0 and 4. Level 2's node at offset 1 is left out:
+      // it is hash(n, n) for n = hash(leaf4, leaf4), both duplicates.
+      final bump = BUMP(blockHeight: 100, path: [
+        Level(leaves: [
+          Leaf(offset: 0, duplicate: false, isTxid: true, hash: five[0]),
+          Leaf(offset: 1, duplicate: false, isTxid: false, hash: five[1]),
+          Leaf(offset: 4, duplicate: false, isTxid: true, hash: five[4]),
+          Leaf(offset: 5, duplicate: true, isTxid: false),
+        ]),
+        Level(leaves: [
+          Leaf(offset: 1, duplicate: false, isTxid: false, hash: hashPair(five[2], five[3])),
+          Leaf(offset: 3, duplicate: true, isTxid: false),
+        ]),
+        Level(leaves: [
+          Leaf(offset: 0, duplicate: false, isTxid: false,
+              hash: hashPair(hashPair(five[0], five[1]), hashPair(five[2], five[3]))),
+        ]),
+      ]);
+      expect(bump.validateMerklePath(five[0], expectedMerkleRoot: rootFive), isTrue);
+      expect(bump.validateMerklePath(five[4], expectedMerkleRoot: rootFive), isTrue);
+    });
+  });
 }

@@ -355,14 +355,31 @@ class BUMP {
   }
 
   /// The leaf at [height] that the walk from level-0 position [index] pairs
-  /// with (offset `(index >> height) ^ 1`), or null when the BUMP lacks it.
+  /// with (offset `(index >> height) ^ 1`), or null when the BUMP lacks it
+  /// and cannot compute it from the levels below.
   Leaf? siblingAt(int height, int index) {
     if (height < 0 || height >= path.length) return null;
-    final siblingOffset = (index >> height) ^ 1;
+    return _leafAt(height, (index >> height) ^ 1);
+  }
+
+  /// The leaf at [offset] of level [height], as stored or computed from its
+  /// two children. A BUMP proving several txids of one block may leave out
+  /// the nodes its lower levels determine: the BSV SDK's MerklePath.trim()
+  /// does, so a combined BUMP from a BRC-100 wallet can lack them. A node
+  /// computed here is checked like a stored one, by the root it leads to.
+  Leaf? _leafAt(int height, int offset) {
     for (final leaf in path[height].leaves) {
-      if (leaf.offset == siblingOffset) return leaf;
+      if (leaf.offset == offset) return leaf;
     }
-    return null;
+    if (height == 0) return null;
+    final left = _leafAt(height - 1, offset << 1);
+    final leftHash = left?.hash;
+    if (left == null || left.duplicate || leftHash == null) return null;
+    final right = _leafAt(height - 1, (offset << 1) + 1);
+    if (right == null) return null;
+    final rightHash = right.duplicate ? leftHash : right.hash;
+    if (rightHash == null) return null;
+    return Leaf(offset: offset, duplicate: false, isTxid: false, hash: merkleParent(leftHash, rightHash));
   }
 
   /// Compute the merkle root for [txid] and return it as display-format hex

@@ -1237,15 +1237,20 @@ class IsarWalletStorage implements ReadModelStorage {
       (await _isar.pendingReceiveEntitys.getByWalletIdTxid(walletId, txid))?.toDomain();
 
   @override
-  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64}) async {
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height,
+      {int limit = 64, ({DateTime createdAt, String txid})? after}) async {
     if (limit <= 0) throw ArgumentError.value(limit, 'limit', 'must be positive');
     // The (waiting, neededHeight) index: only the waiting rows at or below
-    // the chain height are read, oldest first.
+    // the chain height are read, oldest first; [after] continues a listing.
+    final waiting = _isar.pendingReceiveEntitys
+        .where()
+        .waitingEqualToNeededHeightLessThan(true, height, include: true);
     final entities = await _traced(
             'getPendingReceivesUpToHeight',
-            _isar.pendingReceiveEntitys
-                .where()
-                .waitingEqualToNeededHeightLessThan(true, height, include: true)
+            (after == null
+                    ? waiting.filter().waitingEqualTo(true)
+                    : waiting.filter().createdAtGreaterThan(after.createdAt).or().group((q) =>
+                        q.createdAtEqualTo(after.createdAt).and().txidGreaterThan(after.txid)))
                 .sortByCreatedAt()
                 .thenByTxid()
                 .limit(limit))

@@ -172,6 +172,10 @@ class SPVActor extends Actor {
         case final HeaderChainReorganizedMessage msg:
           await _handleHeaderChainReorganized(msg);
           break;
+
+        case final BlockHeadersBackfilledMessage msg:
+          await _handleHeadersBackfilled(msg);
+          break;
           
         case final SetArcActorForSPVMessage msg:
           _handleSetArcActor(msg);
@@ -985,26 +989,60 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Replays the receives parked for headers up to [height]
+  /// Replays the parked receives that can now be judged
   /// (beads libspiffy-68mz and libspiffy-vfai). Each runs the full validation
   /// again, so a BEEF whose proofs now check out is recorded exactly as a
   /// fresh delivery would be, without the counterparty re-sending — after a
   /// restart too, since the parked receives are read from storage.
+  ///
+  /// [height] is the chain's tip: a receive needing a header above it cannot
+  /// be judged. At or below it, a receive is replayed only when we hold the
+  /// header at every height its proofs need ([_headersHeldFor]). Headers no
+  /// longer arrive only upwards from genesis: a chain started at a built-in
+  /// checkpoint has none below it until they are filled in (epic
+  /// spiffyvault-emk). Replaying such a receive would only park it again,
+  /// after asking the network for each missing header, on every block.
+  ///
+  /// The rows are read a page at a time, so receives still waiting for an
+  /// older header never hide the newer ones behind them. At most
+  /// [_maxReplayedPerNotification] are replayed and [_maxScannedPerNotification]
+  /// read per call; the rest wait for the next notification.
   Future<void> _replayParkedReceives(int height) async {
-    final List<PendingReceive> waiting;
+    final ready = <PendingReceive>[];
+    var scanned = 0;
+    ({DateTime createdAt, String txid})? after;
+    var stillWaiting = 0;
     try {
-      waiting = await _storage.getPendingReceivesUpToHeight(height, limit: _maxReplayedPerNotification);
+      while (ready.length < _maxReplayedPerNotification && scanned < _maxScannedPerNotification) {
+        final page = await _storage.getPendingReceivesUpToHeight(height,
+            limit: _maxReplayedPerNotification, after: after);
+        for (final row in page) {
+          scanned++;
+          if (await _rowHeadersHeld(row)) {
+            ready.add(row);
+            if (ready.length >= _maxReplayedPerNotification) break;
+          } else {
+            stillWaiting++;
+          }
+        }
+        if (page.length < _maxReplayedPerNotification) break;
+        after = (createdAt: page.last.createdAt, txid: page.last.txid);
+      }
     } catch (e, st) {
       _log.warning('Could not read the receives waiting for block headers up to $height: $e', e, st);
-      return;
+      if (ready.isEmpty) return;
+    }
+    if (stillWaiting > 0) {
+      _log.fine('$stillWaiting parked receive(s) still need a block header below the tip $height');
     }
     final fallback = [
       for (final entry in _parkedSendersFallback.entries.toList())
-        if (entry.value.$3 <= height) entry,
+        if (entry.value.$3 <= height && await _headersHeldFor(entry.value.$1.beef, entry.value.$1.transactionId))
+          entry,
     ];
-    if (waiting.isEmpty && fallback.isEmpty) return;
+    if (ready.isEmpty && fallback.isEmpty) return;
 
-    for (final row in waiting) {
+    for (final row in ready) {
       final ReceiveTransactionMessage msg;
       try {
         msg = ReceiveTransactionMessage(
@@ -1021,7 +1059,7 @@ class SPVActor extends Actor {
         await _storage.resolvePendingReceive(row.walletId, row.txid, 'the stored BEEF does not parse: $e');
         continue;
       }
-      _log.info('Block headers reached $height: retrying the retained receive of ${row.txid}');
+      _log.info('The block headers the retained receive of ${row.txid} needs are held: retrying it');
       final key = _parkKey(msg.targetWalletId, row.txid);
       _parkedKeys.add(key);
       await _runReceive(msg, _parkedSenders.remove(key));
@@ -1030,10 +1068,62 @@ class SPVActor extends Actor {
     for (final entry in fallback) {
       final (msg, sender, _) = entry.value;
       _parkedSendersFallback.remove(entry.key);
-      _log.info('Block headers reached $height: retrying the receive of ${msg.transactionId} '
-          'that could not be stored');
+      _log.info('The block headers the receive of ${msg.transactionId} that could not be stored needs '
+          'are held: retrying it');
       await _runReceive(msg, sender);
     }
+  }
+
+  /// How many parked rows one call of [_replayParkedReceives] reads at most.
+  static const int _maxScannedPerNotification = 1024;
+
+  /// [_headersHeldFor] on a stored row. A row whose BEEF does not parse is
+  /// replayed, which resolves it.
+  Future<bool> _rowHeadersHeld(PendingReceive row) async {
+    final BEEF beef;
+    try {
+      beef = BEEF.parse(Uint8List.fromList(hex.decode(row.beefHex)));
+    } catch (_) {
+      return true;
+    }
+    return _headersHeldFor(beef, row.txid);
+  }
+
+  /// Whether we hold, in local storage, the header at every height the
+  /// validation of [subjectTxid] in [beef] needs (epic spiffyvault-emk):
+  /// the subject's own proof's height when it has one, otherwise the height
+  /// of every BUMP in the BEEF — the same heights [_validateReceivedTransaction]
+  /// fails to find when it parks a receive. Whether the proofs match those
+  /// headers is for the replay to judge.
+  ///
+  /// Something this cannot read (a subject the BEEF does not carry, a BUMP
+  /// that does not parse) counts as held: the replay reaches the same
+  /// verdict as before and resolves the receive.
+  Future<bool> _headersHeldFor(BEEF beef, String subjectTxid) async {
+    try {
+      final subject = beef.findTransactionByTxid(Uint8List.fromList(hex.decode(subjectTxid)));
+      if (subject == null) return true;
+      final index = subject['index'] as int;
+      final members = beef.hasMerkle[index]
+          ? [index]
+          : [for (var i = 0; i < beef.txs.length; i++) if (beef.hasMerkle[i]) i];
+      for (final i in {for (final i in members) beef.bumpOf(i).blockHeight}) {
+        if (await _storage.getBlockHeaderByHeight(i) == null) return false;
+      }
+      return true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Headers below the tip were stored (epic spiffyvault-emk): the
+  /// pendingHeader proofs and parked receives that rest on them are judged
+  /// now. The tip did not move, so nothing else changes.
+  Future<void> _handleHeadersBackfilled(BlockHeadersBackfilledMessage msg) async {
+    if (_currentHeight <= 0) return;
+    _log.fine('Headers ${msg.fromHeight}-${msg.toHeight} were filled in below the tip $_currentHeight');
+    await _recheckUnverifiedProofs(_currentHeight);
+    await _replayParkedReceives(_currentHeight);
   }
 
   /// Verifies the BUMP of the BEEF member at [index] against our active
@@ -1543,7 +1633,7 @@ class SPVActor extends Actor {
       // HeaderChainReorganizedMessage, which HeaderSyncActor sends before
       // this notification. Proofs accepted before their header was known are
       // checked now that headers have arrived (zvj).
-      await _recheckUnverifiedProofs(msg.height);
+      await _recheckUnverifiedProofs(msg.height > _currentHeight ? msg.height : _currentHeight);
 
       // Heights above the previous tip: a block a reorganization orphaned
       // (or whose header contradicted a proof) may be active there now,
@@ -1560,8 +1650,10 @@ class SPVActor extends Actor {
 
       // A BEEF held back because we had no header at a proof's height is
       // judged now (beads libspiffy-68mz, libspiffy-vfai): the counterparty
-      // does not have to deliver it again.
-      await _replayParkedReceives(msg.height);
+      // does not have to deliver it again. Read up to the tip, not to the
+      // height just stored: a header stored below the tip is not where the
+      // chain reached (epic spiffyvault-emk).
+      await _replayParkedReceives(_currentHeight);
 
       // Outputs that cannot be proven because an ancestor's proof left the
       // active chain (bead libspiffy-0lx): logged, and ARC asked once per
@@ -1870,6 +1962,10 @@ class SPVActor extends Actor {
       // chain is authority enough to confirm (bead libspiffy-65ji).
       final settled = <String, (MerkleProof, ProofHeaderCheck)>{};
       for (final proof in unverified) {
+        // Above the tip no header can be held. At or below it the header may
+        // still be missing (a chain started at a checkpoint has none below
+        // it until they are filled in, epic spiffyvault-emk): the check
+        // reports headerUnknown and the proof is left waiting.
         if (proof.blockHeight > upToHeight) continue;
         final check = await _checkProof(proof);
         if (check.isVerified) {

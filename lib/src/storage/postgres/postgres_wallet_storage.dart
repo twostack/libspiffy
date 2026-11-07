@@ -1998,17 +1998,24 @@ class PostgresWalletStorage implements ReadModelStorage {
   /// Reads `idx_pending_receives_waiting` (v020): only the waiting rows at or
   /// below [height], oldest first, capped at [limit].
   @override
-  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64}) async {
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height,
+      {int limit = 64, ({DateTime createdAt, String txid})? after}) async {
     if (limit <= 0) throw ArgumentError.value(limit, 'limit', 'must be positive');
     _ensureInitialized();
     final result = await _pool!.execute(
       Sql.named('''
         SELECT $_pendingReceiveColumns FROM pending_receives
         WHERE resolved_at IS NULL AND needed_height <= @height
+          ${after == null ? '' : 'AND (created_at, txid) > (@afterCreatedAt, @afterTxid)'}
         ORDER BY created_at ASC, txid ASC
         LIMIT @limit
       '''),
-      parameters: {'height': height, 'limit': limit},
+      parameters: {
+        'height': height,
+        'limit': limit,
+        if (after != null) 'afterCreatedAt': after.createdAt.toUtc(),
+        if (after != null) 'afterTxid': after.txid,
+      },
     );
     return [for (final row in result) _pendingReceiveOf(row)];
   }

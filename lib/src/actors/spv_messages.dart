@@ -105,6 +105,42 @@ class BlockHeaderStoredMessage implements SPVMessage, Message {
       'hash: ${header.blockHash().toString().substring(0, 16)}...)';
 }
 
+/// Headers at [fromHeight]..[toHeight] were stored BELOW the chain's tip
+/// (epic spiffyvault-emk): a chain that starts at a built-in checkpoint fills
+/// in its older headers later, newest first.
+///
+/// Not a [BlockHeaderStoredMessage]: the tip has not moved, so nothing above
+/// it is revived and ARC is not asked about pending outputs. SPVActor checks
+/// the pendingHeader proofs and replays the parked receives that may now be
+/// judged.
+class BlockHeadersBackfilledMessage implements Message {
+  final int fromHeight;
+  final int toHeight;
+  final DateTime storedAt;
+
+  BlockHeadersBackfilledMessage({required this.fromHeight, required this.toHeight, DateTime? storedAt})
+      : storedAt = storedAt ?? DateTime.now() {
+    if (toHeight < fromHeight) {
+      throw ArgumentError('toHeight $toHeight is below fromHeight $fromHeight');
+    }
+  }
+
+  @override
+  String get correlationId => 'headers_backfilled_${fromHeight}_$toHeight';
+
+  @override
+  ActorRef? get replyTo => null;
+
+  @override
+  DateTime get timestamp => storedAt;
+
+  @override
+  Map<String, dynamic> get metadata => {'fromHeight': fromHeight, 'toHeight': toHeight};
+
+  @override
+  String toString() => 'BlockHeadersBackfilledMessage($fromHeight-$toHeight)';
+}
+
 /// Message to request block header synchronization
 class RequestHeaderSyncMessage implements SPVMessage, Message {
   final String? walletId; // null = sync for all wallets

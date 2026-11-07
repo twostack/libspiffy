@@ -755,13 +755,17 @@ abstract class ReadModelStorage {
   Future<PendingReceive?> getPendingReceive(String walletId, String txid);
 
   /// The receives still waiting ([PendingReceive.isWaiting]) whose
-  /// `neededHeight` is at most [height], oldest first, at most [limit] of
-  /// them.
+  /// `neededHeight` is at most [height], oldest first (by `createdAt`, then
+  /// `txid`), at most [limit] of them.
   ///
-  /// SPVActor replays these when headers reach [height]. The cap bounds one
-  /// replay pass: the rest are read by the next header notification, so
-  /// nothing is lost. [limit] must be positive.
-  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64});
+  /// [after] continues a listing: only rows ordered after that
+  /// (`createdAt`, `txid`) are returned. SPVActor pages through the rows
+  /// this way because a row at or below the tip can still be waiting for a
+  /// header below it (a chain that starts at a checkpoint and fills in
+  /// older headers later, epic spiffyvault-emk): such rows must not hide
+  /// the newer ones behind them. [limit] must be positive.
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height,
+      {int limit = 64, ({DateTime createdAt, String txid})? after});
 
   /// Record that the receive of ([walletId], [txid]) stopped waiting:
   /// [resolution] says why (it was recorded, or it failed for a reason more

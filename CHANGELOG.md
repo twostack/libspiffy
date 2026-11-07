@@ -1,3 +1,12 @@
+## Unreleased
+
+Parked receives and unchecked proofs wait for the header they need, not for the tip to pass its height (spiffyvault-emk.2)
+
+- **A parked receive is replayed when we hold the header at every height its proofs need.** It was replayed once the tip reached its `neededHeight`, which assumed headers arrive only upwards from genesis. A chain that starts at a built-in checkpoint (spiffyvault-emk) has no headers below it until they are filled in, so a receive whose proof is older than the checkpoint would have been replayed on every block, asking the network for the missing header each time, and parked again. The replay now checks the stored header at each needed height first (the subject's proof's height, or every BUMP's when the subject has none), and reads the parked rows a page at a time so receives still waiting for an older header never hide newer ones behind them.
+- **`BlockHeadersBackfilledMessage(fromHeight, toHeight)`:** tells SPVActor that headers were stored below the tip. It checks the pendingHeader proofs and replays the parked receives that can now be judged; the tip, revived proofs and ARC's pending-output check are untouched. Nothing sends it yet: the backfill (spiffyvault-emk.3) will.
+- **`ReadModelStorage.getPendingReceivesUpToHeight` takes `after: (createdAt:, txid:)`** to continue a listing past a row. Implemented by the in-memory, Isar and Postgres storages; no schema change.
+- A header-stored notification below the tip no longer rechecks proofs and replays receives only up to that height: both run up to the tip.
+
 ## 5.16.0
 
 Payments to an address show while still in the mempool, and a payment someone sent that the network never takes stops showing as on the way for ever

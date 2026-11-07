@@ -107,6 +107,38 @@ void definePendingReceiveContract(
       expect(() => s.getPendingReceivesUpToHeight(100, limit: 0), throwsA(isA<ArgumentError>()));
     });
 
+    test('emk: a listing continues after a row, ties broken by txid', () async {
+      final u = unique();
+      final s = storage();
+      final wallet = 'pr-page-$u';
+      final at = DateTime.utc(2026, 11, 8, 10);
+      final a = contractHex64('pr-page-a-$u');
+      final b = contractHex64('pr-page-b-$u');
+      final (first, second) = a.compareTo(b) < 0 ? (a, b) : (b, a);
+      final last = contractHex64('pr-page-c-$u');
+
+      await s.storePendingReceive(parked(wallet, second, neededHeight: 50, createdAt: at));
+      await s.storePendingReceive(parked(wallet, last, neededHeight: 50, createdAt: at.add(const Duration(minutes: 1))));
+      await s.storePendingReceive(parked(wallet, first, neededHeight: 50, createdAt: at));
+
+      // One row at a time, from just before ours: every row comes once, in
+      // order (other tests' rows may sit between them in a shared database).
+      final seen = <String>[];
+      ({DateTime createdAt, String txid})? after = (createdAt: at.subtract(const Duration(microseconds: 1)), txid: '');
+      for (var i = 0; i < 1000; i++) {
+        final page = await s.getPendingReceivesUpToHeight(50, limit: 1, after: after);
+        if (page.isEmpty) break;
+        final row = page.single;
+        if (row.walletId == wallet) seen.add(row.txid);
+        after = (createdAt: row.createdAt, txid: row.txid);
+      }
+      expect(seen, [first, second, last]);
+
+      final rest = await s.getPendingReceivesUpToHeight(50, after: (createdAt: at, txid: first));
+      expect([for (final r in rest) if (r.walletId == wallet) r.txid], [second, last],
+          reason: 'the row named by after is not returned again');
+    });
+
     test('vfai: a resolved receive keeps its BEEF and is never replayed again', () async {
       final u = unique();
       final s = storage();

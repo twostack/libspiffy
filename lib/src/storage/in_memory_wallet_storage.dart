@@ -1048,12 +1048,18 @@ _balanceCache.remove(walletId);
       _pendingReceives[walletId]?[txid];
 
   @override
-  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64}) async {
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height,
+      {int limit = 64, ({DateTime createdAt, String txid})? after}) async {
     if (limit <= 0) throw ArgumentError.value(limit, 'limit', 'must be positive');
+    bool isAfter(PendingReceive row) {
+      if (after == null) return true;
+      final byTime = row.createdAt.compareTo(after.createdAt);
+      return byTime > 0 || (byTime == 0 && row.txid.compareTo(after.txid) > 0);
+    }
     final waiting = [
       for (final rows in _pendingReceives.values)
         for (final row in rows.values)
-          if (row.isWaiting && row.neededHeight <= height) row,
+          if (row.isWaiting && row.neededHeight <= height && isAfter(row)) row,
     ]..sort((a, b) {
         final byTime = a.createdAt.compareTo(b.createdAt);
         return byTime != 0 ? byTime : a.txid.compareTo(b.txid);

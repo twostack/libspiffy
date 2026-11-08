@@ -98,7 +98,7 @@ class _GatedArc extends ArcService {
   }
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     if (!submitting.isCompleted) submitting.complete();
     await _gate.future;
     throw ArcException('ARC unavailable');

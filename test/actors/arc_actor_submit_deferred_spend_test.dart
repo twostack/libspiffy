@@ -538,7 +538,7 @@ class _SubmitArc extends ArcService {
   int getTransactionCalls = 0;
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     submitted.add(rawTx);
     if (submitted.length <= failSubmissions) throw ArcException('ARC unavailable');
     return submitResponses.length > 1 ? submitResponses.removeAt(0) : submitResponses.single;

@@ -187,7 +187,7 @@ class _ScriptedArc extends ArcService {
   int queries = 0;
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async =>
       ArcSubmitResponse.fromJson({'txid': _txid, 'txStatus': submitStatus});
 
   @override

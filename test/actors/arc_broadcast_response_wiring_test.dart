@@ -108,7 +108,7 @@ class _StatusArc extends ArcService {
   String status = 'SEEN_ON_NETWORK';
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async =>
       ArcSubmitResponse.fromJson({'txid': _txid, 'txStatus': status});
 
   @override

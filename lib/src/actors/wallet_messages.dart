@@ -1519,6 +1519,71 @@ class ArcWorkStoppedMessage extends ActorResponse {
   String? get error => null;
 }
 
+/// Turns status callbacks through the broadcast-bridge on ([config] and
+/// [signer] set) or off (both null). Sent by the app once the user's
+/// `bsv/tx-status` mailbox exists and grants the bridge write access: a
+/// token minted before that would let the bridge's first delivery create
+/// the folder open to anyone.
+class SetBroadcastCallbacksMessage implements Message {
+  final BroadcastCallbackConfig? config;
+  final CallbackTokenSigner? signer;
+
+  SetBroadcastCallbacksMessage({this.config, this.signer}) {
+    if ((config == null) != (signer == null)) {
+      throw ArgumentError('config and signer are set together or not at all');
+    }
+  }
+
+  @override
+  String get correlationId => 'set-broadcast-callbacks';
+  @override
+  Map<String, dynamic> get metadata => {'enabled': config != null};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// A status envelope the broadcast-bridge delivered (its UTF-8 JSON
+/// [payload]). ARCActor applies each item as it applies a polled answer, and
+/// answers [BroadcastStatusAppliedMessage]. [net] is the wallet's network,
+/// `main` or `test`.
+class ApplyBroadcastStatusMessage implements Message {
+  final List<int> payload;
+  final String net;
+
+  ApplyBroadcastStatusMessage(List<int> payload, {required this.net}) : payload = frozenList(payload);
+
+  @override
+  String get correlationId => 'apply-broadcast-status';
+  @override
+  Map<String, dynamic> get metadata => {'net': net, 'bytes': payload.length};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// The answer to [ApplyBroadcastStatusMessage].
+class BroadcastStatusAppliedMessage extends ActorResponse {
+  /// False when the envelope is not one this wallet takes (another version,
+  /// type or network, or not JSON). Nothing was applied.
+  final bool accepted;
+
+  /// The items whose txid this wallet holds, and that were applied.
+  final int applied;
+
+  /// The items naming a txid this wallet does not hold: ignored.
+  final int unknown;
+
+  BroadcastStatusAppliedMessage({required this.accepted, this.applied = 0, this.unknown = 0});
+
+  @override
+  bool get success => accepted;
+  @override
+  String? get error => accepted ? null : 'not a bsv.tx-status envelope for this network';
+}
+
 /// Request to broadcast BEEF data
 class BroadcastBEEFMessage implements Message {
   final String walletId;

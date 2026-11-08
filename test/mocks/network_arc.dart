@@ -46,7 +46,7 @@ class NetworkArc extends OfflineArc {
   final Map<String, ArcSubmitResponse> _verdicts = {};
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     final verdict = await _decide(rawTx);
     if (!answerInFlight) return verdict;

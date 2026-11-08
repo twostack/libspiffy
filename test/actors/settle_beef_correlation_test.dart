@@ -66,7 +66,7 @@ class _ConfigurableArcService extends ArcService {
   }
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     // Tiny delay to simulate network
     await Future.delayed(const Duration(milliseconds: 5));

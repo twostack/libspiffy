@@ -373,7 +373,7 @@ class _ScriptedArc extends OfflineArc {
   int queriesOf(String txid) => _queries[txid] ?? 0;
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     throw ArcException('not used');
   }
 

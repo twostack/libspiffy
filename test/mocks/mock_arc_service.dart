@@ -56,7 +56,7 @@ class MockArcService extends ArcService {
   
   /// Override submitTransaction to intercept ARC service calls (PRIMARY METHOD CALLED BY ARCActor)
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     print('[MockArcService] ✅ submitTransaction OVERRIDE CALLED');
     print('[MockArcService]    Raw TX length: ${rawTx.length} chars');

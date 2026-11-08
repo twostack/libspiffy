@@ -369,17 +369,28 @@ class ArcService {
     return headers;
   }
 
+  /// `X-CallbackUrl`, with `X-CallbackToken` when there is a token. A token
+  /// without a URL is refused: the Broadcaster would have nowhere to send it.
+  static void _addCallbackHeaders(Map<String, String> headers, String? callbackUrl, String? callbackToken) {
+    if (callbackToken != null && callbackUrl == null) {
+      throw ArgumentError('a callback token needs a callback URL');
+    }
+    if (callbackUrl != null) headers['X-CallbackUrl'] = callbackUrl;
+    if (callbackToken != null) headers['X-CallbackToken'] = callbackToken;
+  }
+
   /// Submit a raw transaction to the network
   /// 
   /// [rawTx] - The raw transaction in hex format
   /// [callbackUrl] - Optional callback URL to receive transaction status updates
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  /// [callbackToken] - Sent as `X-CallbackToken` with [callbackUrl]: the
+  /// broadcast-bridge's token naming whose mailbox the status goes to. The
+  /// two are sent together or not at all.
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     final url = '$baseUrl/tx';
     
     final headers = Map<String, String>.from(_headers);
-    if (callbackUrl != null) {
-      headers['X-CallbackUrl'] = callbackUrl;
-    }
+    _addCallbackHeaders(headers, callbackUrl, callbackToken);
     
     final response = await _client.post(
       Uri.parse(url),
@@ -509,14 +520,12 @@ class ArcService {
   /// [callbackUrl] - Optional callback URL to receive transaction status updates
   Future<List<ArcSubmitResponse>> submitBatchTransactions(
     List<String> rawTxs,
-    {String? callbackUrl}
+    {String? callbackUrl, String? callbackToken}
   ) async {
     final url = '$baseUrl/txs';
 
     final headers = Map<String, String>.from(_headers);
-    if (callbackUrl != null) {
-      headers['X-CallbackUrl'] = callbackUrl;
-    }
+    _addCallbackHeaders(headers, callbackUrl, callbackToken);
 
     final response = await _client.post(
       Uri.parse(url),

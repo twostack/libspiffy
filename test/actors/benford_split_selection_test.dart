@@ -151,7 +151,7 @@ class _SeenArc extends OfflineArc {
   _SeenArc() : super(baseUrl: 'fake://arc');
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     return ArcSubmitResponse.fromJson({'txid': dartsv.Transaction.fromHex(rawTx).id, 'txStatus': 'SEEN_ON_NETWORK'});
   }

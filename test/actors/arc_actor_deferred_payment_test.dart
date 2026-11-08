@@ -1232,7 +1232,7 @@ class _FakeArc extends ArcService {
   int getTransactionCalls = 0;
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     if (unreachable) throw ArcException('ARC unreachable');
     submitted.add(rawTx);
     return ArcSubmitResponse.fromJson(

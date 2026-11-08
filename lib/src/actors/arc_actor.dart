@@ -21,6 +21,7 @@ import '../utils/tsc_converter.dart';
 
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
+import '../services/broadcast_callback.dart';
 import '../spv/merkle_proof_header_check.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/transaction_row_rules.dart';
@@ -365,6 +366,17 @@ class ARCActor extends Actor {
           context.sender?.tell(await _checkOutputSpenders(msg));
           break;
 
+        case final SetBroadcastCallbacksMessage msg:
+          _callbacks = msg.config == null ? null : (config: msg.config!, signer: msg.signer!);
+          _log.info(msg.config == null
+              ? 'Status callbacks are off'
+              : 'Status callbacks are on, through ${msg.config!.callbackUrl}');
+          break;
+
+        case final ApplyBroadcastStatusMessage msg:
+          context.sender?.tell(await _applyBroadcastStatus(msg));
+          break;
+
         case StopArcWorkMessage():
           await _stopWork();
           context.sender?.tell(ArcWorkStoppedMessage());
@@ -510,7 +522,7 @@ class ARCActor extends Actor {
       final beef = _parseBeef(msg.beefHex, msg.txid);
       await _submitAncestors(beef, _unprovenAncestors(beef, msg.txHex), msg.txid);
       // Broadcast transaction via ARC service
-      final response = await _arcService!.submitTransaction(await _submitForm(msg.txHex, beef));
+      final response = await _submit(msg.txHex, beef);
 
       // Notify wallet of successful broadcast
       final command = BroadcastTransactionCommand(
@@ -569,7 +581,7 @@ class ARCActor extends Actor {
       // 2. Its unproven ancestors first, then the payment, each extended
       // with the outputs it spends.
       await _submitAncestors(beef, _unprovenAncestors(beef, paymentTxHex), msg.txid);
-      final response = await _arcService!.submitTransaction(await _submitForm(paymentTxHex, beef));
+      final response = await _submit(paymentTxHex, beef);
 
       final command = BroadcastTransactionCommand(
         walletId: msg.walletId,
@@ -742,7 +754,7 @@ class ARCActor extends Actor {
           // form then comes from the stored parents.
           final beef = _parseBeef(data['beefHex'] as String?, txid);
           await _submitAncestors(beef, _unprovenAncestors(beef, rawTxHex), txid);
-          final response = await _arcService!.submitTransaction(await _submitForm(rawTxHex, beef));
+          final response = await _submit(rawTxHex, beef);
 
           // Notify wallet aggregate of successful broadcast
           _walletManager.tell(WalletCommandMessage(walletId, BroadcastTransactionCommand(
@@ -1075,7 +1087,27 @@ class ARCActor extends Actor {
     }
 
     try {
-      final ArcTransactionResponse response = await _arcService!.getTransaction(txid);
+      return await _applyStatusReport(txid, walletId, currentStatus, await _arcService!.getTransaction(txid),
+          explicit: explicit);
+    } catch (e) {
+      if (e is ArcException && e.isNotFound) {
+        // Not known to ARC (yet): the recipient may broadcast later. Not a
+        // failure; the hold stays.
+        await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.notFound, explicit: explicit);
+        return const _StatusCheck(_CheckOutcome.unknown, status: DeferredNetworkStatus.notFound);
+      }
+      _log.warning('Failed to check transaction $txid: $e');
+      return _StatusCheck(_CheckOutcome.unknown, error: e.toString());
+    }
+  }
+
+  /// Acts on ARC's status [response] for [txid] in [walletId], whose stored
+  /// status is [currentStatus]: a polled answer, or one the broadcast-bridge
+  /// pushed ([_applyBroadcastStatus]).
+  Future<_StatusCheck> _applyStatusReport(
+      String txid, String walletId, TransactionStatus currentStatus, ArcTransactionResponse response,
+      {bool explicit = false}) async {
+    {
       final arcTxStatus = _arcStatusToTransactionStatus(response.status);
       final wireStatus = response.status.wireName;
       final competing = response.doubleSpendTxids ?? const <String>[];
@@ -1158,15 +1190,6 @@ class ARCActor extends Actor {
 
       return _StatusCheck(changed ? _CheckOutcome.changed : _CheckOutcome.unchanged,
           status: wireStatus, competingTxids: competing);
-    } catch (e) {
-      if (e is ArcException && e.isNotFound) {
-        // Not known to ARC (yet): the recipient may broadcast later. Not a
-        // failure; the hold stays.
-        await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.notFound, explicit: explicit);
-        return const _StatusCheck(_CheckOutcome.unknown, status: DeferredNetworkStatus.notFound);
-      }
-      _log.warning('Failed to check transaction $txid: $e');
-      return _StatusCheck(_CheckOutcome.unknown, error: e.toString());
     }
   }
 
@@ -1607,7 +1630,7 @@ class ARCActor extends Actor {
 
     _log.info('ARC does not know ${tx.txid}, a payment handed to wallet $walletId; sending it again');
     try {
-      final answer = await _arcService!.submitTransaction(await _submitForm(tx.rawHex, null));
+      final answer = await _submit(tx.rawHex, null);
       _log.info('ARC answered ${answer.status.wireName} for the resent ${tx.txid}');
       final proof = await _applySubmitAnswer(walletId, tx.txid, tx.rawHex, answer);
       return _StatusCheck(_CheckOutcome.changed, status: answer.status.wireName, proofStatus: proof);
@@ -1914,6 +1937,68 @@ class ARCActor extends Actor {
   /// when the transactions it spends are in [beef] or stored in any wallet,
   /// so ARC need not find its parents (a coin mined long ago, which ARC
   /// never saw, answers 460); the raw transaction otherwise.
+  /// Where status callbacks go, and who signs their tokens; null while they
+  /// are off ([SetBroadcastCallbacksMessage]).
+  ({BroadcastCallbackConfig config, CallbackTokenSigner signer})? _callbacks;
+
+  /// Submits [rawTxHex] to ARC in its submit form ([_submitForm]). While
+  /// status callbacks are on, the submission carries the bridge's callback
+  /// URL and a token bound to its txid, unless [callback] is false (an
+  /// ancestor submitted for a child, whose status nobody follows). A token
+  /// that cannot be made never holds a submission back: it goes without
+  /// one, and the status scan follows it as before.
+  Future<ArcSubmitResponse> _submit(String rawTxHex, BEEF? beef, {bool callback = true}) async {
+    final form = await _submitForm(rawTxHex, beef);
+    final callbacks = callback ? _callbacks : null;
+    if (callbacks == null) return _arcService!.submitTransaction(form);
+    String? token;
+    try {
+      final txid = dartsv.Transaction.fromHex(rawTxHex).id;
+      token = await mintCallbackToken(config: callbacks.config, signer: callbacks.signer, txid: txid);
+    } catch (e) {
+      _log.warning('No status callback token for a submission; it is followed by polling: $e');
+    }
+    if (token == null) return _arcService!.submitTransaction(form);
+    return _arcService!.submitTransaction(form, callbackUrl: callbacks.config.callbackUrl, callbackToken: token);
+  }
+
+  /// A status envelope the broadcast-bridge delivered (handoff §5.2–5.3).
+  ///
+  /// Each item is applied exactly as a polled answer for that txid
+  /// ([_applyStatusReport]), in every wallet holding the transaction: a
+  /// MINED status confirms nothing until its merkle path checks against our
+  /// own header at its height (anyone who sees a token can forge a
+  /// callback, and that check is what stops it), and a status the stored
+  /// row does not take is no change, so a duplicate or stale item is a
+  /// no-op. A txid no wallet holds is ignored.
+  Future<BroadcastStatusAppliedMessage> _applyBroadcastStatus(ApplyBroadcastStatusMessage msg) async {
+    final items = parseBroadcastStatusEnvelope(msg.payload, net: msg.net);
+    if (items == null) {
+      _log.warning('A status callback envelope was refused: not a bsv.tx-status envelope for ${msg.net}');
+      return BroadcastStatusAppliedMessage(accepted: false);
+    }
+    var applied = 0;
+    var unknown = 0;
+    for (final item in items) {
+      final txid = item.status.txid;
+      final rows = [
+        for (final row in await _storage.getTransactionsByTxids([txid]))
+          if (row.walletId != null && row.walletId!.isNotEmpty) row,
+      ];
+      if (rows.isEmpty) {
+        unknown++;
+        continue;
+      }
+      _log.info('Status callback from ${item.source ?? 'the Broadcaster'}: ${item.status.status.wireName} '
+          'for ${txid.substring(0, 8)}...');
+      for (final row in rows) {
+        await _applyStatusReport(txid, row.walletId!, row.status, item.status);
+      }
+      applied++;
+    }
+    return BroadcastStatusAppliedMessage(accepted: true, applied: applied, unknown: unknown);
+  }
+
   Future<String> _submitForm(String rawTxHex, BEEF? beef) async {
     try {
       final raw = Uint8List.fromList(hex.decode(rawTxHex));
@@ -1943,7 +2028,7 @@ class ARCActor extends Actor {
   Future<void> _submitAncestors(BEEF? beef, List<String> ancestors, String txid) async {
     for (final ancestor in ancestors) {
       try {
-        await _arcService!.submitTransaction(await _submitForm(ancestor, beef));
+        await _submit(ancestor, beef, callback: false);
       } catch (e) {
         _log.info('Ancestor of $txid not accepted by ARC (it may know it already): $e');
       }
@@ -1965,7 +2050,7 @@ class ARCActor extends Actor {
     if (msg.via != DeferredPaymentNetworkSource.dataSource && _arcService != null) {
       await _submitAncestors(beef, ancestors, msg.txid);
       try {
-        final response = await _arcService!.submitTransaction(await _submitForm(msg.rawTxHex, beef));
+        final response = await _submit(msg.rawTxHex, beef);
         _walletManager.tell(WalletCommandMessage(msg.walletId, BroadcastTransactionCommand(
           walletId: msg.walletId,
           transactionId: msg.txid,
@@ -2263,7 +2348,7 @@ class ARCActor extends Actor {
             }
 
             try {
-              final submitResponse = await _arcService!.submitTransaction(await _submitForm(parentTx.rawHex, null));
+              final submitResponse = await _submit(parentTx.rawHex, null);
               _log.info('Orphan remediation: broadcast parent $parentTxid — '
                   'response: ${submitResponse.status.wireName}');
             } catch (e) {
@@ -2287,7 +2372,7 @@ class ARCActor extends Actor {
       if (allParentsAccepted) {
         _log.info('Orphan remediation: all parents accepted, rebroadcasting child $txid');
         try {
-          final response = await _arcService!.submitTransaction(await _submitForm(childTx.rawHex, null));
+          final response = await _submit(childTx.rawHex, null);
           final newStatus = response.status.wireName;
           _log.info('Orphan remediation: child $txid submit response — '
               'status: $newStatus, txid: ${response.txid}, message: ${response.message}');

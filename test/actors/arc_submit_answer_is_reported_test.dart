@@ -248,7 +248,7 @@ class _SubmitArc extends ArcService {
   }
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     final gate = _gate;
     if (gate != null) {
       if (!held.isCompleted) held.complete();

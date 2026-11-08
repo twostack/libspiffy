@@ -290,7 +290,7 @@ class _RecordingArc extends NetworkArc {
   final Map<String, String> submitted = {};
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) {
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) {
     final raw = ExtendedFormat.rawHexOf(rawTx);
     submitted[dartsv.Transaction.fromHex(raw).id] = raw;
     return super.submitTransaction(rawTx, callbackUrl: callbackUrl);

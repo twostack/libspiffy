@@ -338,7 +338,7 @@ class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
 
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async =>
       throw ArcException('ARC is not reachable in this test');
 
   @override

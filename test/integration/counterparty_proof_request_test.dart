@@ -600,7 +600,7 @@ class _FakeArc extends OfflineArc {
   /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds
   /// it and nothing more: whatever this test settles, it settles another way.
   @override
-  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async =>
       ArcSubmitResponse.fromJson({'txStatus': 'STORED'});
 
   final Map<String, ArcTransactionResponse> responses = {};

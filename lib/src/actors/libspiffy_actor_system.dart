@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
@@ -23,6 +24,8 @@ import '../services/crypto_service.dart';
 import '../services/dartsv_crypto_service.dart';
 import '../services/arc_service_config.dart';
 import '../spv/block_header_chain.dart';
+import '../spv/header_checkpoint.dart';
+import '../services/broadcast_callback.dart';
 import '../spv/network_params.dart';
 import '../spv/cdn_header_sync_config.dart';
 import '../spv/cdn_header_sync_service.dart';
@@ -274,6 +277,13 @@ class LibSpiffyActorSystem {
     StorageBackend storageBackend = StorageBackend.isar, // NEW: Storage backend selection
     PostgresConfig? postgresConfig, // NEW: PostgreSQL configuration
     String? cdnBaseUrl, // CDN URL for fast initial header sync
+    // The newest headers of this network as an app shipped them, in the
+    // HeaderCheckpoint (.svhc) format (epic spiffyvault-emk). A fresh
+    // install starts its header chain at the window's lowest header and
+    // holds the whole window at once, so it only catches up from the
+    // window's newest header. An install that already holds headers keeps
+    // the chain it has. Null: the chain starts at genesis, as before.
+    Uint8List? headerCheckpoint,
     CdnSyncProgressCallback? onHeaderSyncProgress, // CDN sync progress callback
     // How the CDN header sync ended: success, the error after every pass, or
     // that no CDN was configured. Lets a host show why headers come from
@@ -338,6 +348,7 @@ class LibSpiffyActorSystem {
         storageBackend: storageBackend,
         postgresConfig: postgresConfig,
         cdnBaseUrl: cdnBaseUrl,
+        headerCheckpoint: headerCheckpoint,
         onHeaderSyncProgress: onHeaderSyncProgress,
         onHeaderSyncResult: onHeaderSyncResult,
       );
@@ -371,6 +382,7 @@ class LibSpiffyActorSystem {
     required StorageBackend storageBackend,
     required PostgresConfig? postgresConfig,
     required String? cdnBaseUrl,
+    Uint8List? headerCheckpoint,
     required CdnSyncProgressCallback? onHeaderSyncProgress,
     void Function(CdnSyncResult result)? onHeaderSyncResult,
   }) async {
@@ -507,15 +519,40 @@ class LibSpiffyActorSystem {
     // IMPORTANT: BlockHeaderChain uses _actorStorage which now points to Isar
     // Anchored to the configured network's genesis; initialize() refuses a
     // header store that is not anchored to it (SPV-02).
+    // With a built-in header window (epic spiffyvault-emk), a fresh install
+    // is anchored at the window's lowest header instead (the rest of the
+    // window is stored below, in the background); BlockHeaderChain
+    // .chooseAnchor keeps an existing store's anchor.
+    final networkParams = NetworkParams.forNetwork(networkType);
+    final checkpoint =
+        headerCheckpoint == null ? null : HeaderCheckpoint.readAnchor(headerCheckpoint, networkParams);
     _headerChain = BlockHeaderChain(
       _actorStorage,
-      params: NetworkParams.forNetwork(networkType),
+      params: networkParams,
+      anchor: await BlockHeaderChain.chooseAnchor(_actorStorage, networkParams, checkpoint: checkpoint?.anchor),
     );
     await _headerChain.initialize();
+
+    // 7.05. The built-in header window (epic spiffyvault-emk) is stored
+    // before the CDN and peers are asked for anything, off the start path:
+    // decoding and writing 200,000 headers takes seconds on a phone, and
+    // creating or opening a wallet needs no chain. A start that was stopped
+    // part way through carries on from the stored tip.
+    Future<void> seedFromWindow() async {
+      if (headerCheckpoint == null || checkpoint == null) return;
+      if (_headerChain.bestHeight >= checkpoint.tipHeight) return;
+      try {
+        final window = await HeaderCheckpoint.load(headerCheckpoint, networkParams);
+        await _headerChain.extendFromWindow(window);
+      } catch (e, st) {
+        Logger('LibSpiffyActorSystem').severe('The built-in header window could not be used: $e', e, st);
+      }
+    }
 
     // 7.1. Start CDN header sync concurrently with actor setup (independent operations)
     Future<void> cdnFuture = Future.value();
     if (cdnBaseUrl == null) {
+      cdnFuture = seedFromWindow();
       onHeaderSyncResult?.call(CdnSyncResult(
         success: false,
         headersImported: 0,
@@ -526,6 +563,7 @@ class LibSpiffyActorSystem {
     } else {
       final cdnLogger = Logger('LibSpiffy-CDNSync');
       cdnFuture = () async {
+        await seedFromWindow();
         try {
           final cdnConfig = CdnHeaderSyncConfig(
             baseUrl: cdnBaseUrl,
@@ -1280,6 +1318,42 @@ class LibSpiffyActorSystem {
     }
     return _arcActor!;
   }
+
+  /// Status callbacks through the broadcast-bridge (its handoff, §3): from
+  /// now on each submission carries [config]'s callback URL and a token
+  /// [signer] signs, so the Broadcaster's MINED or REJECTED reaches the
+  /// user's Ricochet mailbox instead of waiting for a poll. Polling goes on
+  /// as the safety net.
+  ///
+  /// Call it only once the `config.folder` mailbox exists as shared and
+  /// grants the bridge's peer write access: the bridge's first delivery to
+  /// a folder that does not exist creates it open to anyone, for good.
+  /// [config]'s network must be this wallet's.
+  void enableBroadcastCallbacks(BroadcastCallbackConfig config, CallbackTokenSigner signer) {
+    final net = NetworkName.isMainnet(_networkType) ? 'main' : 'test';
+    if (config.net != net) {
+      throw ArgumentError('the callback config is for ${config.net}, this wallet is on $net');
+    }
+    arcActor.tell(SetBroadcastCallbacksMessage(config: config, signer: signer));
+  }
+
+  /// Submissions stop carrying status callbacks.
+  void disableBroadcastCallbacks() => arcActor.tell(SetBroadcastCallbacksMessage());
+
+  /// Applies a status envelope the broadcast-bridge delivered to the user's
+  /// mailbox: its UTF-8 JSON [payload], once the app has checked it came
+  /// from the bridge's peer and was opened (handoff §5.1).
+  ///
+  /// Each item is applied as a polled answer would be: a MINED status
+  /// confirms nothing until its merkle path checks against our own header,
+  /// and a duplicate or stale item changes nothing, so the app can mark the
+  /// message delivered once this completes, and a crash before that only
+  /// applies it again. The answer says whether the envelope was taken and
+  /// how many items named a transaction this wallet holds.
+  Future<BroadcastStatusAppliedMessage> applyBroadcastStatusEnvelope(List<int> payload) =>
+      arcActor.ask<BroadcastStatusAppliedMessage>(
+          ApplyBroadcastStatusMessage(payload, net: NetworkName.isMainnet(_networkType) ? 'main' : 'test'),
+          const Duration(minutes: 2));
 
   /// Get reference to the HeaderSync actor
   ActorRef get headerSyncActor {

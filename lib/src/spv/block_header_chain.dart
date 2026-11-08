@@ -6,6 +6,7 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../storage/read_model_storage.dart';
 import 'difficulty_rules.dart';
 import 'merkle_proof_header_check.dart';
+import 'header_checkpoint.dart';
 import 'network_params.dart';
 
 /// The header a [BlockHeaderChain] is anchored to: normally the network
@@ -212,6 +213,31 @@ class BlockHeaderChain {
 
   /// Whether the chain holds any header at all.
   bool get isEmpty => _chainTip == null;
+
+  /// The anchor for a chain over [storage] on [params]'s network, given
+  /// the [checkpoint] an app ships (epic spiffyvault-emk), if any.
+  ///
+  /// * No checkpoint: the genesis block, as always.
+  /// * An empty store: the checkpoint. The chain starts there and the
+  ///   window it comes with is seeded by [initialize].
+  /// * A store holding a header at height 0: the genesis block (an install
+  ///   that synced from genesis, or one whose older headers were all filled
+  ///   in); [initialize] checks it.
+  /// * A store holding the checkpoint's header at its height: the
+  ///   checkpoint (an install seeded from this window or an older one).
+  /// * Anything else: the genesis block, and [initialize] decides whether
+  ///   the store is anchored (a store written before anchoring existed
+  ///   starts at height 1).
+  static Future<BlockHeaderAnchor> chooseAnchor(ReadModelStorage storage, NetworkParams params,
+      {BlockHeaderAnchor? checkpoint}) async {
+    final genesis = BlockHeaderAnchor(params.genesisHeader, 0);
+    if (checkpoint == null || checkpoint.height == 0) return genesis;
+    if (await storage.getChainTip() == null) return checkpoint;
+    if (await storage.getBlockHeaderByHeight(0) != null) return genesis;
+    final atCheckpoint = await storage.getBlockHeaderByHeight(checkpoint.height);
+    if (atCheckpoint != null && atCheckpoint.blockHash().toString() == checkpoint.hash) return checkpoint;
+    return genesis;
+  }
 
   /// Initialize the header chain by loading the current tip from storage.
   ///
@@ -802,6 +828,30 @@ class BlockHeaderChain {
     }
     _logger.info('Reorganization processed: tip at height $_bestHeight');
     return last;
+  }
+
+  /// Extends the chain with the headers of [window] above the tip (epic
+  /// spiffyvault-emk): the built-in window an app ships, trusted as the
+  /// anchor is. Returns how many were stored.
+  ///
+  /// Only a tip inside the window, whose next window header links to it,
+  /// is extended: a fresh install anchored at the window's checkpoint, one
+  /// whose seeding stopped part way, or one that synced from genesis but
+  /// fell behind the window's top. Anything else (a tip at or above the
+  /// window's top, below it, or on another branch) stores nothing.
+  Future<int> extendFromWindow(HeaderCheckpoint window) async {
+    if (window.network != params.name || _chainTip == null) return 0;
+    final offset = _bestHeight + 1 - window.startHeight;
+    if (offset <= 0 || offset >= window.headers.length) return 0;
+    if (window.headers[offset].prevBlock.toString() != _chainTip!.blockHash().toString()) {
+      _logger.warning('The ${params.name} tip at height $_bestHeight is not on the built-in header window; '
+          'it is not used');
+      return 0;
+    }
+    final rest = window.headers.sublist(offset);
+    await bulkImportHeaders(rest, _bestHeight + 1);
+    _logger.info('Stored ${rest.length} headers from the built-in ${params.name} window: tip at $_bestHeight');
+    return rest.length;
   }
 
   /// Bulk import pre-validated headers from CDN sync.

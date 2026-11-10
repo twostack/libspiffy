@@ -29,6 +29,10 @@ import '../services/broadcast_callback.dart';
 import '../spv/network_params.dart';
 import '../spv/cdn_header_sync_config.dart';
 import '../spv/cdn_header_sync_service.dart';
+import '../spv/cdn_manifest.dart';
+import '../spv/header_backfill_runner.dart';
+import 'spv_messages.dart' show BlockHeadersBackfilledMessage;
+import 'package:http/http.dart' as http;
 import '../integration/peer_addresses.dart';
 import '../integration/spiffynode_bridge.dart';
 import '../integration/sync_order.dart';
@@ -134,6 +138,14 @@ class LibSpiffyActorSystem {
 
   /// Where ARCActor looks up the proof of a transaction ARC does not know.
   MerkleProofSource? _merkleProofSource;
+
+  // Filling in the headers below a chain that started at a checkpoint
+  // (epic spiffyvault-emk, step emk.3).
+  Future<bool> Function()? _mayBackfillHeaders;
+  void Function(int lowestHeight, int checkpointHeight)? _onHeaderBackfillProgress;
+  HeaderBackfillRunner? _headerBackfill;
+  http.Client? _headerBackfillClient;
+  Future<void>? _headerBackfillDone;
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -308,6 +320,17 @@ class LibSpiffyActorSystem {
     // merkle proof: a payment the payee broadcast through another service
     // (spiffyvault-ri8). Null: nowhere, it stays pending until ARC knows it.
     MerkleProofSource? merkleProofSource,
+    // A chain started at a built-in checkpoint (headerCheckpoint) holds no
+    // header below it. With a cdnBaseUrl they are filled in from the CDN in
+    // the background, newest first, down to genesis (spiffyvault-emk.3):
+    // about 50,000 headers (4 MB) a step, some 125 MB in all on mainnet.
+    // Before each step this is asked whether downloading is all right now
+    // (an app on a phone answers true only on Wi-Fi); while it says no, it
+    // is asked again every 5 minutes. Null: always.
+    Future<bool> Function()? mayBackfillHeaders,
+    // After each step: the lowest height held, and the checkpoint the chain
+    // started at. lowestHeight 0 means the fill is complete.
+    void Function(int lowestHeight, int checkpointHeight)? onHeaderBackfillProgress,
   }) async {
     // An instance is initialized once. A second call used to build a second
     // actor system and storage stack over the first (A-M5).
@@ -328,6 +351,8 @@ class LibSpiffyActorSystem {
     _deadlineSweepInterval = deadlineSweepInterval;
     _arcInFlightFollowDelays = arcInFlightFollowDelays;
     _merkleProofSource = merkleProofSource;
+    _mayBackfillHeaders = mayBackfillHeaders;
+    _onHeaderBackfillProgress = onHeaderBackfillProgress;
     try {
       await _initialize(
         actorSystem: actorSystem,
@@ -629,6 +654,13 @@ class LibSpiffyActorSystem {
     // 10. Wait for CDN sync to finish before P2P (P2P header sync starts from chain tip)
     await cdnFuture;
 
+    // 10.5. The headers below a checkpoint the chain started at are filled
+    // in from the CDN in the background (spiffyvault-emk.3). Peers cannot
+    // help: they hand out headers upwards from a block we know, never down.
+    if (cdnBaseUrl != null && _headerChain.anchor.height > 0) {
+      _startHeaderBackfill(cdnBaseUrl, networkType, dataDirectory);
+    }
+
     // 11. Initialize P2P if enabled (needs actors from step 9)
     if (enableP2P) {
       await _initializeP2P(
@@ -641,6 +673,54 @@ class LibSpiffyActorSystem {
     
   }
   
+  /// Runs [HeaderBackfillRunner] over [CdnHeaderSyncService.backfillNext];
+  /// SPVActor hears of every run of headers stored, so the proofs and parked
+  /// receives that waited for them are settled.
+  void _startHeaderBackfill(String cdnBaseUrl, String networkType, String? dataDirectory) {
+    final log = Logger('LibSpiffy-HeaderBackfill');
+    final checkpointHeight = _headerChain.anchor.height;
+    final client = _headerBackfillClient = http.Client();
+    final service = CdnHeaderSyncService(
+      config: CdnHeaderSyncConfig(
+        baseUrl: cdnBaseUrl,
+        network: NetworkName.canonical(networkType),
+        cacheDirectory: dataDirectory,
+      ),
+      headerChain: _headerChain,
+      httpClient: client,
+    );
+    final runner = _headerBackfill = HeaderBackfillRunner(
+      step: service.backfillNext,
+      mayDownload: _mayBackfillHeaders,
+      onStored: (CdnBackfillStep step) {
+        _spvActor?.tell(BlockHeadersBackfilledMessage(fromHeight: step.fromHeight!, toHeight: step.toHeight!));
+        _onHeaderBackfillProgress?.call(step.lowestHeight, checkpointHeight);
+      },
+    );
+    _headerBackfillDone = () async {
+      try {
+        final lowest = await _headerChain.lowestHeldHeight();
+        _onHeaderBackfillProgress?.call(lowest, checkpointHeight);
+        if (lowest == 0) return;
+        log.info('Filling in the headers below height $lowest from the CDN');
+        await runner.run();
+      } catch (e, st) {
+        log.warning('Filling in older headers ended: $e', e, st);
+      }
+    }();
+  }
+
+  /// Ends the header fill and waits briefly for its step to let go of
+  /// storage (closing the client fails a download in flight).
+  Future<void> _stopHeaderBackfill() async {
+    _headerBackfill?.stop();
+    _headerBackfillClient?.close();
+    await _headerBackfillDone?.timeout(const Duration(seconds: 10), onTimeout: () {});
+    _headerBackfill = null;
+    _headerBackfillClient = null;
+    _headerBackfillDone = null;
+  }
+
   /// Registers every LibSpiffy journal event type (see [registerEventTypes]).
   ///
   /// MUST run before _initializeProjections(): projections deserialize
@@ -1826,6 +1906,9 @@ class LibSpiffyActorSystem {
     }
 
     try {
+      // 0. Stop filling in older headers before storage closes.
+      await _stopHeaderBackfill();
+
       // 1. Disconnect from SpiffyNode first
       await disconnectFromSpiffyNode();
 

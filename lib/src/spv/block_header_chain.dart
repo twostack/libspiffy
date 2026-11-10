@@ -854,6 +854,94 @@ class BlockHeaderChain {
     return rest.length;
   }
 
+  /// The lowest height at which a header is stored (epic spiffyvault-emk,
+  /// step emk.3): 0 on a chain anchored at genesis, otherwise somewhere
+  /// between 0 and the checkpoint the chain started at, as far down as the
+  /// older headers have been filled in.
+  ///
+  /// The stored headers below the tip are contiguous: the chain started at
+  /// [anchor] and grows upwards, and [storeBelow] adds only the run right
+  /// under the lowest header held, writing its highest headers first. So
+  /// "a header is stored at h" is false below this height and true from it
+  /// up to the anchor, and a binary search over storage finds it in about
+  /// twenty lookups, with no record to keep and none to get out of step.
+  Future<int> lowestHeldHeight() async {
+    if (anchor.height == 0) return 0;
+    if (await _storage.getBlockHeaderByHeight(0) != null) return 0;
+    var low = 0; // not held
+    var high = anchor.height; // held
+    while (high - low > 1) {
+      final mid = low + (high - low) ~/ 2;
+      if (await _storage.getBlockHeaderByHeight(mid) != null) {
+        high = mid;
+      } else {
+        low = mid;
+      }
+    }
+    return high;
+  }
+
+  /// Stores [headers], the run of older headers from [startHeight] up to
+  /// right below the lowest header held (epic spiffyvault-emk, step emk.3).
+  /// Returns how many were stored.
+  ///
+  /// Nothing about them is taken on trust. The header held at
+  /// `startHeight + headers.length` already names the hash of the one
+  /// below it, so the run must end on exactly that hash and link header by
+  /// header all the way down; every header must also carry its own proof
+  /// of work, and a run that reaches height 0 must start with this
+  /// network's genesis block. A run that fails any check stores nothing
+  /// and throws a [FormatException].
+  ///
+  /// The tip, the cache and everything above are untouched. The headers are
+  /// written highest first, so a write stopped part way through leaves the
+  /// held headers contiguous ([lowestHeldHeight]).
+  Future<int> storeBelow(List<BlockHeader> headers, int startHeight) async {
+    if (headers.isEmpty) return 0;
+    final lowest = await lowestHeldHeight();
+    final endHeight = startHeight + headers.length - 1;
+    if (startHeight < 0 || endHeight != lowest - 1) {
+      throw FormatException('Headers $startHeight..$endHeight do not end right below the lowest header '
+          'held, at $lowest');
+    }
+    final above = await _storage.getBlockHeaderByHeight(lowest);
+    if (above == null) throw StateError('No header held at $lowest');
+
+    final hashes = [for (final h in headers) h.blockHash().toString()];
+    if (hashes.last != above.prevBlock.toString()) {
+      throw FormatException('The header at $endHeight is ${hashes.last}, but the header held at $lowest '
+          'names ${above.prevBlock} below it');
+    }
+    for (var i = headers.length - 1; i > 0; i--) {
+      if (headers[i].prevBlock.toString() != hashes[i - 1]) {
+        throw FormatException('The header at ${startHeight + i} does not link to the one at '
+            '${startHeight + i - 1}');
+      }
+    }
+    if (!_skipProofOfWorkValidation) {
+      for (var i = 0; i < headers.length; i++) {
+        final failure = params.checkProofOfWork(headers[i].bits, hashes[i]).failure;
+        if (failure != null) {
+          throw FormatException('The header at ${startHeight + i} has no valid proof of work (${failure.name})');
+        }
+      }
+    }
+    if (startHeight == 0 && hashes.first != params.genesisHash) {
+      throw FormatException('The header at height 0 is ${hashes.first}, not the ${params.name} genesis block '
+          '${params.genesisHash}');
+    }
+
+    const batchSize = 1000;
+    for (var end = headers.length; end > 0; end -= batchSize) {
+      final begin = end - batchSize < 0 ? 0 : end - batchSize;
+      await _storage.storeBlockHeadersBulk([
+        for (var j = begin; j < end; j++) (headers[j], startHeight + j),
+      ]);
+    }
+    _logger.info('Stored ${headers.length} older ${params.name} headers, $startHeight..$endHeight');
+    return headers.length;
+  }
+
   /// Bulk import pre-validated headers from CDN sync.
   ///
   /// These headers have already been validated for chain continuity,

@@ -260,6 +260,61 @@ class CdnHeaderSyncService {
     }
   }
 
+  /// Fills in one CDN chunk of the headers below the lowest header held,
+  /// newest first (epic spiffyvault-emk, step emk.3).
+  ///
+  /// A chain that starts at a built-in checkpoint holds nothing below it.
+  /// This fetches the chunk holding the height right under the lowest
+  /// header held, keeps its headers up to that height, and has
+  /// [BlockHeaderChain.storeBelow] check them against the header above
+  /// (hash linkage, each header's proof of work, the genesis block at
+  /// height 0) before storing them. The CDN is not trusted: a chunk that
+  /// fails a check stores nothing and throws. Nothing to do once the chain
+  /// reaches genesis. The manifest is fetched once per service.
+  ///
+  /// Each call is a step a host can stop between (no Wi-Fi, shutting
+  /// down); where the fill stopped is read back from storage, so it
+  /// resumes after a restart.
+  Future<CdnBackfillStep> backfillNext() async {
+    final lowest = await headerChain.lowestHeldHeight();
+    if (lowest == 0) return const CdnBackfillStep(lowestHeight: 0);
+    final target = lowest - 1;
+
+    final manifest = _manifest ??= await _fetchManifest();
+    final chunk = manifest.chunks.where((c) => c.startHeight <= target && target <= c.endHeight).firstOrNull;
+    if (chunk == null) {
+      throw Exception('The CDN manifest has no chunk holding height $target');
+    }
+    if (chunk.startHeight < 0 || chunk.headerCount != chunk.endHeight - chunk.startHeight + 1) {
+      throw Exception('Manifest chunk ${chunk.filename} is inconsistent: heights '
+          '${chunk.startHeight}..${chunk.endHeight} but headerCount ${chunk.headerCount}');
+    }
+    if (config.cacheDirectory != null) {
+      await Directory(config.cacheDirectory!).create(recursive: true);
+    }
+    final data = await _loadOrDownloadChunk(chunk);
+    if (!_validateChunkIntegrity(data, chunk.sha256)) {
+      await _deleteCachedChunk(chunk);
+      throw Exception('Chunk integrity check failed for ${chunk.filename}');
+    }
+    final headers = _parseChunkHeaders(data);
+    if (headers.length != chunk.headerCount) {
+      throw Exception('Header count mismatch in ${chunk.filename}: '
+          'expected ${chunk.headerCount}, got ${headers.length}');
+    }
+    final below = headers.sublist(0, target - chunk.startHeight + 1);
+    try {
+      await headerChain.storeBelow(below, chunk.startHeight);
+    } on FormatException catch (e) {
+      await _deleteCachedChunk(chunk);
+      throw Exception('Chunk ${chunk.filename} rejected: ${e.message}');
+    }
+    await _deleteCachedChunk(chunk);
+    return CdnBackfillStep(lowestHeight: chunk.startHeight, fromHeight: chunk.startHeight, toHeight: target);
+  }
+
+  CdnManifest? _manifest;
+
   /// Fetch and parse the CDN manifest.
   Future<CdnManifest> _fetchManifest() async {
     final url = '${config.baseUrl}/${config.network}/manifest.json';

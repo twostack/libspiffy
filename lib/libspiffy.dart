@@ -90,6 +90,8 @@ export 'src/services/callback_transaction_signer.dart';
 export 'src/spv/cdn_header_sync_config.dart';
 export 'src/spv/cdn_header_sync_service.dart';
 export 'src/spv/cdn_manifest.dart';
+// Fills in the headers below a checkpoint the chain started at (spiffyvault-emk.3).
+export 'src/spv/header_backfill_runner.dart';
 
 // SPV HEADER CHAIN - the validated, anchored header chain, for a host that
 // answers header questions from it (cloak-cli's HeaderSource)

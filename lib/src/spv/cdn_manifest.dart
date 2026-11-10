@@ -116,3 +116,23 @@ class CdnSyncResult {
     this.error,
   });
 }
+
+/// One step of filling in the headers below a chain that started at a
+/// checkpoint (epic spiffyvault-emk, step emk.3):
+/// [CdnHeaderSyncService.backfillNext].
+class CdnBackfillStep {
+  /// The heights stored by this step; null when it stored nothing.
+  final int? fromHeight;
+  final int? toHeight;
+
+  /// The lowest height held after this step: 0 when every header down to
+  /// genesis is held.
+  final int lowestHeight;
+
+  const CdnBackfillStep({required this.lowestHeight, this.fromHeight, this.toHeight});
+
+  /// Every header down to genesis is held.
+  bool get complete => lowestHeight == 0;
+
+  int get headersStored => fromHeight == null ? 0 : toHeight! - fromHeight! + 1;
+}

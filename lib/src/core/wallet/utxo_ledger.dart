@@ -372,7 +372,16 @@ abstract final class UtxoLedger {
           'not by ${command.spendingTxId}: a double spend');
     }
     final proven = command.blockHeight != null;
-    if (!proven && !spendableBy(currentState, utxo, command.spendingTxId)) {
+    // A pending coin nothing reserves or holds may be spent unproven too
+    // (spiffyvault-emk.4). A restore records a coin whose proof could not
+    // be checked yet as pending, and a later transaction of the same
+    // restore that spends it must still mark it spent: otherwise the coin
+    // would turn spendable once its header arrives. Only our own keys can
+    // spend our coins, no payment of ours relies on a pending coin it has
+    // not reserved, and marking it spent only lowers what the wallet holds.
+    final unclaimedPending = utxo.status == UTXOStatus.pending &&
+        DeferredPayments.explicitHolder(currentState, command.utxoKey) == null;
+    if (!proven && !unclaimedPending && !spendableBy(currentState, utxo, command.spendingTxId)) {
       throw StateError('UTXO ${command.utxoKey} is not available for spending by ${command.spendingTxId} '
           '(status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId}), and the spend is not proven in a block');
     }

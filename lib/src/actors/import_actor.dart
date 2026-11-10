@@ -924,6 +924,12 @@ class ImportActor extends Actor {
   ) async {
     final importedUtxos = <Map<String, dynamic>>[];
     final walletId = message.walletId;
+    // Whether the proof matched a block header we hold (spiffyvault-emk.4).
+    final proven = tx.headerVerified;
+    if (!proven) {
+      _logger.info('      ⏳ ${tx.txid}: no block header held at ${tx.blockHeight} yet; '
+          'its coins stay pending until that header arrives');
+    }
 
     // Parse transaction to extract data (BEEF already has this parsed)
     final parsedTx = tx.transaction;
@@ -1186,8 +1192,13 @@ class ImportActor extends Actor {
         walletReceivingAddresses.add(outputAddress);
         walletReceivedSats += output.satoshis;
 
-        // Send ReceiveUTXOCommand to wallet aggregate
-        // IMPORTANT: Imported UTXOs are already confirmed, mark as available immediately
+        // Send ReceiveUTXOCommand to wallet aggregate. A coin is spendable
+        // from the moment its merkle proof checked out against a block
+        // header we hold. A proof whose header is not held yet (below the
+        // checkpoint a fresh install starts at, before older headers are
+        // filled in, epic spiffyvault-emk) proves nothing yet: the coin
+        // stays pending, without a height, and SPVActor makes it available
+        // when that header arrives (spiffyvault-emk.4).
         final receiveCommand = ReceiveUTXOCommand(
           walletId: message.walletId,
           txid: tx.txid,
@@ -1195,9 +1206,9 @@ class ImportActor extends Actor {
           satoshis: output.satoshis,
           scriptPubKey: output.script.toHex(),
           address: outputAddress,
-          blockHeight: tx.blockHeight,
+          blockHeight: proven ? tx.blockHeight : null,
           confirmations: null, // Will be updated separately
-          initialStatus: UTXOStatus.available, // Imported UTXOs are already confirmed
+          initialStatus: proven ? UTXOStatus.available : UTXOStatus.pending,
           // A HODLocker coin's lock: plugin-managed, so locked balance.
           pluginMetadata: pluginMetadata,
         );
@@ -1213,7 +1224,7 @@ class ImportActor extends Actor {
           'vout': vout,
           'satoshis': output.satoshis.toString(),
           'address': outputAddress,
-          'blockHeight': tx.blockHeight,
+          'blockHeight': proven ? tx.blockHeight : null,
         });
       }
     }
@@ -1224,7 +1235,10 @@ class ImportActor extends Actor {
       walletId: message.walletId,
       txid: tx.txid,
       rawHex: tx.rawHex,
-      blockHeight: tx.blockHeight,
+      // A height only when the proof checked out against a held header: the
+      // height is what says "confirmed". The BUMP is journaled either way;
+      // the read model keeps an unchecked one waiting for its header.
+      blockHeight: proven ? tx.blockHeight : null,
       bumpProofHex: hex.encode(tx.bump.serialize()),
       totalOutputSats: totalOutput.toInt(),
       numInputs: parsedTx.inputs.length,

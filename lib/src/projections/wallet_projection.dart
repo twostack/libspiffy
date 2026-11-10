@@ -1359,7 +1359,13 @@ class WalletProjection extends Projection<void> {
       // CRITICAL: Determine status based on whether we have merkle proof in hand
       // If we have the proof, transaction is confirmed and can be trusted
       // If we don't have the proof yet, transaction is pending until proof is obtained
-      final hasMerkleProof = event.bumpProof.isNotEmpty;
+      //
+      // A proof alone is not enough: the event carries a height only when
+      // the importer checked the proof against a block header we hold. A
+      // BUMP without a height (its header was not held yet, below the
+      // checkpoint a fresh install starts at, spiffyvault-emk.4) leaves the
+      // transaction pending; SPVActor confirms it when the header arrives.
+      final hasMerkleProof = event.bumpProof.isNotEmpty && event.blockHeight != null;
       final transactionStatus = hasMerkleProof ? TransactionStatus.confirmed : TransactionStatus.pending;
       
       
@@ -1402,8 +1408,15 @@ class WalletProjection extends Projection<void> {
       await _storage.storeTransaction(event.walletId, transaction);
 
       // Store Merkle proof from BUMP
+      // A BUMP journaled without a height was not checked against a header
+      // when the wallet recorded it, so the wallet holds the transaction as
+      // unconfirmed. Its proof is kept waiting for its header even if that
+      // header is here by now: SPVActor's check of waiting proofs is what
+      // confirms the transaction in the wallet and makes its coins
+      // spendable (spiffyvault-emk.4).
       if (event.bumpProof.isNotEmpty) {
-        await _storeMerkleProofFromBump(event.txid, event.bumpProof);
+        await _storeMerkleProofFromBump(event.txid, event.bumpProof,
+            awaitConfirmation: event.blockHeight == null);
       }
 
       // Create junction table records for efficient address-centric queries.
@@ -2018,10 +2031,15 @@ class WalletProjection extends Projection<void> {
   /// the offset of the level-0 leaf whose hash is [txid] — a BRC-74 level 0
   /// holds the txid AND its sibling, so "first leaf's offset" is wrong for
   /// every even-positioned transaction (audit SPV-06).
+  ///
+  /// With [awaitConfirmation] a proof that verifies is still stored
+  /// pendingHeader: the wallet has not confirmed the transaction, and
+  /// SPVActor confirms it from that row ([_handleTransactionImported]).
   Future<void> _storeMerkleProofFromBump(
     String txid,
-    String bumpHex,
-  ) async {
+    String bumpHex, {
+    bool awaitConfirmation = false,
+  }) async {
     try {
       final bump = BUMP.fromBytes(Uint8List.fromList(hex.decode(bumpHex)));
 
@@ -2054,7 +2072,19 @@ class WalletProjection extends Projection<void> {
         await _storeContradictedProof(txid, bump.blockHeight, txPosition, siblingHashes, check);
         return;
       }
-      final status = check.isVerified ? MerkleProofStatus.verified : MerkleProofStatus.pendingHeader;
+      if (awaitConfirmation) {
+        // A re-delivery of a transaction this very proof already confirmed
+        // leaves that confirmation alone.
+        final current = await _storage.getMerkleProof(txid);
+        if (current != null &&
+            current.status == MerkleProofStatus.verified &&
+            MerkleProof.sameContent(current.merkleProof, siblingHashes)) {
+          return;
+        }
+      }
+      final status = check.isVerified && !awaitConfirmation
+          ? MerkleProofStatus.verified
+          : MerkleProofStatus.pendingHeader;
 
       // Create MerkleProof object
       final merkleProof = MerkleProof(

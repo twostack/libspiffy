@@ -284,14 +284,30 @@ void main() {
           throwsA(isA<StateError>().having((e) => e.message, 'message', 'Insufficient funds: need 36 satoshis, have 35 available')));
     });
 
-    test('a pending input is spendable by the wallet\'s own recorded transaction only', () {
+    test('a pending input is spendable by the wallet\'s own recorded transaction', () {
       var state = _withUtxos(_created(), [_utxo(1, 5, status: UTXOStatus.pending)]);
       SpendUTXOCommand spend(String txid) =>
           SpendUTXOCommand(walletId: _w, utxoKey: _key(1), spendingTxId: txid, fee: BigInt.zero);
-      expect(() => UtxoLedger.spend(state, spend('t1')), throwsA(isA<StateError>()));
       state = _with(state, (b) => OutgoingTransactions.applyRecorded(b, _recorded('t1', [_key(1)], 2, _t0)));
       expect((UtxoLedger.spend(state, spend('t1')).single as UTXOSpentEvent).spentInTxId, 't1');
       expect(OutgoingTransactions.recordedTransactionSpends(state, 't1', _key(1)), isTrue);
+    });
+
+    // spiffyvault-emk.4: a restore records a coin whose proof could not be
+    // checked as pending; the restored transaction that spent it must still
+    // mark it spent, or the coin turns spendable once its header arrives.
+    test('a pending input nothing holds is spent by an unproven spend; one a deferred payment holds is not', () {
+      var state = _withUtxos(_created(), [_utxo(1, 5, status: UTXOStatus.pending), _utxo(2, 6, status: UTXOStatus.pending)]);
+      SpendUTXOCommand spend(int n, String txid) =>
+          SpendUTXOCommand(walletId: _w, utxoKey: _key(n), spendingTxId: txid, fee: BigInt.zero);
+      expect((UtxoLedger.spend(state, spend(1, 'restored')).single as UTXOSpentEvent).spentInTxId, 'restored');
+
+      state = _with(state, (b) => DeferredPayments.applySpendDeferred(
+          b,
+          TransactionSpendDeferredEvent(
+              walletId: _w, txid: 'held', heldInputs: [{'utxoKey': _key(2), 'satoshis': '6'}], recipientAddresses: const [],
+              paymentAmount: '1', fee: 1, recordedAt: _t0, version: 2, timestamp: _t0)));
+      expect(() => UtxoLedger.spend(state, spend(2, 'other')), throwsA(isA<StateError>()));
     });
   });
 

@@ -123,14 +123,15 @@ void main() {
 
     tearDown(() => system.shutdown());
 
-    Future<WalletImportNotification> runImport(_FixtureDataSource dataSource) async {
+    Future<WalletImportNotification> runImport(_FixtureDataSource dataSource,
+        {Map<int, BlockHeader>? headers}) async {
       final walletManagerRef = await system.spawn('wm', () => walletManager);
       final terminal = Completer<WalletImportNotification>();
       final importer = await system.spawn(
         'importer',
         () => ImportActor(
           dataSource: dataSource,
-          storage: _HeaderStorage(walletManager, {kFixtureHeight: fixtureHeader()}),
+          storage: _HeaderStorage(walletManager, headers ?? {kFixtureHeight: fixtureHeader()}),
           walletManagerActor: walletManagerRef,
           eventBroadcaster: (event) {
             if ((event is WalletImportCompletedEvent || event is WalletImportFailedEvent) &&
@@ -161,6 +162,36 @@ void main() {
       expect(end, isA<WalletImportCompletedEvent>());
       expect(walletManager.recordedTxids, isNot(contains(kFixtureTxid)),
           reason: 'a proof that does not reach the stored header root must not be imported');
+    });
+
+    // spiffyvault-emk.4: a fresh install holds no headers below its
+    // checkpoint until they are filled in. A restored coin whose proof
+    // could not be checked is not spendable yet.
+    group('emk.4: only a checked proof makes restored coins spendable', () {
+      test('header held: the coin is available at its height and the transaction confirmed', () async {
+        final end = await runImport(_FixtureDataSource());
+        expect(end, isA<WalletImportCompletedEvent>());
+
+        final coin = walletManager.received.single;
+        expect((coin.txid, coin.initialStatus, coin.blockHeight),
+            (kFixtureTxid, UTXOStatus.available, kFixtureHeight));
+        final record = walletManager.records.single;
+        expect(record.blockHeight, kFixtureHeight);
+        expect(record.bumpProofHex, isNotEmpty);
+      });
+
+      test('header not held: the coin is pending without a height, and the proof is kept', () async {
+        final end = await runImport(_FixtureDataSource(), headers: const {});
+        expect(end, isA<WalletImportCompletedEvent>());
+
+        final coin = walletManager.received.single;
+        expect((coin.txid, coin.initialStatus, coin.blockHeight), (kFixtureTxid, UTXOStatus.pending, null),
+            reason: 'a proof no held header backs proves nothing yet');
+        final record = walletManager.records.single;
+        expect(record.blockHeight, isNull, reason: 'the height is what says confirmed');
+        expect(record.bumpProofHex, isNotEmpty,
+            reason: 'the BUMP is journaled so the transaction confirms when its header arrives');
+      });
     });
   });
 }
@@ -223,6 +254,8 @@ class _FixtureDataSource implements BlockchainDataSource {
 class _RecordingWalletManager extends Actor {
   final List<String> registeredAddresses = [];
   final List<String> recordedTxids = [];
+  final List<ReceiveUTXOCommand> received = [];
+  final List<RecordImportedTransactionCommand> records = [];
 
   @override
   Future<void> onMessage(dynamic message) async {
@@ -233,10 +266,12 @@ class _RecordingWalletManager extends Actor {
       if (command is RegisterDiscoveredAddressCommand) {
         registeredAddresses.add(command.address);
       } else if (command is ReceiveUTXOCommand) {
+        received.add(command);
         context.sender?.tell(UTXOReceivedResponse(
             walletId: command.walletId, txid: command.txid, vout: command.vout, success: true));
       } else if (command is RecordImportedTransactionCommand) {
         recordedTxids.add(command.txid);
+        records.add(command);
         context.sender?.tell(TransactionRecordedResponse(
             walletId: command.walletId, txid: command.txid, success: true));
       }

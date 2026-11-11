@@ -1,4 +1,4 @@
-## Unreleased
+## 5.17.0
 
 A fresh install starts its header chain at a built-in checkpoint (spiffyvault-emk.1), parked receives wait for the header they need (spiffyvault-emk.2), restored coins wait for theirs (spiffyvault-emk.4), and the headers below the checkpoint are filled in from the CDN (spiffyvault-emk.3); an unknown deferred payment has its own error code (spiffyvault-1zp)
 

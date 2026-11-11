@@ -14,6 +14,7 @@ import 'package:logging/logging.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
+import 'package:libspiffy/src/core/spiffy_error.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
@@ -511,8 +512,10 @@ void main() {
           () => wallet.handle(CancelDeferredSpendCommand(
               walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.mined)),
           throwsA(isA<StateError>()));
-      expect(() => wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: 'ee' * 32)),
-          throwsA(isA<StateError>()));
+      expect(
+          () => wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: 'ee' * 32)),
+          throwsA(isA<SpiffyStateError>()
+              .having((e) => e.spiffyCode, 'spiffyCode', SpiffyErrorCode.noSuchPayment)));
       expect(wallet.utxo(_input).status, UTXOStatus.reserved);
     });
 

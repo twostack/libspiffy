@@ -629,12 +629,45 @@ void main() {
         (e) => e.requestId == 'rf3');
     expect(again.success, isFalse);
     expect(again.error, contains('reclaimed'));
+    expect(again.errorCode, isNull, reason: 'the payment exists; only a missing one is noSuchPayment');
 
     final unknown = await send<DeferredPaymentReclaimedEvent>(
         ReclaimDeferredPaymentCommand(walletId: walletId, txid: 'ab' * 32, requestId: 'rf4'),
         (e) => e.requestId == 'rf4');
     expect(unknown.success, isFalse);
     expect(unknown.error, contains('not a deferred payment'));
+    expect(unknown.errorCode, SpiffyErrorCode.noSuchPayment);
+  });
+
+  test('1zp: every command on a payment the wallet has no record of answers noSuchPayment', () async {
+    final missing = 'cd' * 32;
+    final status = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: missing, requestId: 'ns1'),
+        (e) => e.requestId == 'ns1');
+    final broadcast = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: missing, requestId: 'ns2'),
+        (e) => e.requestId == 'ns2');
+    final cancel = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: missing, requestId: 'ns3'),
+        (e) => e.requestId == 'ns3');
+    final complete = await send<DeferredPaymentCompletedEvent>(
+        CompleteDeferredPaymentCommand(walletId: walletId, txid: missing, rawHex: '00', requestId: 'ns4'),
+        (e) => e.requestId == 'ns4');
+    final reclaim = await send<DeferredPaymentReclaimedEvent>(
+        ReclaimDeferredPaymentCommand(walletId: walletId, txid: missing, requestId: 'ns5'),
+        (e) => e.requestId == 'ns5');
+
+    for (final CoordinatorReply reply in [status, broadcast, cancel, complete, reclaim]) {
+      expect(reply.failure, isNotNull, reason: '${reply.runtimeType}');
+      expect(reply.errorCode, SpiffyErrorCode.noSuchPayment, reason: '${reply.runtimeType}');
+    }
+
+    // A payment the wallet does hold is answered without the code.
+    final ready = await pay('inv-no-such-payment');
+    final known = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: ready.txid, requestId: 'ns6'),
+        (e) => e.requestId == 'ns6');
+    expect(known.errorCode, isNull);
   });
 
   test('8442: a payment with a deadline is reclaimed by the wallet itself once the deadline passes; one '

@@ -2680,12 +2680,12 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleBroadcastDeferredPayment(BroadcastDeferredPaymentCommand cmd) async {
     final requestId = cmd.requestId;
-    DeferredPaymentBroadcastEvent failure(String error) => DeferredPaymentBroadcastEvent(
-        walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, error: error);
+    DeferredPaymentBroadcastEvent failure(String error, {SpiffyErrorCode? errorCode}) => DeferredPaymentBroadcastEvent(
+        walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, error: error, errorCode: errorCode);
     try {
       final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
       if (payment == null) {
-        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}', errorCode: SpiffyErrorCode.noSuchPayment));
         return;
       }
       final tx = await _storage.getTransaction(cmd.txid, walletId: cmd.walletId);
@@ -2747,6 +2747,7 @@ class WalletCoordinatorActor extends Actor {
           requestId: requestId,
           success: false,
           error: 'Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}',
+          errorCode: SpiffyErrorCode.noSuchPayment,
         ));
         return;
       }
@@ -2802,18 +2803,19 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleCancelDeferredPayment(CancelDeferredPaymentCommand cmd) async {
     final requestId = cmd.requestId;
     String? networkStatus;
-    DeferredPaymentCancelledEvent refused(String error) => DeferredPaymentCancelledEvent(
+    DeferredPaymentCancelledEvent refused(String error, {SpiffyErrorCode? errorCode}) => DeferredPaymentCancelledEvent(
           walletId: cmd.walletId,
           txid: cmd.txid,
           requestId: requestId,
           success: false,
           networkStatus: networkStatus,
           error: error,
+          errorCode: errorCode,
         );
     try {
       final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
       if (payment == null) {
-        _emitEvent(refused('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        _emitEvent(refused('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}', errorCode: SpiffyErrorCode.noSuchPayment));
         return;
       }
       if (!payment.isOutstanding) {
@@ -3056,12 +3058,19 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleCompleteDeferredPayment(CompleteDeferredPaymentCommand cmd) async {
     final requestId = cmd.requestId;
-    DeferredPaymentCompletedEvent failure(String error, {String? completedTxid}) => DeferredPaymentCompletedEvent(
-        walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, completedTxid: completedTxid, error: error);
+    DeferredPaymentCompletedEvent failure(String error, {String? completedTxid, SpiffyErrorCode? errorCode}) =>
+        DeferredPaymentCompletedEvent(
+            walletId: cmd.walletId,
+            txid: cmd.txid,
+            requestId: requestId,
+            success: false,
+            completedTxid: completedTxid,
+            error: error,
+            errorCode: errorCode);
     try {
       final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
       if (payment == null) {
-        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}', errorCode: SpiffyErrorCode.noSuchPayment));
         return;
       }
       if (!payment.isOutstanding) {
@@ -3174,7 +3183,7 @@ class WalletCoordinatorActor extends Actor {
   /// self-spend, which is also when its outputs become spendable.
   Future<void> _handleReclaimDeferredPayment(ReclaimDeferredPaymentCommand cmd) async {
     final requestId = cmd.requestId;
-    DeferredPaymentReclaimedEvent failure(String error, {String? reclaimTxid}) =>
+    DeferredPaymentReclaimedEvent failure(String error, {String? reclaimTxid, SpiffyErrorCode? errorCode}) =>
         DeferredPaymentReclaimedEvent(
           walletId: cmd.walletId,
           txid: cmd.txid,
@@ -3182,11 +3191,12 @@ class WalletCoordinatorActor extends Actor {
           requestId: requestId,
           success: false,
           error: error,
+          errorCode: errorCode,
         );
     try {
       final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
       if (payment == null) {
-        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}', errorCode: SpiffyErrorCode.noSuchPayment));
         return;
       }
       if (!payment.isOutstanding) {

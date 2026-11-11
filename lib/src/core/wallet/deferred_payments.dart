@@ -13,6 +13,7 @@ import '../../models/persistent_map.dart';
 import '../../models/wallet_balances.dart';
 import '../../models/wallet_event.dart';
 import '../../models/wallet_state.dart';
+import '../spiffy_error.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
 import 'legacy_deferred_spends.dart';
@@ -278,7 +279,8 @@ class DeferredPayments {
       final inferred = inferredHoldEvents(currentState, command.walletId, currentState.version + 1);
       final own = inferred.where((e) => e.txid == command.txid).firstOrNull;
       if (own == null) {
-        throw StateError('Transaction ${command.txid} is not a deferred payment of wallet ${command.walletId}');
+        throw SpiffyStateError(SpiffyErrorCode.noSuchPayment,
+            'Transaction ${command.txid} is not a deferred payment of wallet ${command.walletId}');
       }
       events.addAll(inferred);
       inferredKeys = own.heldUtxoKeys;

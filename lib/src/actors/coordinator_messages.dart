@@ -3024,6 +3024,11 @@ class DeferredPaymentBroadcastEvent extends CoordinatorReply {
   final bool willRetry;
   final String? error;
 
+  /// [SpiffyErrorCode.noSuchPayment] when the wallet has no such deferred
+  /// payment (spiffyvault-1zp); null otherwise.
+  @override
+  final SpiffyErrorCode? errorCode;
+
   /// The competing transactions ARC named with a DOUBLE_SPEND_ATTEMPTED
   /// answer (bead libspiffy-pkum); empty otherwise.
   final List<String> competingTxids;
@@ -3038,6 +3043,7 @@ class DeferredPaymentBroadcastEvent extends CoordinatorReply {
     this.confirmed = false,
     this.willRetry = false,
     this.error,
+    this.errorCode,
     List<String> competingTxids = const [],
   })  : competingTxids = frozenList(competingTxids);
 
@@ -3072,6 +3078,11 @@ class DeferredPaymentStatusEvent extends CoordinatorReply {
   final bool confirmed;
   final String? error;
 
+  /// [SpiffyErrorCode.noSuchPayment] when the wallet has no such deferred
+  /// payment (spiffyvault-1zp); null otherwise.
+  @override
+  final SpiffyErrorCode? errorCode;
+
   /// The competing transactions ARC named with a DOUBLE_SPEND_ATTEMPTED
   /// answer (bead libspiffy-pkum); empty otherwise.
   final List<String> competingTxids;
@@ -3087,6 +3098,7 @@ class DeferredPaymentStatusEvent extends CoordinatorReply {
     this.proofStatus,
     this.confirmed = false,
     this.error,
+    this.errorCode,
     List<String> competingTxids = const [],
   })  : competingTxids = frozenList(competingTxids);
 
@@ -3110,6 +3122,11 @@ class DeferredPaymentCancelledEvent extends CoordinatorReply {
   final List<String> releasedUtxoKeys;
   final String? error;
 
+  /// [SpiffyErrorCode.noSuchPayment] when the wallet has no such deferred
+  /// payment (spiffyvault-1zp); null otherwise.
+  @override
+  final SpiffyErrorCode? errorCode;
+
   DeferredPaymentCancelledEvent({
     required this.walletId,
     required this.txid,
@@ -3118,6 +3135,7 @@ class DeferredPaymentCancelledEvent extends CoordinatorReply {
     this.networkStatus,
     List<String> releasedUtxoKeys = const [],
     this.error,
+    this.errorCode,
   })  : releasedUtxoKeys = frozenList(releasedUtxoKeys);
 
   @override
@@ -4120,6 +4138,11 @@ class DeferredPaymentCompletedEvent extends CoordinatorReply {
   final bool success;
   final String? error;
 
+  /// [SpiffyErrorCode.noSuchPayment] when the wallet has no such deferred
+  /// payment (spiffyvault-1zp); null otherwise.
+  @override
+  final SpiffyErrorCode? errorCode;
+
   DeferredPaymentCompletedEvent({
     required this.walletId,
     required this.txid,
@@ -4127,6 +4150,7 @@ class DeferredPaymentCompletedEvent extends CoordinatorReply {
     required this.success,
     this.completedTxid,
     this.error,
+    this.errorCode,
   });
 
   @override
@@ -4247,6 +4271,11 @@ class DeferredPaymentReclaimedEvent extends CoordinatorReply {
   final List<String> competingTxids;
   final String? error;
 
+  /// [SpiffyErrorCode.noSuchPayment] when the wallet has no such deferred
+  /// payment (spiffyvault-1zp); null otherwise.
+  @override
+  final SpiffyErrorCode? errorCode;
+
   DeferredPaymentReclaimedEvent({
     required this.walletId,
     required this.txid,
@@ -4261,6 +4290,7 @@ class DeferredPaymentReclaimedEvent extends CoordinatorReply {
     this.source,
     List<String> competingTxids = const [],
     this.error,
+    this.errorCode,
   })  : reclaimedUtxoKeys = frozenList(reclaimedUtxoKeys),
         competingTxids = frozenList(competingTxids);
 

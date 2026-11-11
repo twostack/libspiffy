@@ -38,7 +38,12 @@ enum SpiffyErrorCode {
   timedOut,
 
   /// The user cancelled it.
-  cancelled;
+  cancelled,
+
+  /// The wallet has no record of the payment named: no deferred payment
+  /// with that transaction (spiffyvault-1zp), for example because the
+  /// wallet that made it was deleted. Asking again will not change that.
+  noSuchPayment;
 
   /// The code named [name], or null.
   static SpiffyErrorCode? byName(String? name) {

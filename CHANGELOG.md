@@ -1,3 +1,7 @@
+## 5.17.1
+
+- **The fill of the older headers completes against a CDN whose chunks start at height 1.** headers.overnode.net serves heights 1 and up; the genesis block is not on it. Once every header down to height 1 was held, each step looked for a chunk holding height 0, found none and failed, so the fill was retried for ever and never reported complete (an app showed it at 99%). Now the last step stores the genesis block from the code, after checking that the header held at height 1 names it, and the fill reports complete. A CDN that does serve height 0 works as before.
+
 ## 5.17.0
 
 A fresh install starts its header chain at a built-in checkpoint (spiffyvault-emk.1), parked receives wait for the header they need (spiffyvault-emk.2), restored coins wait for theirs (spiffyvault-emk.4), and the headers below the checkpoint are filled in from the CDN (spiffyvault-emk.3); an unknown deferred payment has its own error code (spiffyvault-1zp)

@@ -132,6 +132,46 @@ void main() {
       expect(reopened.bestHeight, 249);
     });
 
+    // headers.overnode.net starts at height 1: the fill stood at 1 for
+    // ever, retrying a chunk for height 0 that the CDN does not have.
+    test('a CDN that starts at height 1: the last step stores the genesis block from the code', () async {
+      final cdn = _FakeCdn(chain, fromOne: true);
+      final (storage, headerChain) = await startedAtCheckpoint(chain);
+      final service = cdn.service(headerChain);
+
+      final steps = <(int?, int?, int)>[];
+      while (true) {
+        final step = await service.backfillNext();
+        steps.add((step.fromHeight, step.toHeight, step.lowestHeight));
+        if (step.complete) break;
+        expect(steps.length, lessThan(10), reason: 'the fill must end');
+      }
+      expect(steps, [
+        (151, 174, 151),
+        (101, 150, 101),
+        (51, 100, 51),
+        (1, 50, 1),
+        (0, 0, 0), // the genesis block, from the code
+      ]);
+      expect(cdn.chunksServed, ['h151.bin', 'h101.bin', 'h51.bin', 'h1.bin']);
+      expect((await storage.getBlockHeaderByHeight(0))?.blockHash().toString(), regtest.genesisHash);
+      expect(await headerChain.lowestHeldHeight(), 0);
+    });
+
+    test('a CDN that starts at height 1, with a chain that does not end at our genesis block: refused', () async {
+      final fakeGenesis = RegtestMiner.mine(parent: genesis, seed: 'fake-genesis');
+      final fake = [fakeGenesis, ...RegtestMiner.mineChain(fakeGenesis, 249, seed: 'fake')];
+      final cdn = _FakeCdn(fake, fromOne: true);
+      final (storage, headerChain) = await startedAtCheckpoint(fake);
+      final service = cdn.service(headerChain);
+      for (var i = 0; i < 4; i++) {
+        await service.backfillNext();
+      }
+      expect(await headerChain.lowestHeldHeight(), 1);
+      await expectLater(service.backfillNext(), throwsA(predicate((e) => '$e'.contains('genesis'))));
+      expect(await storage.getBlockHeaderByHeight(0), isNull);
+    });
+
     test('a fill stopped part way carries on after a restart', () async {
       final cdn = _FakeCdn(chain);
       final (storage, headerChain) = await startedAtCheckpoint(chain);
@@ -269,12 +309,22 @@ class _FakeCdn {
   final chunksServed = <String>[];
   var manifestsServed = 0;
 
-  _FakeCdn(this.chain, {this.replace = const {}});
+  /// Chunks start at height 1, as on headers.overnode.net: the genesis
+  /// block is not served.
+  final bool fromOne;
 
-  Uint8List _bytes(int start) {
+  _FakeCdn(this.chain, {this.replace = const {}, this.fromOne = false});
+
+  /// (start, end) of each chunk, ascending.
+  List<(int, int)> get _ranges => [
+        for (var start = fromOne ? 1 : 0; start < chain.length; start += _chunkSize)
+          (start, start + _chunkSize - 1 < chain.length ? start + _chunkSize - 1 : chain.length - 1),
+      ];
+
+  Uint8List _bytes(int start, int end) {
     final source = replace[start] ?? chain;
     final out = BytesBuilder();
-    for (var h = start; h < start + _chunkSize; h++) {
+    for (var h = start; h <= end; h++) {
       out.add(source[h].serialize());
     }
     return out.toBytes();
@@ -287,14 +337,14 @@ class _FakeCdn {
         'totalHeaders': chain.length,
         'chunkSize': _chunkSize,
         'chunks': [
-          for (var start = 0; start < chain.length; start += _chunkSize)
+          for (final (start, end) in _ranges)
             {
               'filename': 'h$start.bin',
               'startHeight': start,
-              'endHeight': start + _chunkSize - 1,
-              'headerCount': _chunkSize,
-              'sha256': sha256.convert(_bytes(start)).toString(),
-              'sizeBytes': _chunkSize * 80,
+              'endHeight': end,
+              'headerCount': end - start + 1,
+              'sha256': sha256.convert(_bytes(start, end)).toString(),
+              'sizeBytes': (end - start + 1) * 80,
             },
         ],
         'checkpoints': <String, String>{},
@@ -310,7 +360,9 @@ class _FakeCdn {
             return http.Response(jsonEncode(_manifest), 200);
           }
           chunksServed.add(name);
-          return http.Response.bytes(_bytes(int.parse(name.substring(1, name.length - 4))), 200);
+          final start = int.parse(name.substring(1, name.length - 4));
+          final (_, end) = _ranges.firstWhere((r) => r.$1 == start);
+          return http.Response.bytes(_bytes(start, end), 200);
         }),
       );
 }

@@ -269,8 +269,11 @@ class CdnHeaderSyncService {
   /// [BlockHeaderChain.storeBelow] check them against the header above
   /// (hash linkage, each header's proof of work, the genesis block at
   /// height 0) before storing them. The CDN is not trusted: a chunk that
-  /// fails a check stores nothing and throws. Nothing to do once the chain
-  /// reaches genesis. The manifest is fetched once per service.
+  /// fails a check stores nothing and throws. A CDN whose chunks start at
+  /// height 1 has no genesis block: once everything down to 1 is held, the
+  /// last step stores the genesis block from the code ([NetworkParams]).
+  /// Nothing to do once the chain reaches genesis. The manifest is fetched
+  /// once per service.
   ///
   /// Each call is a step a host can stop between (no Wi-Fi, shutting
   /// down); where the fill stopped is read back from storage, so it
@@ -279,6 +282,18 @@ class CdnHeaderSyncService {
     final lowest = await headerChain.lowestHeldHeight();
     if (lowest == 0) return const CdnBackfillStep(lowestHeight: 0);
     final target = lowest - 1;
+    if (target == 0) {
+      // The CDN's chunks start at height 1 (headers.overnode.net does):
+      // the genesis block is in the code, not on the CDN. storeBelow checks
+      // that the header held at 1 names it.
+      try {
+        await headerChain.storeBelow([headerChain.params.genesisHeader], 0);
+      } on FormatException catch (e) {
+        throw Exception('The ${headerChain.params.name} genesis block does not fit the header held at 1: '
+            '${e.message}');
+      }
+      return const CdnBackfillStep(lowestHeight: 0, fromHeight: 0, toHeight: 0);
+    }
 
     final manifest = _manifest ??= await _fetchManifest();
     final chunk = manifest.chunks.where((c) => c.startHeight <= target && target <= c.endHeight).firstOrNull;

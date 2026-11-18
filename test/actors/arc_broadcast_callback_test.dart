@@ -1,4 +1,4 @@
-/// Status callbacks through the broadcast-bridge, in ARCActor: submissions
+/// Status callbacks through the callback bridge, in ARCActor: submissions
 /// carry a token while callbacks are on, and a delivered status is applied
 /// as a polled answer would be, its proof checked against our own headers.
 library;
@@ -21,6 +21,14 @@ import '../spv/testnet_proof_fixture.dart';
 
 const _wallet = 'callbacks';
 const _wait = Duration(seconds: 10);
+
+/// A bridge of the test vectors' keys (test/data/broadcast_token_vectors.json).
+BroadcastCallbackConfig _bridge() => BroadcastCallbackConfig(
+      callbackUrl: 'https://bridge.example/v1/callback/bsva',
+      bridgePeerId: '12D3KooWEfprpct2pBFD4nvihSJvRqNB6a9hzkhVvyuxZN1c4b4r',
+      bridgeX25519PubHex: '271d2e17565ed9bc17b23cd5bb7b6d0a98bb9f67674a5450be79b1cfa57a6339',
+      net: 'test',
+    );
 
 void main() {
   late LocalActorSystem system;
@@ -80,23 +88,23 @@ void main() {
 
     test('with callbacks on, it carries the bridge URL and a token', () async {
       arcActor.tell(SetBroadcastCallbacksMessage(
-          config: BroadcastCallbackConfig.bridgeTestnet(), signer: await _Signer.create()));
+          config: _bridge(), signer: await _Signer.create()));
       await broadcast();
       final (url, token) = arc.submissions.single;
-      expect(url, 'https://bridge-us-west.overnode.net/v1/callback/bsva');
+      expect(url, 'https://bridge.example/v1/callback/bsva');
       expect(token, startsWith('bb1.'));
     });
 
     test('a signer that fails never holds a submission back', () async {
       arcActor.tell(SetBroadcastCallbacksMessage(
-          config: BroadcastCallbackConfig.bridgeTestnet(), signer: await _Signer.create(fails: true)));
+          config: _bridge(), signer: await _Signer.create(fails: true)));
       await broadcast();
       expect(arc.submissions.single, (null, null), reason: 'submitted without headers, followed by polling');
     });
 
     test('turning callbacks off again stops the headers', () async {
       arcActor.tell(SetBroadcastCallbacksMessage(
-          config: BroadcastCallbackConfig.bridgeTestnet(), signer: await _Signer.create()));
+          config: _bridge(), signer: await _Signer.create()));
       arcActor.tell(SetBroadcastCallbacksMessage());
       await broadcast();
       expect(arc.submissions.single, (null, null));

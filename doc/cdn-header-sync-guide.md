@@ -156,7 +156,7 @@ https://your-cdn.com/testnet/headers_0050001_0100000.bin
 ```dart
 await libspiffy.initialize(
   cdnBaseUrl: 'https://your-cdn.com',
-  networkType: 'test',
+  networkType: 'main',
   enableP2P: true,
   onHeaderSyncProgress: (current, total, phase) {
     print('CDN sync: $phase - $current/$total headers');

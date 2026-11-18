@@ -105,7 +105,7 @@ const _sources = <String, String?>{
 /// messages signed by an address key (overnode_v2-l6bx.7: both
 /// `SignMessageCommand.message`s), 193 with a scan's payments still in the
 /// mempool (spiffyvault-bld: `WalletImportCompletedEvent.unminedPaymentBeefs`),
-/// 194 with a status the broadcast-bridge delivered
+/// 194 with a status the callback bridge delivered
 /// (`ApplyBroadcastStatusMessage.payload`).
 const _expectedFields = 194;
 

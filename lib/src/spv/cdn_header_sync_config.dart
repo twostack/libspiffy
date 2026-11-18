@@ -24,7 +24,7 @@ typedef CdnSyncProgressCallback = void Function(
 /// network's `powLimit`, and the connection must be https unless
 /// [allowInsecureHttp] is set for local testing.
 class CdnHeaderSyncConfig {
-  /// Base URL for CDN (e.g., "https://headers.spiffywallet.com").
+  /// Base URL for CDN (e.g., "https://headers.example.com").
   ///
   /// Must use the `https` scheme unless [allowInsecureHttp] is true; see
   /// [checkBaseUrl].

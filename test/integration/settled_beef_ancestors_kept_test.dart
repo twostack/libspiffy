@@ -67,6 +67,7 @@ void main() {
       enableP2P: false,
       arcService: NetworkArc(),
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     await readModel.storeBlockHeader(fixtureHeader(), kFixtureHeight);
     events = libspiffy.coordinatorEvents!;

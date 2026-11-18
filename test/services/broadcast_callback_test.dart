@@ -1,6 +1,6 @@
-/// Callback tokens for the broadcast-bridge, checked byte for byte against
-/// the bridge's own vectors (broadcast-bridge
-/// internal/token/testdata/token_vectors.json, copied to test/data).
+/// Callback tokens for a callback bridge, checked byte for byte against the
+/// vectors in test/data/broadcast_token_vectors.json, which a bridge's own
+/// token decoder checks too. Their keys are test keys from fixed seeds.
 library;
 
 import 'dart:convert';
@@ -74,7 +74,12 @@ void main() {
 
   test('a token minted without test inputs differs every time', () async {
     final user = await _SeedSigner.fromSeed(List.filled(32, 7));
-    final config = BroadcastCallbackConfig.bridgeTestnet();
+    final config = BroadcastCallbackConfig(
+      callbackUrl: 'https://bridge.example/v1/callback/bsva',
+      bridgePeerId: '12D3KooWEfprpct2pBFD4nvihSJvRqNB6a9hzkhVvyuxZN1c4b4r',
+      bridgeX25519PubHex: '271d2e17565ed9bc17b23cd5bb7b6d0a98bb9f67674a5450be79b1cfa57a6339',
+      net: 'test',
+    );
     final a = await mintCallbackToken(config: config, signer: user, txid: 'ab' * 32);
     final b = await mintCallbackToken(config: config, signer: user, txid: 'ab' * 32);
     expect(a, startsWith('bb1.'));

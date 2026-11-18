@@ -63,6 +63,7 @@ void main() {
       dataDirectory: dir.path,
       enableP2P: false,
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     storage = libspiffy.walletStorage as IsarWalletStorage;
   });
@@ -84,7 +85,7 @@ void main() {
   Future<void> createWallet(String walletId, {String? xpub, String? mnemonic}) async {
     final created = next<coord.WalletCreatedEvent>((e) => e.walletId == walletId);
     libspiffy.coordinator
-        .tell(coord.CreateWalletCommand(walletId: walletId, name: walletId, xpub: xpub, mnemonic: mnemonic));
+        .tell(coord.CreateWalletCommand(walletId: walletId, name: walletId, xpub: xpub, mnemonic: mnemonic, walletMetadata: const {'network': 'test'}));
     expect((await created).success, isTrue);
   }
 
@@ -231,7 +232,7 @@ void main() {
   test('a single-key wallet refuses delegated indices, and nothing is imported', () async {
     final wif = dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST);
     final created = next<coord.WalletCreatedEvent>((e) => e.walletId == 'wif');
-    libspiffy.coordinator.tell(coord.CreateWalletCommand(walletId: 'wif', name: 'wif', wif: wif.toWIF()));
+    libspiffy.coordinator.tell(coord.CreateWalletCommand(walletId: 'wif', name: 'wif', wif: wif.toWIF(), walletMetadata: const {'network': 'test'}));
     expect((await created).success, isTrue);
     final (_, mined) = await minedPayment(wif.toAddress(networkType: dartsv.NetworkType.TEST).toBase58(), 5000);
 

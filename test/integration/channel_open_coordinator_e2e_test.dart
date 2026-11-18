@@ -168,6 +168,7 @@ class _Node {
       #actorSystem: actorSystem,
       #isar: isar,
       #dataDirectory: dir.path,
+      #networkType: 'test',
       #enableP2P: false,
       #secureStorage: secureStorage,
       #arcService: arc,
@@ -257,6 +258,7 @@ Future<void> _createWallet(_Node node, String walletId,
     name: walletId,
     xpriv: xpriv,
     mnemonic: mnemonic,
+    walletMetadata: const {'network': 'test'},
   ));
   final event = await created;
   expect(event.success, isTrue, reason: event.error);

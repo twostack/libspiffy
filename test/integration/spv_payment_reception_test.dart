@@ -57,6 +57,7 @@ void main() {
           walletManager: walletManager,
           invoiceCoordinator: invoiceManager,
           storage: storage,
+          networkType: 'test',
         ),
       );
     });
@@ -186,6 +187,7 @@ void main() {
           walletManager: walletManager,
           invoiceCoordinator: customInvoiceManager,
           storage: storage,
+          networkType: 'test',
         ),
       );
       
@@ -326,6 +328,7 @@ void main() {
           walletManager: walletManager,
           invoiceCoordinator: customInvoiceManager,
           storage: storage,
+          networkType: 'test',
         ),
       );
       

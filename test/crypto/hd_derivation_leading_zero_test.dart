@@ -58,7 +58,7 @@ void main() {
     expect(key.publicKey.getEncoded(true), expected.publicKeyHex);
 
     final xpub = crypto.deriveHDPublicKey(root);
-    final handedOut = crypto.deriveAddress(xpub, index, chain: chain);
+    final handedOut = crypto.deriveAddress(xpub, index, chain: chain, network: dartsv.NetworkType.TEST);
     expect(handedOut, _testnetAddress(expected.publicKeyHex),
         reason: 'the address the wallet hands out for $path');
     expect(key.toAddress(networkType: dartsv.NetworkType.TEST).toBase58(), handedOut,
@@ -67,7 +67,7 @@ void main() {
 
   group('libspiffy-hvp: child keys with a leading zero byte', () {
     test('a mnemonic whose receive key m/0/0 is short derives that key', () async {
-      final root = await crypto.mnemonicToHDPrivateKey(kShortReceive00Mnemonic);
+      final root = await crypto.mnemonicToHDPrivateKey(kShortReceive00Mnemonic, network: dartsv.NetworkType.TEST);
       final ref = _refRoot(kShortReceive00Mnemonic);
       expect(refDerive(ref, 'm/0/0').key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the key has a leading zero byte');
@@ -76,7 +76,7 @@ void main() {
 
     test('a mnemonic whose receive chain key m/0 is short derives its receive keys',
         () async {
-      final root = await crypto.mnemonicToHDPrivateKey(kShortReceiveChainMnemonic);
+      final root = await crypto.mnemonicToHDPrivateKey(kShortReceiveChainMnemonic, network: dartsv.NetworkType.TEST);
       final ref = _refRoot(kShortReceiveChainMnemonic);
       expect(refDerive(ref, 'm/0').key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the chain key has a leading zero byte');
@@ -87,7 +87,7 @@ void main() {
 
     test('a mnemonic whose change chain key m/1 is short derives its change keys',
         () async {
-      final root = await crypto.mnemonicToHDPrivateKey(kShortChangeChainMnemonic);
+      final root = await crypto.mnemonicToHDPrivateKey(kShortChangeChainMnemonic, network: dartsv.NetworkType.TEST);
       final ref = _refRoot(kShortChangeChainMnemonic);
       expect(refDerive(ref, 'm/1').key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the chain key has a leading zero byte');
@@ -97,7 +97,7 @@ void main() {
     });
 
     test('the fixed test mnemonic derives its short receive keys', () async {
-      final root = await crypto.mnemonicToHDPrivateKey(kAbandonMnemonic);
+      final root = await crypto.mnemonicToHDPrivateKey(kAbandonMnemonic, network: dartsv.NetworkType.TEST);
       final ref = _refRoot(kAbandonMnemonic);
       for (final index in kAbandonShortReceiveIndexes) {
         expect(refDerive(ref, 'm/0/$index').key.bitLength, lessThanOrEqualTo(248),
@@ -108,7 +108,7 @@ void main() {
 
     test('an xpriv wallet (HDPrivateKey.fromXpriv) derives a short key', () async {
       final master = dartsv.HDPrivateKey.fromXpriv(
-          (await crypto.mnemonicToHDPrivateKey(kShortReceiveChainMnemonic)).xprivkey);
+          (await crypto.mnemonicToHDPrivateKey(kShortReceiveChainMnemonic, network: dartsv.NetworkType.TEST)).xprivkey);
       await expectServiceKey(master, _refRoot(kShortReceiveChainMnemonic),
           index: 7, chain: AddressChain.receive);
     });
@@ -198,7 +198,7 @@ void main() {
         final setup = aggregate(walletId);
         await setup.preStart();
         await setup.commandHandler(
-            CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: mnemonic));
+            CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: mnemonic, walletMetadata: const {'network': 'test'}));
         const changeIndex = 0; // the change chain counts on its own (libspiffy-zjyu)
         if (isChange) {
           await setup.commandHandler(GenerateAddressCommand(

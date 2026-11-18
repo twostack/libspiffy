@@ -103,6 +103,7 @@ void main() {
         mnemonic: variant == 'mnemonic' ? _mnemonic : null,
         xpriv: variant == 'xpriv' ? xpriv : null,
         xpub: variant == 'xpub' ? xpub : null,
+        walletMetadata: const {'network': 'test'},
       ));
       expect(wallet.currentState.isCreated, isTrue);
 
@@ -125,7 +126,7 @@ void main() {
     const walletId = 'km8-replay';
     final first = await startAggregate(walletId);
     await first.commandHandler(CreateWalletCommand(
-        walletId: walletId, walletName: 'watch', xpub: xpub));
+        walletId: walletId, walletName: 'watch', xpub: xpub, walletMetadata: const {'network': 'test'}));
 
     final replayed = await startAggregate(walletId);
     expect(replayed.currentState.isCreated, isTrue);

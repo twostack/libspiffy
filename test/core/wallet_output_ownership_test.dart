@@ -70,6 +70,7 @@ void main() {
       walletId: _walletId,
       walletName: 'Output ownership wallet',
       mnemonic: _mnemonic,
+      walletMetadata: const {'network': 'test'},
     ));
     await wallet.commandHandler(GenerateAddressCommand(walletId: _walletId, label: 'a', includePublicKey: true));
     await wallet.commandHandler(GenerateAddressCommand(walletId: _walletId, label: 'b', includePublicKey: true));

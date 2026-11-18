@@ -318,7 +318,6 @@ class ArcMerkleProofResponse {
 /// 
 /// **Authentication:**
 /// All requests include an Authorization header when an API key is provided.
-/// The testnet default configuration includes a testnet API key automatically.
 /// Format: `Authorization: Bearer <apiKey>`
 /// 
 /// **Documentation:**
@@ -384,7 +383,7 @@ class ArcService {
   /// [rawTx] - The raw transaction in hex format
   /// [callbackUrl] - Optional callback URL to receive transaction status updates
   /// [callbackToken] - Sent as `X-CallbackToken` with [callbackUrl]: the
-  /// broadcast-bridge's token naming whose mailbox the status goes to. The
+  /// callback bridge's token naming whose mailbox the status goes to. The
   /// two are sent together or not at all.
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl, String? callbackToken}) async {
     final url = '$baseUrl/tx';

@@ -62,6 +62,7 @@ void main() {
         isar: isar,
         dataDirectory: testDir.path,
         enableP2P: false,
+        networkType: 'test',
       );
       
       storage = libspiffy.walletStorage as IsarWalletStorage;
@@ -111,6 +112,7 @@ void main() {
           testWalletId,
           'Test Wallet',
           xpriv: xPrivKey,
+          walletMetadata: const {'network': 'test'},
         ),
         sender: createWalletReceiver,
       );
@@ -297,6 +299,7 @@ void main() {
           recipientWalletId,
           'Recipient Wallet',
           xpriv: recipientXpriv,
+          walletMetadata: const {'network': 'test'},
         ),
         sender: createRecipientReceiver,
       );
@@ -458,6 +461,7 @@ void main() {
           dataDirectory: senderTestDir.path,
           enableP2P: false,
           arcService: arc,
+          networkType: 'test',
         );
         senderStorage = senderLibspiffy.walletStorage as IsarWalletStorage;
         print('  Setting up block headers for sender...');
@@ -482,6 +486,7 @@ void main() {
           dataDirectory: receiverTestDir.path,
           enableP2P: false,
           arcService: arc,
+          networkType: 'test',
         );
         receiverStorage = receiverLibspiffy.walletStorage as IsarWalletStorage;
         print('  Setting up block headers for receiver...');
@@ -514,6 +519,7 @@ void main() {
             senderWalletId,
             'Sender Wallet',
             xpriv: senderXpriv,
+            walletMetadata: const {'network': 'test'},
           ),
           sender: createSenderReceiver,
         );
@@ -535,6 +541,7 @@ void main() {
             receiverWalletId,
             'Receiver Wallet',
             mnemonic: receiverMnemonic,
+            walletMetadata: const {'network': 'test'},
           ),
           sender: createReceiverReceiver,
         );
@@ -946,6 +953,7 @@ void main() {
           testWalletId,
           'MultiSig Test Wallet',
           xpriv: xPrivKey,
+          walletMetadata: const {'network': 'test'},
         ),
         sender: createWalletReceiver,
       );

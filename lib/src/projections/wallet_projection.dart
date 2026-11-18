@@ -1832,7 +1832,7 @@ class WalletProjection extends Projection<void> {
 
     // Create registry once for all outputs. ScriptTypeRegistry is a
     // singleton pinned to the first network it is built with, so it must be
-    // built for the wallet's network; the testnet default threw for mainnet
+    // built for the wallet's network; the old testnet default threw for mainnet
     // wallets (see _handleUTXOReceived for the metadata keys).
     final walletMeta = await _storage.getWallet(walletId);
     final scriptTypeRegistry = ScriptTypeRegistry(

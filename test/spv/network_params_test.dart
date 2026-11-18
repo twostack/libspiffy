@@ -29,11 +29,11 @@ void main() {
 
   group('NetworkParams.forNetwork', () {
     test('accepts every spelling', () {
-      for (final n in ['main', 'mainnet', 'livenet']) {
-        expect(NetworkParams.forNetwork(n), same(NetworkParams.mainnet), reason: n);
+      for (final n in ['main', 'mainnet', 'livenet', null]) {
+        expect(NetworkParams.forNetwork(n), same(NetworkParams.mainnet), reason: '$n');
       }
-      for (final n in ['test', 'testnet', null, 'anything-else']) {
-        expect(NetworkParams.forNetwork(n), same(NetworkParams.testnet), reason: '$n');
+      for (final n in ['test', 'testnet', 'anything-else']) {
+        expect(NetworkParams.forNetwork(n), same(NetworkParams.testnet), reason: n);
       }
       expect(NetworkParams.forNetwork('regtest'), same(NetworkParams.regtest));
     });

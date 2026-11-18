@@ -121,7 +121,7 @@ void main() {
     final invoiceCoordinator = invoices ?? await system.spawn('invoices-$spvCount', () => _Silent());
     return system.spawn(
       'spv-${spvCount++}',
-      () => SPVActor(walletManager: ownership ?? walletManager, invoiceCoordinator: invoiceCoordinator, storage: readModel),
+      () => SPVActor(walletManager: ownership ?? walletManager, invoiceCoordinator: invoiceCoordinator, storage: readModel, networkType: 'test'),
     );
   }
 
@@ -129,7 +129,7 @@ void main() {
 
   Future<void> createWallet(String walletId) async {
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(walletId, walletId, mnemonic: _recipientMnemonic),
+      CreateWalletMessage(walletId, walletId, mnemonic: _recipientMnemonic, walletMetadata: const {'network': 'test'}),
       const Duration(seconds: 10),
     );
     expect(created.success, isTrue, reason: created.error);

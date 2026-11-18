@@ -117,7 +117,7 @@ void main() {
   /// read model as a caught-up projection would have it.
   Future<void> walletWithUtxos(List<int> amounts) async {
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(_walletId, 'Benford', xpriv: _xpriv),
+      CreateWalletMessage(_walletId, 'Benford', xpriv: _xpriv, walletMetadata: const {'network': 'test'}),
       _wait,
     );
     expect(created.success, isTrue, reason: created.error);
@@ -245,7 +245,7 @@ void main() {
   test('a watch-only wallet announces no start', () async {
     final xpub = dartsv.HDPrivateKey.fromXpriv(_xpriv).hdPublicKey.xpubkey;
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(_walletId, 'Benford', xpub: xpub),
+      CreateWalletMessage(_walletId, 'Benford', xpub: xpub, walletMetadata: const {'network': 'test'}),
       _wait,
     );
     expect(created.success, isTrue, reason: created.error);

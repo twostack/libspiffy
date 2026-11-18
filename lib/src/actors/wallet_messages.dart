@@ -1519,7 +1519,7 @@ class ArcWorkStoppedMessage extends ActorResponse {
   String? get error => null;
 }
 
-/// Turns status callbacks through the broadcast-bridge on ([config] and
+/// Turns status callbacks through the callback bridge on ([config] and
 /// [signer] set) or off (both null). Sent by the app once the user's
 /// `bsv/tx-status` mailbox exists and grants the bridge write access: a
 /// token minted before that would let the bridge's first delivery create
@@ -1544,7 +1544,7 @@ class SetBroadcastCallbacksMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// A status envelope the broadcast-bridge delivered (its UTF-8 JSON
+/// A status envelope the callback bridge delivered (its UTF-8 JSON
 /// [payload]). ARCActor applies each item as it applies a polled answer, and
 /// answers [BroadcastStatusAppliedMessage]. [net] is the wallet's network,
 /// `main` or `test`.

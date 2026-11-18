@@ -1,12 +1,15 @@
-/// Transaction status pushed to the device instead of polled (the
-/// broadcast-bridge, spiffyvault-js `broadcast-bridge/doc/LIBSPIFFY_HANDOFF.md`).
+/// Transaction status pushed to the device instead of polled, through a
+/// callback bridge the app's operator runs.
 ///
 /// The Broadcaster (Arcade) calls a webhook when a transaction is mined or
-/// rejected. The webhook is the broadcast-bridge, which puts the update into
-/// the user's Ricochet mailbox; the app's Ricochet push hands it to
+/// rejected. The webhook is the bridge, which puts the update into the
+/// user's Ricochet mailbox; the app's Ricochet client hands it to
 /// [parseBroadcastStatusEnvelope]. Each submission carries a callback token
 /// ([mintCallbackToken]) that tells the bridge whose mailbox to deliver to,
 /// signed by the user's Ricochet identity key and encrypted to the bridge.
+///
+/// libspiffy names no bridge: its endpoint, peer ID and key are the app's
+/// configuration ([BroadcastCallbackConfig]).
 ///
 /// Nothing in a callback is trusted: a MINED status is applied only when its
 /// merkle path checks against our own block header (ARCActor).
@@ -75,21 +78,14 @@ class BroadcastCallbackConfig {
     }
     decodePeerId(bridgePeerId);
   }
-
-  /// The testnet bridge while it is being verified (handoff §7 config).
-  static BroadcastCallbackConfig bridgeTestnet() => BroadcastCallbackConfig(
-        callbackUrl: 'https://bridge-us-west.overnode.net/v1/callback/bsva',
-        bridgePeerId: '12D3KooWSuFiHw5WRBPy3JyUurXnEYshzZUj1VVDhPk1ZyNYmpZ9',
-        bridgeX25519PubHex: 'd3a165edd7395a4faf7c514c704446351d8a7dc1e88df6aa5e0bec36dc28ee51',
-        net: 'test',
-      );
 }
 
 final _domain = utf8.encode('broadcast-bridge/token/v1');
 
-/// The token body (handoff §2.2): a CBOR map with integer keys 0–6, in
-/// order. [txid] is the txid as displayed (hex), or null for a token a
-/// batch shares.
+/// The token body: a CBOR map with integer keys 0–6, in order: version 1,
+/// the user's peer ID, the mailbox folder, the txid's bytes (or null), the
+/// expiry in Unix seconds, the bridge's peer ID, and the network. [txid] is
+/// the txid as displayed (hex), or null for a token a batch shares.
 Uint8List callbackTokenBody({
   required Uint8List peerIdBytes,
   required String folder,
@@ -112,8 +108,13 @@ Uint8List callbackTokenBody({
   return Uint8List.fromList(cbor.encode(body));
 }
 
-/// A callback token for one submission (handoff §2): `bb1.` and the
-/// unpadded base64url of `01 ‖ ephemeral X25519 key ‖ nonce ‖ ciphertext`.
+/// A callback token for one submission: `bb1.` and the unpadded base64url
+/// of `01 ‖ ephemeral X25519 key ‖ nonce ‖ ciphertext`. The plaintext is
+/// the CBOR list `[body, signature]`: the Ed25519 signature is over
+/// `broadcast-bridge/token/v1 ‖ body`. The key is HKDF-SHA256 of the X25519
+/// shared secret, salted with `ephemeral key ‖ bridge key` and with the
+/// same domain string as info; the cipher is ChaCha20-Poly1305 with
+/// associated data `01`.
 ///
 /// [txid] binds the token to one transaction; null for a batch. [now] and
 /// [random] are for tests: [random] is 44 bytes, the ephemeral X25519 seed
@@ -165,9 +166,12 @@ Future<String> mintCallbackToken({
 /// Broadcaster that answered.
 typedef BroadcastStatusItem = ({ArcTransactionResponse status, String? source});
 
-/// The envelope the bridge delivers (handoff §5.2), or null when it is not
-/// one this wallet takes: another version or type, another network, or not
-/// JSON at all. [net] is the wallet's network (`main` or `test`).
+/// The envelope the bridge delivers, or null when it is not one this wallet
+/// takes: another version or type, another network, or not JSON at all.
+/// The envelope is UTF-8 JSON, `{"v": 1, "type": "bsv.tx-status", "net":
+/// …, "items": [...]}`, each item an ARC transaction status with an
+/// optional `source`, the Broadcaster that answered. [net] is the wallet's
+/// network (`main` or `test`).
 List<BroadcastStatusItem>? parseBroadcastStatusEnvelope(List<int> payload, {required String net}) {
   final Object? decoded;
   try {

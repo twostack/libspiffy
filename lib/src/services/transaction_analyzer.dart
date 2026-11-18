@@ -55,7 +55,7 @@ class TransactionAnalyzer {
     required List<String> walletAddresses,
     required Map<String, int> transactionHeights,
     required Map<String, DateTime> transactionTimestamps,
-    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
+    dartsv.NetworkType networkType = dartsv.NetworkType.MAIN,
   }) {
     // Phase 1: Identify ALL wallet outputs
     final utxos = <String, Map<int, _OutputInfo>>{}; // txid -> {vout -> outputInfo}
@@ -131,7 +131,7 @@ class TransactionAnalyzer {
   static _OutputInfo? _analyzeOutput(
     dartsv.TransactionOutput output,
     List<String> walletAddresses, {
-    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
+    dartsv.NetworkType networkType = dartsv.NetworkType.MAIN,
   }) {
     try {
       // Parse P2PKH script to get address

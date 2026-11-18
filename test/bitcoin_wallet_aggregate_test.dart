@@ -111,6 +111,7 @@ void main() {
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
           mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Try to create again - should fail
@@ -119,6 +120,7 @@ void main() {
             walletId: 'wallet-123',
             walletName: 'Another Wallet',
             mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+            walletMetadata: const {'network': 'test'},
           )),
           throwsA(isA<StateError>()),
         );
@@ -151,7 +153,7 @@ void main() {
           walletId: 'xpub-wallet-123',
           walletName: 'Watch Only Wallet',
           xpub: xpub,
-          walletMetadata: {'type': 'watch-only'},
+          walletMetadata: {'type': 'watch-only', 'network': 'test'},
         );
 
         await wallet.commandHandler(createCommand);
@@ -180,6 +182,7 @@ void main() {
           walletId: 'xpub-wallet-invalid',
           walletName: 'Invalid Wallet',
           xpub: 'invalid-xpub-format',
+          walletMetadata: const {'network': 'test'},
         );
 
         // dartsv throws AddressFormatException for invalid xpub format
@@ -249,6 +252,7 @@ void main() {
           walletId: 'xpub-wallet-multi-addr',
           walletName: 'Multi Address Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Initial state: root address at index 0
@@ -308,6 +312,7 @@ void main() {
           walletId: 'xpub-wallet-storage',
           walletName: 'Storage Test Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Verify storage
@@ -344,6 +349,7 @@ void main() {
           walletId: 'xpub-wallet-retrieve',
           walletName: 'Retrieve Test Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Retrieve and verify
@@ -377,6 +383,7 @@ void main() {
           walletId: 'xpub-wallet-recovery',
           walletName: 'Recovery Test Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Generate an address to create more events
@@ -431,6 +438,7 @@ void main() {
           walletId: 'xpub-wallet-sign',
           walletName: 'Sign Test Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Try to sign transaction - should fail
@@ -476,6 +484,7 @@ void main() {
           walletId: 'xpub-wallet-multisig',
           walletName: 'Multisig Test Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Try to sign multisig transaction - should fail
@@ -523,6 +532,7 @@ void main() {
           walletId: 'xpub-wallet-funding',
           walletName: 'Funding Test Wallet',
           xpub: xpub,
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Try to build funding transaction - should fail
@@ -566,6 +576,7 @@ void main() {
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
           mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+          walletMetadata: const {'network': 'test'},
         ));
       });
 
@@ -630,6 +641,7 @@ void main() {
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
           mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Generate an address
@@ -781,6 +793,7 @@ void main() {
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
           mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+          walletMetadata: const {'network': 'test'},
         ));
 
         await wallet.commandHandler(GenerateAddressCommand(
@@ -853,6 +866,7 @@ void main() {
           walletId: 'wallet-123',
           walletName: 'Recovery Test Wallet',
           mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+          walletMetadata: const {'network': 'test'},
         ));
 
         await wallet.commandHandler(GenerateAddressCommand(
@@ -982,6 +996,7 @@ void main() {
           walletId: 'wallet-456',
           walletName: 'Output Scan Test Wallet',
           mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+          walletMetadata: const {'network': 'test'},
         ));
 
         // Generate two addresses for testing
@@ -1534,6 +1549,7 @@ void main() {
           walletName: 'PreSigned Audit Test Wallet',
           mnemonic:
               'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+              walletMetadata: const {'network': 'test'},
         ));
         await wallet.commandHandler(GenerateAddressCommand(
           walletId: 'wallet-presigned',
@@ -1681,6 +1697,7 @@ void main() {
           walletName: 'Plugin Scan Test Wallet',
           mnemonic:
               'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+              walletMetadata: const {'network': 'test'},
         ));
 
         await wallet.commandHandler(GenerateAddressCommand(
@@ -1820,6 +1837,7 @@ void main() {
           walletName: 'Signing wallet',
           mnemonic: mnemonic,
           passphrase: passphrase,
+          walletMetadata: const {'network': 'test'},
         ));
         return wallet;
       }

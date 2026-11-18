@@ -120,7 +120,7 @@ class LibSpiffyActorSystem {
   WalletProjection? _walletProjection;
 
   /// Network passed to [initialize]; actors that derive addresses need it.
-  String _networkType = 'test';
+  String _networkType = 'main';
 
   /// This node's own channel transport peer id ([initialize]'s
   /// `channelPeerId`, libspiffy-36f).
@@ -210,7 +210,8 @@ class LibSpiffyActorSystem {
   /// rather than the full WalletStorage interface.
   /// 
   /// P2P Configuration:
-  /// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')
+  /// - [networkType]: 'main' for mainnet, 'test' for testnet, 'regtest' for a
+  ///   local chain (default: 'main'; pass 'test' to run on testnet)
   /// - [enableP2P]: Enable automatic P2P block header synchronization (default: true)
   /// - [startHeight]: The block height this node reports to peers in its
   ///   version handshake. Header sync does not start from it: it continues
@@ -233,7 +234,7 @@ class LibSpiffyActorSystem {
   /// await libspiffy.initialize(
   ///   actorSystem: hostActorSystem,
   ///   isar: isar,
-  ///   networkType: 'test',
+  ///   networkType: 'main',
   ///   enableP2P: true,
   /// );
   /// ```
@@ -280,7 +281,7 @@ class LibSpiffyActorSystem {
     ArcServiceConfig? arcConfig,
     dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
     Isar? isar,
-    String networkType = 'test',
+    String networkType = 'main',
     bool enableP2P = true,
     int? startHeight,
     List<String>? peerAddresses,
@@ -527,8 +528,8 @@ class LibSpiffyActorSystem {
         DartSVCryptoService(networkType: NetworkName.toDartsv(_networkType));
     
     // 6. Store ARC configuration for actors
-    // ARCActor used to fall back to TAAL *mainnet* whenever no config was
-    // given, even though networkType defaults to 'test'.
+    // The broadcaster follows networkType (ARCActor once fell back to TAAL
+    // mainnet whenever no config was given, whatever the network).
     // Both networks default to the BSV Association's Arcade, which needs no
     // API key: ARC is deprecated on 30 November 2026.
     _arcConfig = arcConfig ??
@@ -1125,7 +1126,7 @@ class LibSpiffyActorSystem {
       headerChain: _headerChain,
       timing: _channelTiming,
       // Settlement outputs are encoded for this network and compared with
-      // the wallet's addresses; the actor's default is testnet.
+      // the wallet's addresses, so the network is always passed.
       networkType: NetworkName.toDartsv(_networkType),
     ));
     
@@ -1168,13 +1169,15 @@ class LibSpiffyActorSystem {
       isReplayed: (event) => _replayed[event] ?? false,
       // This node's own peer id on the channel transport (libspiffy-36f).
       peerId: _channelPeerId,
+      // A wallet created or imported without a network gets this one.
+      networkType: _networkType,
       channelTiming: _channelTiming,
       deadlineSweepInterval: _deadlineSweepInterval,
       importWalletFromXpriv: _importActor != null ? ({
         required String walletId,
         required String xpriv,
         required String walletName,
-        String networkType = 'test',
+        String networkType = 'main',
         int addressGapLimit = 20,
         List<String> lockKeyWifs = const [],
       }) {
@@ -1191,7 +1194,7 @@ class LibSpiffyActorSystem {
         required String walletId,
         required String wif,
         required String walletName,
-        String networkType = 'test',
+        String networkType = 'main',
       }) {
         importWalletFromWif(
           walletId: walletId,
@@ -1203,7 +1206,7 @@ class LibSpiffyActorSystem {
       resumeWalletImport: _importActor != null ? ({
         required String walletId,
         required String walletName,
-        String networkType = 'test',
+        String networkType = 'main',
         int addressGapLimit = 20,
         List<String>? addresses,
       }) {
@@ -1399,7 +1402,7 @@ class LibSpiffyActorSystem {
     return _arcActor!;
   }
 
-  /// Status callbacks through the broadcast-bridge (its handoff, §3): from
+  /// Status callbacks through the app's callback bridge: from
   /// now on each submission carries [config]'s callback URL and a token
   /// [signer] signs, so the Broadcaster's MINED or REJECTED reaches the
   /// user's Ricochet mailbox instead of waiting for a poll. Polling goes on
@@ -1420,9 +1423,9 @@ class LibSpiffyActorSystem {
   /// Submissions stop carrying status callbacks.
   void disableBroadcastCallbacks() => arcActor.tell(SetBroadcastCallbacksMessage());
 
-  /// Applies a status envelope the broadcast-bridge delivered to the user's
+  /// Applies a status envelope the callback bridge delivered to the user's
   /// mailbox: its UTF-8 JSON [payload], once the app has checked it came
-  /// from the bridge's peer and was opened (handoff §5.1).
+  /// from the bridge's peer and was opened.
   ///
   /// Each item is applied as a polled answer would be: a MINED status
   /// confirms nothing until its merkle path checks against our own header,
@@ -1682,7 +1685,7 @@ class LibSpiffyActorSystem {
     required String walletId,
     required String xpriv,
     required String walletName,
-    String networkType = 'test',
+    String networkType = 'main',
     int addressGapLimit = 20,
     List<String> lockKeyWifs = const [],
   }) {
@@ -1719,7 +1722,7 @@ class LibSpiffyActorSystem {
     required String walletId,
     required String wif,
     required String walletName,
-    String networkType = 'test',
+    String networkType = 'main',
   }) {
     if (_importActor == null) {
       throw StateError('ImportActor not available. Did you provide a blockchainDataSource during initialization?');
@@ -1753,7 +1756,7 @@ class LibSpiffyActorSystem {
   void resumeWalletImport({
     required String walletId,
     required String walletName,
-    String networkType = 'test',
+    String networkType = 'main',
     int addressGapLimit = 20,
     List<String>? addresses,
   }) {
@@ -2087,7 +2090,8 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 /// opening the Isar instance using LibSpiffySchemas.allSchemas.
 /// 
 /// P2P Parameters:
-/// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')
+/// - [networkType]: 'main' for mainnet, 'test' for testnet, 'regtest' for a
+///   local chain (default: 'main'; pass 'test' to run on testnet)
 /// - [enableP2P]: Enable automatic P2P block header synchronization (default: true)
 /// - [startHeight]: The block height this node reports to peers in its
 ///   version handshake. Header sync does not start from it: it continues
@@ -2104,7 +2108,7 @@ Future<void> initializeLibSpiffy({
   CryptoService? cryptoService,
   ArcServiceConfig? arcConfig,
   Isar? isar,
-  String networkType = 'test',
+  String networkType = 'main',
   bool enableP2P = true,
   int? startHeight,
   List<String>? peerAddresses,

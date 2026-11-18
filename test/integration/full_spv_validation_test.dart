@@ -56,6 +56,7 @@ void main() {
           walletManager: mockWalletManager,
           invoiceCoordinator: invoiceManager,
           storage: storage,
+          networkType: 'test',
         ),
       );
     });

@@ -65,6 +65,7 @@ void main() {
           mnemonic: variant == 'mnemonic' ? mnemonic : null,
           wif: variant == 'wif' ? await testnetWif() : null,
           xpriv: variant == 'xpriv' ? await testnetXpriv() : null,
+          walletMetadata: const {'network': 'test'},
         );
 
         await expectLater(
@@ -92,6 +93,7 @@ void main() {
         walletName: 'Ordered wallet',
         mnemonic: mnemonic,
         passphrase: 'pass',
+        walletMetadata: const {'network': 'test'},
       ));
 
       final persistAt = log.indexWhere((e) => e.startsWith('persist:'));
@@ -122,6 +124,7 @@ void main() {
           walletName: 'Unpersistable wallet',
           mnemonic: mnemonic,
           passphrase: 'pass',
+          walletMetadata: const {'network': 'test'},
         )),
         throwsA(isA<StateError>()),
       );
@@ -141,6 +144,7 @@ void main() {
         walletId: walletId,
         walletName: 'Good wallet',
         mnemonic: mnemonic,
+        walletMetadata: const {'network': 'test'},
       ));
       expect(await storage.getMnemonic(walletId), equals(mnemonic));
       expect(await storage.getString('wallet_hdpubkey_$walletId'), isNotNull);

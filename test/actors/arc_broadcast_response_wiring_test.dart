@@ -53,7 +53,7 @@ void main() {
       ),
     );
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(_walletId, 'f0sj', xpriv: _xpriv),
+      CreateWalletMessage(_walletId, 'f0sj', xpriv: _xpriv, walletMetadata: const {'network': 'test'}),
       _wait,
     );
     expect(created.success, isTrue, reason: created.error);

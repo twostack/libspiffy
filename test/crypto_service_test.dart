@@ -336,7 +336,7 @@ void main() {
         expect(mainnetKey, isNotNull);
         
         // Generate addresses to verify network difference
-        final testnetAddr = cryptoService.generateAddress(testnetKey);
+        final testnetAddr = cryptoService.generateAddress(testnetKey, network: dartsv.NetworkType.TEST);
         final mainnetAddr = cryptoService.generateAddress(
           mainnetKey,
           network: dartsv.NetworkType.MAIN,
@@ -366,8 +366,9 @@ void main() {
         final changeAddr = cryptoService.generateAddress(changeKey);
         
         expect(receivingAddr, isNot(equals(changeAddr)));
-        expect(receivingAddr.startsWith('m') || receivingAddr.startsWith('n'), isTrue);
-        expect(changeAddr.startsWith('m') || changeAddr.startsWith('n'), isTrue);
+        // Mainnet, the default since 6.0.0.
+        expect(receivingAddr, startsWith('1'));
+        expect(changeAddr, startsWith('1'));
         
         // Test signing capability
         final testData = Uint8List.fromList('test transaction'.codeUnits);

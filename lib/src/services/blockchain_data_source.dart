@@ -14,7 +14,7 @@ import '../models/blockchain_data_models.dart';
 /// Example:
 /// ```dart
 /// // Use built-in WhatsOnChain implementation
-/// final dataSource = WhatsOnChainDataSource(networkType: 'test');
+/// final dataSource = WhatsOnChainDataSource(networkType: 'main');
 /// libspiffy.registerDataSource(dataSource);
 ///
 /// // Or implement custom source

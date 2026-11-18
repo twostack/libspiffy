@@ -61,6 +61,7 @@ Future<LibSpiffyActorSystem> initializeTestSystem({
     isar: isar,
     dataDirectory: testDir.path,
     enableP2P: false,
+    networkType: 'test',
   );
   
   // Setup test block headers
@@ -99,6 +100,7 @@ Future<String> createWallet({
       mnemonic: finalMnemonic,
       wif: wif,
       xpriv: xpriv,
+      walletMetadata: const {'network': 'test'},
     ),
     sender: receiver,
   );

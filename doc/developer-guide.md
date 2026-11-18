@@ -88,9 +88,9 @@ final libspiffy = LibSpiffyActorSystem();
 
 await libspiffy.initialize(
   dataDirectory: './wallet-data',
-  networkType: 'test',              // 'main' for mainnet
+  networkType: 'main',              // the default; 'test' for testnet
   enableP2P: true,                  // Block header sync via P2P
-  arcConfig: ArcServiceConfig.taalTestnet(),
+  arcConfig: ArcServiceConfig.bsvaArcadeMainnet(),
   secureStorage: MyAppSecureStorage(), // You provide this
 );
 
@@ -192,7 +192,7 @@ final imported = await coordinator.ask(ImportWalletCommand(
   walletId: 'imported',
   walletName: 'Restored Wallet',
   xpriv: 'xprv9s21ZrQH143K...',  // or mnemonic:, or wif:
-  networkType: 'test',
+  // networkType: left out, the wallet is on the network initialize() was given
   gapLimit: 20,                 // BIP44 gap limit for address discovery
 ));
 await progress.cancel();

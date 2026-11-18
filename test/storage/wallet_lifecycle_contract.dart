@@ -150,9 +150,9 @@ void defineWalletLifecycleContract(
       final u = unique();
       final wallet = 'lc-recreate-$u';
 
-      // Stored mainnet so the re-create below can tell "starts afresh" from
-      // "kept what the deleted row had": the create default is testnet.
-      await s.storeWallet(wallet, 'First', networkType: 'mainnet');
+      // Stored testnet so the re-create below can tell "starts afresh" from
+      // "kept what the deleted row had": the create default is mainnet.
+      await s.storeWallet(wallet, 'First', networkType: 'testnet');
       await s.deleteWallet(wallet);
       expect(await s.walletExists(wallet), isFalse);
       expect(await s.getWallet(wallet), isNull,
@@ -224,18 +224,17 @@ void defineWalletLifecycleContract(
           reason: 'a re-created wallet merges into nothing (hard delete)');
     });
 
-    test('sxk5: a wallet created with no network is testnet, and a supplied '
+    test('sxk5: a wallet created with no network is mainnet, and a supplied '
         'spelling is stored canonically', () async {
       final s = storage();
       final u = unique();
 
       // The shape an external caller of the exported ReadModelStorage takes:
-      // a wallet and a name. Every backend used to write 'mainnet' here,
-      // while NetworkName, the wallet aggregate and the actor system all
-      // resolve an unspecified network to testnet -- so the row read back as
-      // mainnet, with MAIN address encoding, for a wallet the aggregate
-      // considered testnet. That is the mainnet/testnet disagreement between
-      // layers that audit V-1/V-2 was about, waiting in the public API.
+      // a wallet and a name. Every backend once wrote 'mainnet' here while
+      // NetworkName, the wallet aggregate and the actor system resolved an
+      // unspecified network to testnet -- the mainnet/testnet disagreement
+      // between layers that audit V-1/V-2 was about, waiting in the public
+      // API. Since 6.0.0 every layer resolves it to mainnet.
       final unspecified = 'lc-net-default-$u';
       await s.storeWallet(unspecified, 'No Network');
 
@@ -244,11 +243,11 @@ void defineWalletLifecycleContract(
       expect(row!['network'], NetworkName.canonical(null),
           reason: 'a row created without a network takes the same default '
               'every other layer takes');
-      expect(NetworkName.isMainnet(row['network'] as String?), isFalse,
-          reason: 'an unspecified network must not make the wallet mainnet');
+      expect(row['network'], 'mainnet',
+          reason: 'the default network is mainnet since 6.0.0');
       expect(NetworkName.toDartsv(row['network'] as String?),
-          dartsv.NetworkType.TEST,
-          reason: 'and must not encode mainnet addresses');
+          dartsv.NetworkType.MAIN,
+          reason: 'and the row encodes mainnet addresses');
 
       // The actor system, importer and P2P layer spell these networks
       // 'main' / 'test' / 'regtest'; the read model spells them
@@ -271,8 +270,8 @@ void defineWalletLifecycleContract(
 
       // And the default only applies to a CREATE: an omitted networkType
       // still keeps the stored one (the merge rule above).
-      await s.storeWallet('lc-net-main-$u', 'Spelled');
-      expect((await s.getWallet('lc-net-main-$u'))!['network'], 'mainnet',
+      await s.storeWallet('lc-net-test-$u', 'Spelled');
+      expect((await s.getWallet('lc-net-test-$u'))!['network'], 'testnet',
           reason: 'the default must not overwrite a stored network');
     });
 

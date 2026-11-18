@@ -69,14 +69,14 @@ void main() {
   /// The service's copy of the payee's wallet: watch-only, from the xpub.
   Future<BitcoinWalletAggregate> serviceWallet() async {
     final wallet = await open('service');
-    await wallet.commandHandler(CreateWalletCommand(walletId: 'service', walletName: 's', xpub: accountXpub.xpubkey));
+    await wallet.commandHandler(CreateWalletCommand(walletId: 'service', walletName: 's', xpub: accountXpub.xpubkey, walletMetadata: const {'network': 'test'}));
     return wallet;
   }
 
   /// The payee's own wallet, holding the keys.
   Future<BitcoinWalletAggregate> payeeWallet() async {
     final wallet = await open('payee');
-    await wallet.commandHandler(CreateWalletCommand(walletId: 'payee', walletName: 'p', mnemonic: _mnemonic));
+    await wallet.commandHandler(CreateWalletCommand(walletId: 'payee', walletName: 'p', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     return wallet;
   }
 
@@ -179,7 +179,7 @@ void main() {
   test('a single-key (WIF) wallet has no delegated chain', () async {
     final wallet = await open('wif');
     await wallet.commandHandler(CreateWalletCommand(
-        walletId: 'wif', walletName: 'w', wif: dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST).toWIF()));
+        walletId: 'wif', walletName: 'w', wif: dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST).toWIF(), walletMetadata: const {'network': 'test'}));
     await expectLater(
       wallet.commandHandler(RecordDelegatedAddressesCommand(walletId: 'wif', derivationIndices: [1])),
       throwsA(isA<StateError>()),

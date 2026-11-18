@@ -95,7 +95,7 @@ void main() {
   /// address, each step acknowledged by the wallet aggregate.
   Future<String> walletWithOneUtxo() async {
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(_walletId, 'Benford', xpriv: _xpriv),
+      CreateWalletMessage(_walletId, 'Benford', xpriv: _xpriv, walletMetadata: const {'network': 'test'}),
       _wait,
     );
     expect(created.success, isTrue, reason: created.error);

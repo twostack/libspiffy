@@ -15,7 +15,7 @@ class PP1LockBuilder extends LockingScriptBuilder{
 
   NetworkType? networkType;
 
-  PP1LockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.TEST}) : super.fromScript(script);
+  PP1LockBuilder.fromScript(SVScript script, {this.networkType = NetworkType.MAIN}) : super.fromScript(script);
 
   PP1LockBuilder(this._recipientAddress, this._tokenId);
 
@@ -54,7 +54,7 @@ class PP1LockBuilder extends LockingScriptBuilder{
 
     _tokenId = chunkList[12].buf;
     var addressBuf = chunkList[11].buf ?? [];
-    _recipientAddress = Address.fromPubkeyHash(hex.encode(addressBuf), networkType ?? NetworkType.TEST );
+    _recipientAddress = Address.fromPubkeyHash(hex.encode(addressBuf), networkType ?? NetworkType.MAIN);
     // address = Address.fromPubkeyHash(HEX.encode(pubkeyHash ?? []), networkType ?? NetworkType.MAIN);
     }
 

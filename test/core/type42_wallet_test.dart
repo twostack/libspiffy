@@ -117,7 +117,7 @@ void main() {
   Future<BitcoinWalletAggregate> created(String walletId, {String? mnemonic, String? xpub, String? wif}) async {
     final wallet = await open(walletId);
     await wallet.commandHandler(
-        CreateWalletCommand(walletId: walletId, walletName: walletId, mnemonic: mnemonic, xpub: xpub, wif: wif));
+        CreateWalletCommand(walletId: walletId, walletName: walletId, mnemonic: mnemonic, xpub: xpub, wif: wif, walletMetadata: const {'network': 'test'}));
     return wallet;
   }
 
@@ -340,7 +340,7 @@ void main() {
         ..clear()
         ..add(own);
       final wallet = await open('again', eventStore: own);
-      await wallet.commandHandler(CreateWalletCommand(walletId: 'again', walletName: 'again', mnemonic: _payerMnemonic));
+      await wallet.commandHandler(CreateWalletCommand(walletId: 'again', walletName: 'again', mnemonic: _payerMnemonic, walletMetadata: const {'network': 'test'}));
       return wallet;
     }
 
@@ -407,7 +407,7 @@ void main() {
     final snapshots = SnapshotEventStore();
     final payee = _SnapshottingWallet(snapshots, secureStorage, 'payee');
     await payee.preStart();
-    await payee.commandHandler(CreateWalletCommand(walletId: 'payee', walletName: 'p', mnemonic: _payeeMnemonic));
+    await payee.commandHandler(CreateWalletCommand(walletId: 'payee', walletName: 'p', mnemonic: _payeeMnemonic, walletMetadata: const {'network': 'test'}));
     await payee.commandHandler(IssueAnchorKeyCommand(walletId: 'payee', anchorContext: _identityA));
     final paid = payerDestination(_identityA, handOffContext: false);
     await payee.commandHandler(RecordType42AddressesCommand(walletId: 'payee', derivations: [paid.derivation]));

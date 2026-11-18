@@ -40,7 +40,7 @@ class ScriptTypeRegistry {
   }
 
   /// The registry for [networkType].
-  factory ScriptTypeRegistry({NetworkType networkType = NetworkType.TEST}) =>
+  factory ScriptTypeRegistry({NetworkType networkType = NetworkType.MAIN}) =>
       _instances.putIfAbsent(networkType, () => ScriptTypeRegistry._internal(networkType));
 
   /// Register a custom script template

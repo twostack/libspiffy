@@ -148,7 +148,7 @@ class PaymentChannelManagerActor extends Actor {
     required ActorRef walletManager,
     required EventStore eventStore,
     required CryptoService cryptoService,
-    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
+    dartsv.NetworkType networkType = dartsv.NetworkType.MAIN,
     void Function(ChannelEvent)? eventBroadcaster,
     ActorRef? channelProjection,
     ActorRef? arcActor,

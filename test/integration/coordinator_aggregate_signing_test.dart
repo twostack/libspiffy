@@ -88,6 +88,7 @@ void main() {
       enableP2P: false,
       arcService: arc = NetworkArc()..miningFee = rateAtStart ?? NetworkArc().miningFee,
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
   });
@@ -137,6 +138,7 @@ void main() {
         walletName: 'Mnemonic + passphrase',
         mnemonic: _mnemonic,
         passphrase: _passphrase,
+        walletMetadata: const {'network': 'test'},
       ),
     );
     expect(created.success, isTrue, reason: created.error);
@@ -151,7 +153,7 @@ void main() {
     final created = await _tellAndAwait<WalletCreatedMessage>(
       actorSystem,
       libspiffy.walletManager,
-      CreateWalletMessage(walletId, 'Xpriv wallet', xpriv: kTestXpriv),
+      CreateWalletMessage(walletId, 'Xpriv wallet', xpriv: kTestXpriv, walletMetadata: const {'network': 'test'}),
     );
     expect(created.success, isTrue, reason: created.error);
     await eventually(

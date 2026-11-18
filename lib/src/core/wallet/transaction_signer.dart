@@ -208,7 +208,7 @@ class WalletTransactionSigner {
     KeyPath? keyPath,
   }) async {
     // ScriptTypeRegistry is a singleton pinned to the first network it
-    // is built with; the default (testnet) threw for mainnet wallets
+    // is built with; the old testnet default threw for mainnet wallets
     // once output scanning had initialised it for mainnet.
     final registry = ScriptTypeRegistry(
       networkType: NetworkName.toDartsv(currentState.networkType),

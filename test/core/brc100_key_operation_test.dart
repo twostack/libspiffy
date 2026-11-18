@@ -53,7 +53,7 @@ void main() {
       secureStorage: secureStorage,
     );
     await wallet.preStart();
-    await wallet.commandHandler(CreateWalletCommand(walletId: 'w', walletName: 'w', mnemonic: _mnemonic));
+    await wallet.commandHandler(CreateWalletCommand(walletId: 'w', walletName: 'w', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     keys = WalletKeys(cryptoService: crypto, secureStorage: secureStorage);
     final root = await crypto.mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST);
     anchor = Bip32.derivePrivatePath(root, WalletKeys.anchorPath(_identity)).privateKey;

@@ -194,13 +194,15 @@ void main() {
         hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(testMnemonic);
       });
 
-      test('should generate address from private key', () async {
+      test('should generate address from private key, mainnet by default', () async {
         final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         final address = cryptoService.generateAddress(privateKey);
         
         expect(address, isNotNull);
         expect(address.length, greaterThan(25));
-        expect(address, anyOf(startsWith('m'), startsWith('n'))); // Testnet addresses
+        expect(address, startsWith('1')); // Mainnet, the default since 6.0.0
+        expect(cryptoService.generateAddress(privateKey, network: dartsv.NetworkType.TEST),
+            anyOf(startsWith('m'), startsWith('n'))); // Testnet when asked for
       });
 
       test('should generate mainnet address from private key', () async {
@@ -493,8 +495,10 @@ void main() {
         expect(address1, isNotNull);
         expect(address2, isNotNull);
         expect(address1, isNot(equals(address2)));
-        expect(address1, anyOf(startsWith('m'), startsWith('n'))); // Testnet
-        expect(address2, anyOf(startsWith('m'), startsWith('n'))); // Testnet
+        expect(address1, startsWith('1')); // Mainnet, the default since 6.0.0
+        expect(address2, startsWith('1'));
+        expect(cryptoService.deriveAddress(hdPublicKey, 0, network: dartsv.NetworkType.TEST),
+            anyOf(startsWith('m'), startsWith('n'))); // Testnet when asked for
       });
 
       test('should generate change addresses from HD public key', () async {

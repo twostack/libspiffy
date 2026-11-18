@@ -26,7 +26,7 @@ void main() {
 
   final crypto = DartSVCryptoService();
   final hdPublicKey = crypto.deriveHDPublicKey(dartsv.HDPrivateKey.fromXpriv(kTestXpriv));
-  String derive(AddressChain chain, int index) => crypto.deriveAddress(hdPublicKey, index, chain: chain);
+  String derive(AddressChain chain, int index) => crypto.deriveAddress(hdPublicKey, index, chain: chain, network: dartsv.NetworkType.TEST);
 
   // Not this wallet's: m/0/0 of the BIP39 test mnemonic "abandon ... about".
   const payee = 'n4VQ5YdHf7hLQ2gWQYYrcxoE5B7nWuDFNF';
@@ -51,6 +51,7 @@ void main() {
       enableP2P: false,
       arcService: NetworkArc(),
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     await setupTestHeaders(system.walletStorage as IsarWalletStorage);
     coordinator = system.coordinator;
@@ -79,7 +80,7 @@ void main() {
         .where((e) => e is WalletCreatedEvent && e.walletId == walletId)
         .first
         .timeout(const Duration(seconds: 10));
-    coordinator.tell(CreateWalletCommand(walletId: walletId, name: 'Payer', xpriv: kTestXpriv));
+    coordinator.tell(CreateWalletCommand(walletId: walletId, name: 'Payer', xpriv: kTestXpriv, walletMetadata: const {'network': 'test'}));
     await created;
 
     final receiveBefore = await generate(walletId);

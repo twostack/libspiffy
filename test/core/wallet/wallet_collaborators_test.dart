@@ -185,7 +185,7 @@ void main() {
       final storage = InMemorySecureStorage();
       final mainnetWif = dartsv.SVPrivateKey.fromHex('33' * 32, dartsv.NetworkType.MAIN).toWIF();
       await expectLater(
-        keys(storage).walletRoot(CreateWalletCommand(walletId: _w, walletName: 'w', wif: mainnetWif)),
+        keys(storage).walletRoot(CreateWalletCommand(walletId: _w, walletName: 'w', wif: mainnetWif, walletMetadata: const {'network': 'test'})),
         throwsA(isA<ArgumentError>().having((e) => e.message, 'message', 'WIF network type does not match wallet network type')),
       );
       expect(await storage.getWIF(_w), isNull);
@@ -194,7 +194,7 @@ void main() {
     test('a generated change address is signed for with the change-chain key its record names', () async {
       final storage = InMemorySecureStorage();
       final k = keys(storage);
-      final command = CreateWalletCommand(walletId: _w, walletName: 'w', mnemonic: mnemonic);
+      final command = CreateWalletCommand(walletId: _w, walletName: 'w', mnemonic: mnemonic, walletMetadata: const {'network': 'test'});
       final root = await k.walletRoot(command);
       expect((root.walletType, root.networkName), (WalletType.hd, 'testnet'));
       await k.storeKeyMaterial(command, root.hdPublicKeyXpub);
@@ -227,7 +227,7 @@ void main() {
       final storage = _CountingStorage();
       var now = DateTime(2026, 10, 5, 12);
       final k = WalletKeys(cryptoService: DartSVCryptoService(), secureStorage: storage, now: () => now);
-      final command = CreateWalletCommand(walletId: _w, walletName: 'w', mnemonic: mnemonic);
+      final command = CreateWalletCommand(walletId: _w, walletName: 'w', mnemonic: mnemonic, walletMetadata: const {'network': 'test'});
       final root = await k.walletRoot(command);
       await k.storeKeyMaterial(command, root.hdPublicKeyXpub);
       final state = _with(WalletState.empty(_w),

@@ -68,6 +68,7 @@ void main() {
       enableP2P: false,
       arcService: arc,
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     // The header the funding proof verifies against.
     await readModel.storeBlockHeader(fixtureHeader(), kFixtureHeight);

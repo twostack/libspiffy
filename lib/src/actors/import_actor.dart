@@ -1522,7 +1522,7 @@ class ImportWalletMessage implements Message {
     this.xpriv,
     this.wif,
     required this.walletName,
-    this.networkType = 'test',
+    this.networkType = 'main',
     this.addressGapLimit = 20,
     this.resume = false,
     this.addresses,

@@ -68,7 +68,7 @@ void main() {
     }
     expect(NetworkName.canonical('main'), equals('mainnet'));
     expect(NetworkName.canonical('test'), equals('testnet'));
-    expect(NetworkName.canonical(null), equals('testnet'));
+    expect(NetworkName.canonical(null), equals('mainnet'), reason: 'no network given: the default, mainnet');
   });
 }
 

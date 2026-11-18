@@ -61,6 +61,7 @@ void main() {
       walletId: walletId,
       walletName: 'Change-chain wallet',
       mnemonic: mnemonic,
+      walletMetadata: const {'network': 'test'},
     ));
     return wallet;
   }

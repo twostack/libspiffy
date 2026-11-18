@@ -1102,7 +1102,7 @@ class ARCActor extends Actor {
   }
 
   /// Acts on ARC's status [response] for [txid] in [walletId], whose stored
-  /// status is [currentStatus]: a polled answer, or one the broadcast-bridge
+  /// status is [currentStatus]: a polled answer, or one the callback bridge
   /// pushed ([_applyBroadcastStatus]).
   Future<_StatusCheck> _applyStatusReport(
       String txid, String walletId, TransactionStatus currentStatus, ArcTransactionResponse response,
@@ -1962,7 +1962,7 @@ class ARCActor extends Actor {
     return _arcService!.submitTransaction(form, callbackUrl: callbacks.config.callbackUrl, callbackToken: token);
   }
 
-  /// A status envelope the broadcast-bridge delivered (handoff §5.2–5.3).
+  /// A status envelope the callback bridge delivered.
   ///
   /// Each item is applied exactly as a polled answer for that txid
   /// ([_applyStatusReport]), in every wallet holding the transaction: a

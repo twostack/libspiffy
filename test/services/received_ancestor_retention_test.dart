@@ -92,7 +92,7 @@ void main() {
     // none of its addresses is not received for it (bead libspiffy-m8qu).
     final sink = await system.spawn('sink-$tag', () => _Sink({address.toBase58()}));
     final spv = await system.spawn(
-        'spv-$tag', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage));
+        'spv-$tag', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage, networkType: 'test'));
     final done = Completer<SPVValidationResult>();
     final receiver = await system.spawn('receiver-$tag', () => _Receiver(done));
     spv.tell(

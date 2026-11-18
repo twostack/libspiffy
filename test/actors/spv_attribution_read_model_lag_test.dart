@@ -121,7 +121,7 @@ void main() {
     final invoices = await system.spawn('invoices', () => _Sink());
     spv = await system.spawn(
       'spv',
-      () => SPVActor(walletManager: walletManager, invoiceCoordinator: invoices, storage: readModel),
+      () => SPVActor(walletManager: walletManager, invoiceCoordinator: invoices, storage: readModel, networkType: 'test'),
     );
   });
 
@@ -131,7 +131,7 @@ void main() {
 
   Future<String> createWallet(String walletId, {String? mnemonic, String? xpriv}) async {
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(walletId, walletId, mnemonic: mnemonic, xpriv: xpriv),
+      CreateWalletMessage(walletId, walletId, mnemonic: mnemonic, xpriv: xpriv, walletMetadata: const {'network': 'test'}),
       const Duration(seconds: 10),
     );
     expect(created.success, isTrue, reason: created.error);
@@ -261,7 +261,7 @@ void main() {
       ),
     );
     final created = await earlierManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage('watcher', 'watcher', mnemonic: _recipientMnemonic),
+      CreateWalletMessage('watcher', 'watcher', mnemonic: _recipientMnemonic, walletMetadata: const {'network': 'test'}),
       const Duration(seconds: 10),
     );
     expect(created.success, isTrue, reason: created.error);

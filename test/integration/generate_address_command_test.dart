@@ -31,13 +31,13 @@ void main() {
     isar = await Isar.open(LibSpiffySchemas.allSchemas,
         directory: dir.path, name: 'generate_address_${DateTime.now().microsecondsSinceEpoch}');
     spiffy = LibSpiffyActorSystem();
-    await spiffy.initialize(actorSystem: actors, isar: isar, dataDirectory: dir.path, enableP2P: false);
+    await spiffy.initialize(actorSystem: actors, isar: isar, dataDirectory: dir.path, enableP2P: false, networkType: 'test');
     walletId = 'w-${DateTime.now().microsecondsSinceEpoch}';
     final created = spiffy.coordinatorEvents!
         .where((e) => e is coord.WalletCreatedEvent && e.walletId == walletId)
         .first
         .timeout(const Duration(seconds: 15));
-    spiffy.coordinator.tell(coord.CreateWalletCommand(walletId: walletId, name: 'w', xpriv: kTestXpriv));
+    spiffy.coordinator.tell(coord.CreateWalletCommand(walletId: walletId, name: 'w', xpriv: kTestXpriv, walletMetadata: const {'network': 'test'}));
     await created;
   });
 

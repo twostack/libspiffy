@@ -67,7 +67,7 @@ void main() {
     // none of its addresses is not received for it (bead libspiffy-m8qu).
     final sink = await system.spawn('sink', () => _Sink({address.toBase58()}));
     spv = await system.spawn(
-        'spv', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage));
+        'spv', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage, networkType: 'test'));
   });
 
   tearDown(() => system.shutdown());

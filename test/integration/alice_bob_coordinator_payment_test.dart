@@ -80,6 +80,7 @@ void main() {
       enableP2P: false,
       arcService: network,
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     await setupTestHeaders(aliceSystem.walletStorage as IsarWalletStorage);
     aliceCoordinator = aliceSystem.coordinator;
@@ -101,6 +102,7 @@ void main() {
       enableP2P: false,
       arcService: network,
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
     await setupTestHeaders(bobSystem.walletStorage as IsarWalletStorage);
     bobCoordinator = bobSystem.coordinator;
@@ -134,6 +136,7 @@ void main() {
         walletId: aliceWalletId,
         name: 'Alice',
         xpriv: kTestXpriv,
+        walletMetadata: const {'network': 'test'},
       ));
 
       final aliceWallet = await aliceCreated;
@@ -150,6 +153,7 @@ void main() {
         walletId: bobWalletId,
         name: 'Bob',
         mnemonic: await crypto.generateMnemonic(),
+        walletMetadata: const {'network': 'test'},
       ));
 
       final bobWallet = await bobCreated;
@@ -299,6 +303,7 @@ void main() {
         walletId: aliceWalletId,
         name: 'Alice',
         mnemonic: await crypto.generateMnemonic(),
+        walletMetadata: const {'network': 'test'},
       ));
       await aliceCreated;
 
@@ -311,6 +316,7 @@ void main() {
         walletId: bobWalletId,
         name: 'Bob',
         mnemonic: await crypto.generateMnemonic(),
+        walletMetadata: const {'network': 'test'},
       ));
       await bobCreated;
 

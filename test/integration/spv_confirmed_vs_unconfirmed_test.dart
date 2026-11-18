@@ -56,6 +56,7 @@ void main() {
         isar: bobIsar,
         dataDirectory: bobTestDir.path,
         enableP2P: false,
+        networkType: 'test',
       );
       
       await setupTestHeaders(bobLibSpiffy.walletStorage as IsarWalletStorage);

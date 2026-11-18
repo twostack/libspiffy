@@ -40,7 +40,7 @@ void main() {
 
   setUpAll(() async {
     // The wallet's root address is m/0/0 of its own mnemonic.
-    final hd = await DartSVCryptoService().mnemonicToHDPrivateKey(_mnemonic);
+    final hd = await DartSVCryptoService().mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST);
     ownKey = hd.deriveChildKey('m/0/0').privateKey.publicKey;
     ownAddress = ownKey.toAddress(_network).toBase58();
     foreignKey = dartsv.SVPrivateKey.fromHex('5c' * 32, _network).publicKey;
@@ -59,7 +59,7 @@ void main() {
     );
     await w.preStart();
     await w.commandHandler(
-        CreateWalletCommand(walletId: _walletId, walletName: 'p6ot', mnemonic: _mnemonic));
+        CreateWalletCommand(walletId: _walletId, walletName: 'p6ot', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     expect(w.currentState.addresses, contains(ownAddress),
         reason: 'the root address is the one these UTXOs are attributed to');
     return w;

@@ -64,7 +64,7 @@ void main() {
       // none of its addresses is not received for it (bead libspiffy-m8qu).
       final sink = await system.spawn('sink', () => _Sink({address.toBase58()}));
       spv = await system.spawn(
-          'spv', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage));
+          'spv', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage, networkType: 'test'));
     });
 
     tearDown(() => system.shutdown());
@@ -193,7 +193,7 @@ void main() {
 
     test('an unproven receive journals no block height, and a proven one journals its own', () async {
       final created = await walletManager.ask<WalletCreatedMessage>(
-        CreateWalletMessage('w', 'W', mnemonic: _mnemonic),
+        CreateWalletMessage('w', 'W', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}),
         const Duration(seconds: 10),
       );
       expect(created.success, isTrue, reason: created.error);

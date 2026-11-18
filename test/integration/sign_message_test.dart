@@ -38,6 +38,7 @@ void main() {
       dataDirectory: dir.path,
       enableP2P: false,
       secureStorage: InMemorySecureStorage(),
+      networkType: 'test',
     );
   });
 
@@ -58,7 +59,7 @@ void main() {
   Future<void> createWallet(String walletId, {String? mnemonic, String? wif, String? xpub}) async {
     final created = next<coord.WalletCreatedEvent>((e) => e.walletId == walletId);
     libspiffy.coordinator.tell(
-        coord.CreateWalletCommand(walletId: walletId, name: walletId, mnemonic: mnemonic, wif: wif, xpub: xpub));
+        coord.CreateWalletCommand(walletId: walletId, name: walletId, mnemonic: mnemonic, wif: wif, xpub: xpub, walletMetadata: const {'network': 'test'}));
     expect((await created).success, isTrue);
   }
 
@@ -111,7 +112,7 @@ void main() {
 
   test('a watch-only wallet signs nothing; a WIF wallet signs only with its one key', () async {
     final crypto = DartSVCryptoService();
-    final xpub = crypto.deriveHDPublicKey(await crypto.mnemonicToHDPrivateKey(_mnemonic)).xpubkey;
+    final xpub = crypto.deriveHDPublicKey(await crypto.mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST)).xpubkey;
     await createWallet('watcher', xpub: xpub);
     final watched = await newAddress('watcher');
     final refused = await sign('watcher', hashOf(watched), utf8.encode('m'));

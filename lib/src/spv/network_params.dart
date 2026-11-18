@@ -130,7 +130,8 @@ class NetworkParams {
 
   /// Resolve the parameters for any accepted network spelling
   /// (`main`, `mainnet`, `livenet`, `test`, `testnet`, `regtest`, null).
-  /// Unknown or null names resolve to testnet, matching [NetworkName].
+  /// Null (no network given) resolves to mainnet, the default network;
+  /// unknown names resolve to testnet. Both match [NetworkName].
   static NetworkParams forNetwork(String? network) {
     if (NetworkName.isRegtest(network)) return regtest;
     return NetworkName.isMainnet(network) ? mainnet : testnet;

@@ -126,7 +126,7 @@ void main() {
     final sink = await system.spawn('sink', () => _Sink());
     final spv = await system.spawn(
       'spv',
-      () => SPVActor(walletManager: walletManager, invoiceCoordinator: sink, storage: readModel),
+      () => SPVActor(walletManager: walletManager, invoiceCoordinator: sink, storage: readModel, networkType: 'test'),
     );
     coordinatorEvents = [];
     final actor = WalletCoordinatorActor(
@@ -145,7 +145,7 @@ void main() {
     coordinator = await system.spawn('coordinator', () => actor);
 
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(_walletId, _walletId, mnemonic: _mnemonic),
+      CreateWalletMessage(_walletId, _walletId, mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}),
       const Duration(seconds: 10),
     );
     expect(created.success, isTrue, reason: created.error);
@@ -214,7 +214,7 @@ void main() {
     final sink = await second.spawn('sink', () => _Sink());
     final spv = await second.spawn(
       'spv',
-      () => SPVActor(walletManager: manager, invoiceCoordinator: sink, storage: storage),
+      () => SPVActor(walletManager: manager, invoiceCoordinator: sink, storage: storage, networkType: 'test'),
     );
     return (manager, spv);
   }

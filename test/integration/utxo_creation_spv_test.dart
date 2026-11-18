@@ -65,6 +65,7 @@ void main() {
         isar: bobIsar,
         dataDirectory: bobTestDir.path,
         enableP2P: false,
+        networkType: 'test',
       );
       
       // Setup test block headers for Bob

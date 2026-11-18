@@ -108,6 +108,7 @@ void main() {
         dataDirectory: aliceTestDir.path,
         enableP2P: false,
         arcService: arc,
+        networkType: 'test',
       );
 
       // Setup test headers for Alice
@@ -151,6 +152,7 @@ void main() {
         dataDirectory: bobTestDir.path,
         enableP2P: false,
         arcService: arc,
+        networkType: 'test',
       );
 
       // Setup test headers for Bob
@@ -491,7 +493,7 @@ void main() {
       );
 
       bobLibSpiffy.walletManager.tell(
-        CreateWalletMessage(xpubBobWalletId, 'Bob XPub Wallet', xpub: bobXpub),
+        CreateWalletMessage(xpubBobWalletId, 'Bob XPub Wallet', xpub: bobXpub, walletMetadata: const {'network': 'test'}),
         sender: bobCreateReceiver,
       );
 

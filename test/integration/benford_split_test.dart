@@ -105,6 +105,7 @@ Future<BenfordTestContext> setupBenfordTestContext() async {
     dataDirectory: testDir.path,
     enableP2P: false,
     arcService: arc,
+    networkType: 'test',
   );
 
   final storage = libspiffy.walletStorage as IsarWalletStorage;
@@ -151,7 +152,7 @@ Future<String> createTestWalletWithUtxos(
     () => _ReplyReceiver<WalletCreatedMessage>(created),
   );
   walletManager.tell(
-    CreateWalletMessage(walletId, 'Benford Test Wallet', xpriv: kTestXpriv),
+    CreateWalletMessage(walletId, 'Benford Test Wallet', xpriv: kTestXpriv, walletMetadata: const {'network': 'test'}),
     sender: createReceiver,
   );
   final createdReply = await created.future.timeout(const Duration(seconds: 10));

@@ -56,6 +56,7 @@ void main() {
         dataDirectory: testDir.path,
         enableP2P: false,
         arcService: NetworkArc(),
+        networkType: 'test',
       );
 
       await setupTestHeaders(libSpiffy.walletStorage as IsarWalletStorage);

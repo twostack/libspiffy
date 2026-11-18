@@ -24,16 +24,20 @@ void main() {
           reason: 'case and whitespace insensitive');
     });
 
-    test('isMainnet is false for testnet spellings, regtest, unknown and null', () {
+    test('isMainnet is false for testnet spellings, regtest and unknown names', () {
       expect(NetworkName.isMainnet('test'), isFalse);
       expect(NetworkName.isMainnet('testnet'), isFalse);
       expect(NetworkName.isMainnet('regtest'), isFalse);
       expect(NetworkName.isMainnet('bogus'), isFalse);
       expect(NetworkName.isMainnet(''), isFalse);
-      expect(NetworkName.isMainnet(null), isFalse);
     });
 
-    test('toDartsv maps both mainnet spellings to MAIN and everything else to TEST', () {
+    // 6.0.0: no network given means mainnet, the default network.
+    test('isMainnet is true for null, no network given', () {
+      expect(NetworkName.isMainnet(null), isTrue);
+    });
+
+    test('toDartsv maps the mainnet spellings and null to MAIN and everything else to TEST', () {
       expect(NetworkName.toDartsv('main'), equals(dartsv.NetworkType.MAIN));
       expect(NetworkName.toDartsv('mainnet'), equals(dartsv.NetworkType.MAIN));
       expect(NetworkName.toDartsv('livenet'), equals(dartsv.NetworkType.MAIN));
@@ -41,7 +45,9 @@ void main() {
       expect(NetworkName.toDartsv('testnet'), equals(dartsv.NetworkType.TEST));
       expect(NetworkName.toDartsv('regtest'), equals(dartsv.NetworkType.TEST),
           reason: 'regtest keys and addresses use the testnet encoding');
-      expect(NetworkName.toDartsv(null), equals(dartsv.NetworkType.TEST));
+      expect(NetworkName.toDartsv('bogus'), equals(dartsv.NetworkType.TEST));
+      expect(NetworkName.toDartsv(null), equals(dartsv.NetworkType.MAIN),
+          reason: 'no network given means mainnet, the default');
     });
 
     // x27: regtest used to be persisted as 'testnet', which selected the
@@ -52,7 +58,9 @@ void main() {
       expect(NetworkName.canonical('livenet'), equals('mainnet'));
       expect(NetworkName.canonical('test'), equals('testnet'));
       expect(NetworkName.canonical('testnet'), equals('testnet'));
-      expect(NetworkName.canonical(null), equals('testnet'));
+      expect(NetworkName.canonical('bogus'), equals('testnet'));
+      expect(NetworkName.canonical(null), equals('mainnet'),
+          reason: 'no network given means mainnet, the default');
       expect(NetworkName.canonical('regtest'), equals('regtest'));
       expect(NetworkName.canonical(' RegTest '), equals('regtest'));
     });
@@ -70,6 +78,7 @@ void main() {
   /// disagree about what NO spelling means. Three defaults existed: the
   /// storage backends wrote 'mainnet', the models `empty()` 'mainnet', and
   /// `NetworkName`, the aggregate and the actor system all meant testnet.
+  /// Since 6.0.0 every layer means mainnet.
   ///
   /// Each expectation below reads the default a layer actually declares --
   /// none of them restates the answer -- so a layer that changes its mind
@@ -86,10 +95,9 @@ void main() {
           reason: 'the three storage backends write this on an insert; it '
               'was mainnet, so an external storeWallet(id, name) produced a '
               'mainnet row for a testnet wallet');
-      expect(NetworkName.isMainnet(WalletRowRules.defaultNetwork), isFalse,
-          reason: 'and testnet is the safe direction to be wrong in: a '
-              'wallet wrongly taken for testnet cannot encode an address '
-              'that receives real coins');
+      expect(WalletRowRules.defaultNetwork, 'mainnet',
+          reason: 'the default network is mainnet since 6.0.0; a testnet '
+              'wallet passes its network');
     });
 
     test('the write model and the read model before creation', () {
@@ -101,9 +109,11 @@ void main() {
       // 'test' is the P2P/dartsv vocabulary, not a fourth network: what has
       // to hold is that it resolves to the same one, not that it is spelled
       // the same.
+      // ImportWalletCommand names no network of its own: null means the
+      // system's network, which the actor system's default resolves.
       final command =
           ImportWalletCommand(walletId: 'w', walletName: 'W', wif: 'x');
-      expect(resolved(command.networkType), expected);
+      expect(command.networkType, isNull);
       final message =
           ImportWalletMessage(walletId: 'w', walletName: 'W', wif: 'x');
       expect(resolved(message.networkType), expected);

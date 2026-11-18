@@ -71,7 +71,7 @@ class _Wallet {
     await wallet.apply(CreateWalletCommand(
         walletId: _walletId,
         walletName: 'channel',
-        mnemonic: channelFixtureMnemonic));
+        mnemonic: channelFixtureMnemonic, walletMetadata: const {'network': 'test'}));
     for (var i = 0; i < 4; i++) {
       await wallet.apply(
           GenerateAddressCommand(walletId: _walletId, purpose: 'receive'));
@@ -139,6 +139,7 @@ void main() {
         arcActor: withArc ? arcRef : null,
         headerChain: headers,
         signingTimeout: const Duration(seconds: 2),
+        networkType: dartsv.NetworkType.TEST,
       ),
     );
   }

@@ -39,21 +39,20 @@ abstract final class WalletRowRules {
   static final _integer = RegExp(r'^-?\d+$');
 
   /// The network a wallet row gets when it is created without one (bead
-  /// libspiffy-sxk5).
+  /// libspiffy-sxk5): mainnet.
   ///
   /// It is [NetworkName.canonical] of nothing, so the backends, the wallet
   /// aggregate ([NetworkName.canonical] in `wallet_keys.dart` and
   /// `wallet_lifecycle.dart`) and the actor system (whose own default is
-  /// `'test'`, the same network spelled the P2P layer's way) all resolve an
-  /// unspecified network to the SAME one. They used to disagree: the
-  /// backends defaulted to `'mainnet'` while everything else defaulted to
-  /// testnet, so an external caller of the exported
-  /// `ReadModelStorage.storeWallet` created a row that read back
-  /// [NetworkName.isMainnet] and MAIN address encoding on a wallet the
-  /// aggregate considered testnet.
+  /// `'main'`, the same network spelled the P2P layer's way) all resolve an
+  /// unspecified network to the SAME one. They once disagreed (the
+  /// backends wrote mainnet while everything else meant testnet), so an
+  /// external caller of the exported `ReadModelStorage.storeWallet` created
+  /// a row whose address encoding did not match the wallet the aggregate
+  /// held.
   ///
-  /// Testnet is also the safe direction to be wrong in: a wallet wrongly
-  /// taken for testnet cannot encode an address that receives real coins.
+  /// The default is mainnet since 6.0.0 (testnet before). A testnet or
+  /// regtest wallet has to say so: pass its network explicitly.
   static final String defaultNetwork = NetworkName.canonical(null);
 
   /// The network a store writes, or null to keep the stored one.

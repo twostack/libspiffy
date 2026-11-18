@@ -13,6 +13,7 @@ import '../core/hodlocker_lock.dart';
 import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
 import '../core/invoice_events.dart' as invoice_events;
+import '../core/wallet/state_records.dart' show WalletMetadataKeys;
 import '../core/wallet/transaction_size.dart';
 import '../models/address_chain.dart';
 import '../models/address_metadata.dart';
@@ -420,6 +421,9 @@ class WalletCoordinatorActor extends Actor {
   /// reclaimed (bead libspiffy-8442). The sweep is what sends the reclaim;
   /// a deadline is met within one interval of passing.
   final Duration _deadlineSweepInterval;
+
+  /// The network the system was initialized with (see [_withNetwork]).
+  final String _networkType;
   Timer? _deadlineSweep;
   bool _sweepingDeadlines = false;
 
@@ -454,6 +458,10 @@ class WalletCoordinatorActor extends Actor {
     /// it is done again, as each step leaves alone what is already done.
     bool Function(Event event)? isReplayed,
     String peerId = '',
+    /// The network the system was initialized with: a wallet that a
+    /// CreateWalletCommand or ImportWalletCommand creates without naming a
+    /// network is created on it.
+    String networkType = 'main',
     /// The node's channel timing (bead libspiffy-ywbk): the channel adapter
     /// settles each channel this node serves when its settlement margin
     /// begins. Null for a node that does no channels.
@@ -497,6 +505,7 @@ class WalletCoordinatorActor extends Actor {
         _benfordCoordinator = benfordCoordinator,
         _storage = storage,
         _deadlineSweepInterval = deadlineSweepInterval,
+        _networkType = networkType,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _resumeWalletImport = resumeWalletImport,
@@ -1048,6 +1057,13 @@ class WalletCoordinatorActor extends Actor {
   // COMMAND HANDLERS
   // ==========================================================================
 
+  /// [metadata] with the system's network when it names none: a wallet
+  /// follows `initialize(networkType:)` unless its command names a network.
+  Map<String, dynamic> _withNetwork(Map<String, dynamic>? metadata) =>
+      metadata != null && metadata[WalletMetadataKeys.network] != null
+          ? metadata
+          : {...?metadata, WalletMetadataKeys.network: _networkType};
+
   Future<void> _handleCreateWallet(CreateWalletCommand cmd) async {
     _log.info('Creating wallet ${cmd.walletId}');
     final created = await _createWallet(wm.CreateWalletMessage(
@@ -1057,7 +1073,7 @@ class WalletCoordinatorActor extends Actor {
       wif: cmd.wif,
       xpriv: cmd.xpriv,
       xpub: cmd.xpub,
-      walletMetadata: cmd.walletMetadata,
+      walletMetadata: _withNetwork(cmd.walletMetadata),
     ));
     _emitEvent(WalletCreatedEvent(
       walletId: cmd.walletId,
@@ -1230,7 +1246,7 @@ class WalletCoordinatorActor extends Actor {
         _resumeWalletImport!(
             walletId: cmd.walletId,
             walletName: cmd.walletName,
-            networkType: cmd.networkType,
+            networkType: cmd.networkType ?? _networkType,
             addressGapLimit: cmd.gapLimit,
             addresses: cmd.addresses);
       } else if (cmd.xpriv != null) {
@@ -1238,17 +1254,20 @@ class WalletCoordinatorActor extends Actor {
           walletId: cmd.walletId,
           xpriv: cmd.xpriv!,
           walletName: cmd.walletName,
-          networkType: cmd.networkType,
+          networkType: cmd.networkType ?? _networkType,
           addressGapLimit: cmd.gapLimit,
           lockKeyWifs: cmd.lockKeyWifs,
         );
       } else if (cmd.wif != null) {
-        _importWalletFromWif!(walletId: cmd.walletId, wif: cmd.wif!, walletName: cmd.walletName, networkType: cmd.networkType);
+        _importWalletFromWif!(walletId: cmd.walletId, wif: cmd.wif!, walletName: cmd.walletName, networkType: cmd.networkType ?? _networkType);
       } else {
         // The import of a mnemonic wallet is a resume of a wallet created
         // from it: the resume reads the mnemonic back and derives the keys
         // it scans with. Creating the wallet alone imported nothing.
-        final created = await _createWallet(wm.CreateWalletMessage(cmd.walletId, cmd.walletName, mnemonic: cmd.mnemonic));
+        // The wallet is created on the import's network; without it the
+        // wallet took the default network whatever the import asked for.
+        final created = await _createWallet(wm.CreateWalletMessage(cmd.walletId, cmd.walletName,
+            mnemonic: cmd.mnemonic, walletMetadata: {WalletMetadataKeys.network: cmd.networkType ?? _networkType}));
         if (created.error != null) {
           await _eventSubscriptions.remove(cmd.walletId)?.cancel();
           _emitEvent(failed(created.error!));
@@ -1257,7 +1276,7 @@ class WalletCoordinatorActor extends Actor {
         _resumeWalletImport!(
             walletId: cmd.walletId,
             walletName: cmd.walletName,
-            networkType: cmd.networkType,
+            networkType: cmd.networkType ?? _networkType,
             addressGapLimit: cmd.gapLimit,
             addresses: cmd.addresses);
       }

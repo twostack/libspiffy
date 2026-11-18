@@ -335,7 +335,7 @@ void main() {
     await bobSystem.initialize(
         actorSystem: bobActorSystem, isar: bobIsar,
         dataDirectory: bobDir.path, enableP2P: false,
-        secureStorage: InMemorySecureStorage(), arcService: network);
+        secureStorage: InMemorySecureStorage(), arcService: network, networkType: 'test');
     await setupTestHeaders(bobSystem.walletStorage as IsarWalletStorage);
     bobCoordinator = bobSystem.coordinator;
     bobEvents = bobSystem.coordinatorEvents!;
@@ -349,7 +349,7 @@ void main() {
     await aliceSystem.initialize(
         actorSystem: aliceActorSystem, isar: aliceIsar,
         dataDirectory: aliceDir.path, enableP2P: false,
-        secureStorage: InMemorySecureStorage(), arcService: network);
+        secureStorage: InMemorySecureStorage(), arcService: network, networkType: 'test');
     await setupTestHeaders(aliceSystem.walletStorage as IsarWalletStorage);
     aliceCoordinator = aliceSystem.coordinator;
     aliceEvents = aliceSystem.coordinatorEvents!;
@@ -373,12 +373,12 @@ void main() {
       // Create wallets
       final bobCreated = ofType<WalletCreatedEvent>(bobEvents)
           .where((e) => e.walletId == bobWalletId).first.timeout(const Duration(seconds: 10));
-      bobCoordinator.tell(CreateWalletCommand(walletId: bobWalletId, name: 'Bob', wif: bobWif));
+      bobCoordinator.tell(CreateWalletCommand(walletId: bobWalletId, name: 'Bob', wif: bobWif, walletMetadata: const {'network': 'test'}));
       expect((await bobCreated).success, isTrue);
 
       final aliceCreated = ofType<WalletCreatedEvent>(aliceEvents)
           .where((e) => e.walletId == aliceWalletId).first.timeout(const Duration(seconds: 10));
-      aliceCoordinator.tell(CreateWalletCommand(walletId: aliceWalletId, name: 'Alice', wif: aliceWif));
+      aliceCoordinator.tell(CreateWalletCommand(walletId: aliceWalletId, name: 'Alice', wif: aliceWif, walletMetadata: const {'network': 'test'}));
       expect((await aliceCreated).success, isTrue);
 
       // Fund both wallets with enough UTXOs for all operations.

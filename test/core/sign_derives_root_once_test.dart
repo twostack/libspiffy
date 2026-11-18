@@ -39,7 +39,7 @@ void main() {
   late String rootScript;
 
   setUp(() async {
-    final hd = await DartSVCryptoService().mnemonicToHDPrivateKey(_mnemonic);
+    final hd = await DartSVCryptoService().mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST);
     final address = hd.deriveChildKey('m/0/0').privateKey.publicKey.toAddress(_network);
     rootAddress = address.toBase58();
     rootScript = dartsv.P2PKHLockBuilder.fromAddress(address).getScriptPubkey().toHex();
@@ -53,7 +53,7 @@ void main() {
       secureStorage: storage,
     );
     await w.preStart();
-    await w.commandHandler(CreateWalletCommand(walletId: _walletId, walletName: 'root once', mnemonic: _mnemonic));
+    await w.commandHandler(CreateWalletCommand(walletId: _walletId, walletName: 'root once', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
   });
 
   Future<List<String>> receive(int count, int tag) async {

@@ -22,7 +22,7 @@ import '../utils/network_name.dart';
 ///
 /// Example usage:
 /// ```dart
-/// final dataSource = WhatsOnChainDataSource(networkType: 'test');
+/// final dataSource = WhatsOnChainDataSource(networkType: 'main');
 /// final history = await dataSource.getTransactionHistory('address...');
 /// ```
 class WhatsOnChainDataSource implements BlockchainDataSource, SpentOutputLookup {

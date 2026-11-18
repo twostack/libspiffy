@@ -121,7 +121,7 @@ class _Wallet {
     await wallet.apply(CreateWalletCommand(
         walletId: _walletId,
         walletName: 'channel',
-        mnemonic: channelFixtureMnemonic));
+        mnemonic: channelFixtureMnemonic, walletMetadata: const {'network': 'test'}));
     // m/0/0 .. m/0/3: the channel keys are m/0/1 (client) and m/0/2 (server).
     for (var i = 0; i < 4; i++) {
       await wallet
@@ -252,6 +252,7 @@ void main() {
         eventStore: store,
         cryptoService: DartSVCryptoService(),
         signingTimeout: const Duration(seconds: 2),
+        networkType: dartsv.NetworkType.TEST,
       ),
     );
   }

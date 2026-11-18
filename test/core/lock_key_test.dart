@@ -61,7 +61,7 @@ void main() {
     system = TestActorSystem();
     wallet = aggregate();
     await wallet.preStart();
-    await wallet.commandHandler(CreateWalletCommand(walletId: _walletId, walletName: 'Locks', mnemonic: _mnemonic));
+    await wallet.commandHandler(CreateWalletCommand(walletId: _walletId, walletName: 'Locks', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
   });
 
   tearDown(() => system.shutdown());

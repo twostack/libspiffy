@@ -109,7 +109,7 @@ void main() {
   /// projection that caught up would.
   Future<void> walletWithOneUtxo({int count = 1}) async {
     final created = await walletManager.ask<WalletCreatedMessage>(
-      CreateWalletMessage(_walletId, 'Benford', xpriv: _xpriv),
+      CreateWalletMessage(_walletId, 'Benford', xpriv: _xpriv, walletMetadata: const {'network': 'test'}),
       _wait,
     );
     expect(created.success, isTrue, reason: created.error);

@@ -63,7 +63,7 @@ class _Wallet {
 
   static Future<_Wallet> create() async {
     final wallet = _Wallet();
-    await wallet.handle(CreateWalletCommand(walletId: _w, walletName: 'dp4', mnemonic: _mnemonic));
+    await wallet.handle(CreateWalletCommand(walletId: _w, walletName: 'dp4', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     wallet.root = wallet.state.rootAddress!;
     final a1 = (await wallet.handle(GenerateAddressCommand(walletId: _w, includePublicKey: true))).single
         as AddressGeneratedEvent;

@@ -25,10 +25,10 @@ void main() async {
   await initializeLibSpiffy(
     actorSystem: hostActorSystem, // Share the actor system
     dataDirectory: './example-data',
-    networkType: 'test',          // 'test' or 'main'
+    networkType: 'main',          // the default; 'test' for testnet
     enableP2P: true,              // Automatic P2P sync (default: true)
     // Optional: custom peers
-    // peerAddresses: ['testnet-seed.bitcoinsv.io:18333'],
+    // peerAddresses: ['seed.bitcoinsv.io:8333'],
     // startHeight: 50000,
   );
   
@@ -130,7 +130,7 @@ void customPeerExample() async {
   print('1. Initializing LibSpiffy with custom peers...');
   await initializeLibSpiffy(
     dataDirectory: './example-data',
-    networkType: 'test',
+    networkType: 'test', // these are testnet peers
     enableP2P: true,
     peerAddresses: [
       'testnet-seed.bitcoinsv.io:18333',
@@ -177,7 +177,7 @@ void isarIntegrationExample() async {
   await initializeLibSpiffy(
     actorSystem: hostActorSystem,
     isar: isar, // Pass host's Isar instance
-    networkType: 'test',
+    networkType: 'main',
     enableP2P: true, // Automatic P2P connectivity
   );
   

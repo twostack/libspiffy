@@ -95,7 +95,7 @@ void main() {
     secureStorage = InMemorySecureStorage();
     wallet = newAggregate();
     await wallet.preStart();
-    await wallet.commandHandler(CreateWalletCommand(walletId: _walletId, walletName: 'agreement', mnemonic: _mnemonic));
+    await wallet.commandHandler(CreateWalletCommand(walletId: _walletId, walletName: 'agreement', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     await wallet.commandHandler(GenerateAddressCommand(walletId: _walletId, includePublicKey: true));
     root = wallet.currentState.rootAddress!;
     walletKey = dartsv.SVPublicKey.fromHex(store.allEvents.whereType<AddressGeneratedEvent>().last.publicKeyHex!);
@@ -183,7 +183,7 @@ void main() {
         );
     final watcher = newXpubAggregate();
     await watcher.preStart();
-    await watcher.commandHandler(CreateWalletCommand(walletId: xpubWalletId, walletName: 'service', xpub: xpub));
+    await watcher.commandHandler(CreateWalletCommand(walletId: xpubWalletId, walletName: 'service', xpub: xpub, walletMetadata: const {'network': 'test'}));
     final address = watcher.currentState.rootAddress!;
     await watcher.commandHandler(ReceiveUTXOCommand(
       walletId: xpubWalletId,

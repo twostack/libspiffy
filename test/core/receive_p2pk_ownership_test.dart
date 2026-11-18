@@ -44,7 +44,7 @@ void main() {
   late dartsv.SVPublicKey foreignKey;
 
   setUpAll(() async {
-    final hd = await DartSVCryptoService().mnemonicToHDPrivateKey(_mnemonic);
+    final hd = await DartSVCryptoService().mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST);
     ownKey = hd.deriveChildKey('m/0/0').privateKey.publicKey;
     ownAddress = ownKey.toAddress(_network).toBase58();
     watchKey = dartsv.SVPrivateKey.fromHex('22' * 32, _network).publicKey;
@@ -62,7 +62,7 @@ void main() {
     );
     await w.preStart();
     await w.commandHandler(
-        CreateWalletCommand(walletId: _walletId, walletName: 'abwk', mnemonic: _mnemonic));
+        CreateWalletCommand(walletId: _walletId, walletName: 'abwk', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     if (watching) {
       await w.commandHandler(
           AddWatchAddressCommand(walletId: _walletId, address: watchAddress, scriptType: 'p2pkh'));

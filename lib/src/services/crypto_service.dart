@@ -20,7 +20,7 @@ abstract class CryptoService {
   Future<dartsv.HDPrivateKey> mnemonicToHDPrivateKey(
     String mnemonic, {
     String passphrase = '',
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   });
 
   /// Derive the private key at [addressIndex] on [chain] of an HD private
@@ -70,21 +70,21 @@ abstract class CryptoService {
   /// Generate a random private key
   /// Returns a new random private key (not from mnemonic)
   dartsv.SVPrivateKey generateRandomPrivateKey({
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   });
 
   /// Convert private key to WIF (Wallet Import Format)
   /// Returns the WIF representation of the private key
   String privateKeyToWIF(
     dartsv.SVPrivateKey privateKey, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   });
 
   /// Import private key from WIF
   /// Returns the private key from WIF string
   dartsv.SVPrivateKey privateKeyFromWIF(
     String wif, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   });
 
   /// Derive extended public key from HD private key
@@ -96,7 +96,7 @@ abstract class CryptoService {
     dartsv.HDPublicKey hdPublicKey,
     int addressIndex, {
     AddressChain chain = AddressChain.receive,
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   });
 }
 

@@ -101,7 +101,7 @@ export 'src/spv/network_params.dart' show NetworkParams;
 // A window of recent headers an app ships, so a fresh install starts its
 // header chain at a checkpoint (epic spiffyvault-emk).
 export 'src/spv/header_checkpoint.dart' show HeaderCheckpoint;
-// Transaction status pushed through the broadcast-bridge into the user's
+// Transaction status pushed through a callback bridge into the user's
 // Ricochet mailbox instead of polled.
 export 'src/services/broadcast_callback.dart'
     show BroadcastCallbackConfig, CallbackTokenSigner, mintCallbackToken, parseBroadcastStatusEnvelope, decodePeerId;

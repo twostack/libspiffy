@@ -147,6 +147,7 @@ void main() {
       dataDirectory: testDir.path,
       blockchainDataSource: _MinimalDataSource(),
       enableP2P: false,
+      networkType: 'test',
     );
 
     storage = libspiffy.walletStorage as IsarWalletStorage;
@@ -170,6 +171,7 @@ void main() {
         walletId: walletId,
         name: 'Import Test Wallet',
         xpriv: kTestXpriv,
+        walletMetadata: const {'network': 'test'},
       ));
 
       await _waitForEvent<coord.WalletCreatedEvent>(

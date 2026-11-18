@@ -210,7 +210,11 @@ class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
   final String? mnemonic;
   final String? wif;
   final int gapLimit;
-  final String networkType;
+
+  /// The wallet's network (`'main'`, `'test'` or `'regtest'`, in any
+  /// accepted spelling). Null: the network the system was initialized with
+  /// (`LibSpiffyActorSystem.initialize(networkType:)`).
+  final String? networkType;
   final bool resume;
 
   /// With [resume]: scan only these addresses of the wallet, for coins paid
@@ -233,7 +237,7 @@ class ImportWalletCommand extends CoordinatorRequest<ImportCompleteEvent> {
     this.mnemonic,
     this.wif,
     this.gapLimit = 20,
-    this.networkType = 'test',
+    this.networkType,
     this.resume = false,
     List<String>? addresses,
     List<String> lockKeyWifs = const [],

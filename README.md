@@ -232,7 +232,7 @@ import 'package:libspiffy/coordinator.dart';
 final libspiffy = LibSpiffyActorSystem();
 await libspiffy.initialize(
   dataDirectory: './wallet-data',
-  networkType: 'main', // 'test' (the default) for testnet
+  networkType: 'main', // the default; 'test' for testnet
   arcConfig: ArcServiceConfig.taalMainnet(),
   enableP2P: true,
 );
@@ -1493,7 +1493,7 @@ ArcServiceConfig.gorillaPoolTestnet(minimumFeeRate: const FeeRate(satoshis: 1, b
 
 await libspiffy.initialize(
   dataDirectory: './wallet-data',
-  networkType: 'main', // 'main' or 'test' (default)
+  networkType: 'main', // 'main' (default) or 'test'
   arcConfig: arcConfig,
   // CDN-based fast header sync (https), before headers come from peers
   cdnBaseUrl: 'https://cdn.example.com/headers',

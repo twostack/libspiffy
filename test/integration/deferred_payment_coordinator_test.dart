@@ -57,6 +57,7 @@ void main() {
       deadlineSweepInterval: const Duration(seconds: 1),
       // A submission ARC answers in flight is followed (ggsg) quickly here.
       arcInFlightFollowDelays: const [Duration(milliseconds: 20), Duration(milliseconds: 20)],
+      networkType: 'test',
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
     events = libspiffy.coordinatorEvents!;

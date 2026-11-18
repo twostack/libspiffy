@@ -2,7 +2,7 @@
 /// [--window] headers of a network in the HeaderCheckpoint (.svhc) format.
 ///
 /// Reads a header CDN package — the directory `fetch_woc_headers_to_cdn.dart`
-/// writes and `headers.overnode.net` serves: `manifest.json` and
+/// writes and a header CDN serves: `manifest.json` and
 /// `headers_SSSSSSS_EEEEEEE.bin` chunks from height 1. Before anything is
 /// written, the WHOLE chain is checked from the in-code genesis block: each
 /// chunk's SHA-256 matches the manifest, every header links to the one

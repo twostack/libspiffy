@@ -110,6 +110,7 @@ void main() {
       dataDirectory: dir.path,
       blockchainDataSource: source,
       enableP2P: false,
+      networkType: 'test',
     );
     storage = spiffy.walletStorage as IsarWalletStorage;
     await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
@@ -120,7 +121,7 @@ void main() {
         .where((e) => e is coord.WalletCreatedEvent && e.walletId == walletId)
         .first
         .timeout(const Duration(seconds: 15));
-    spiffy.coordinator.tell(coord.CreateWalletCommand(walletId: walletId, name: 'seller', xpriv: kTestXpriv));
+    spiffy.coordinator.tell(coord.CreateWalletCommand(walletId: walletId, name: 'seller', xpriv: kTestXpriv, walletMetadata: const {'network': 'test'}));
     await created;
 
     // The wallet holds output 1 of the first fixture transaction, proven.

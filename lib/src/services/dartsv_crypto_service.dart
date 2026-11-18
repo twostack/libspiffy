@@ -52,7 +52,7 @@ class DartSVCryptoService implements CryptoService {
   static final ECDomainParameters _domainParams = ECDomainParameters('secp256k1');
 
   DartSVCryptoService({
-    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
+    dartsv.NetworkType networkType = dartsv.NetworkType.MAIN,
   }) : _networkType = networkType;
 
   @override
@@ -78,7 +78,7 @@ class DartSVCryptoService implements CryptoService {
   Future<dartsv.HDPrivateKey> mnemonicToHDPrivateKey(
     String mnemonic, {
     String passphrase = '',
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   }) async {
 
     final privKey = Bip32.masterFromSeed(
@@ -114,7 +114,7 @@ class DartSVCryptoService implements CryptoService {
 
   String generateAddress(
     dartsv.SVPrivateKey privateKey, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   }) {
     final address = dartsv.Address.fromPublicKey(privateKey.publicKey, network);
 
@@ -180,7 +180,7 @@ class DartSVCryptoService implements CryptoService {
 
   @override
   dartsv.SVPrivateKey generateRandomPrivateKey({
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   }) {
     return dartsv.SVPrivateKey.new(networkType: network);
   }
@@ -188,7 +188,7 @@ class DartSVCryptoService implements CryptoService {
   @override
   String privateKeyToWIF(
     dartsv.SVPrivateKey privateKey, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST, //redundant. SVPrivateKey tracks network type internally
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN, //redundant. SVPrivateKey tracks network type internally
   }) {
     return privateKey.toWIF();
   }
@@ -196,7 +196,7 @@ class DartSVCryptoService implements CryptoService {
   @override
   dartsv.SVPrivateKey privateKeyFromWIF(
     String wif, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST, //redundant. SVPrivateKey will detect network from WIF
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN, //redundant. SVPrivateKey will detect network from WIF
   }) {
     return dartsv.SVPrivateKey.fromWIF(wif);
   }
@@ -211,7 +211,7 @@ class DartSVCryptoService implements CryptoService {
     dartsv.HDPublicKey hdPublicKey,
     int addressIndex, {
     AddressChain chain = AddressChain.receive,
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
+    dartsv.NetworkType network = dartsv.NetworkType.MAIN,
   }) {
     final childKey = Bip32.derivePublicPath(hdPublicKey, "m/${chain.index}/$addressIndex");
     return Address.fromPublicKey(childKey.publicKey, network).toBase58();

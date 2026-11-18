@@ -123,7 +123,7 @@ void main() {
       () async {
     const walletId = 'sign-input-mnemonic';
     final setup = await createWallet(
-        walletId, CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: _mnemonic));
+        walletId, CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     await setup.commandHandler(GenerateAddressCommand(walletId: walletId, label: 'r1'));
     final receive1 = setup.currentState.addresses.keys.last;
     await setup.commandHandler(GenerateAddressCommand(
@@ -160,7 +160,7 @@ void main() {
     final setup = await createWallet(
         walletId,
         CreateWalletCommand(
-            walletId: walletId, walletName: 'w', mnemonic: _mnemonic, passphrase: _passphrase));
+            walletId: walletId, walletName: 'w', mnemonic: _mnemonic, passphrase: _passphrase, walletMetadata: const {'network': 'test'}));
     final root = setup.currentState.rootAddress!;
 
     final reply = await ask(signCommand(walletId, root, inputIndex: 0, sats: 777));
@@ -193,7 +193,7 @@ void main() {
         await crypto.mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST);
     final xpub = crypto.deriveHDPublicKey(hdPriv).xpubkey;
     final setup = await createWallet(
-        walletId, CreateWalletCommand(walletId: walletId, walletName: 'w', xpub: xpub));
+        walletId, CreateWalletCommand(walletId: walletId, walletName: 'w', xpub: xpub, walletMetadata: const {'network': 'test'}));
 
     final reply = await ask(signCommand(walletId, setup.currentState.rootAddress!));
     expect(reply.success, isFalse);
@@ -210,7 +210,7 @@ void main() {
   test('an input index outside the transaction is refused', () async {
     const walletId = 'sign-input-range';
     final setup = await createWallet(
-        walletId, CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: _mnemonic));
+        walletId, CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     final reply =
         await ask(signCommand(walletId, setup.currentState.rootAddress!, inputIndex: 2));
     expect(reply.success, isFalse);

@@ -38,7 +38,7 @@ void main() {
       actorSystem: actorSystem,
       isar: isar,
       dataDirectory: testDir.path,
-      enableP2P: false
+      enableP2P: false, networkType: 'test'
     );
 
     try {
@@ -59,7 +59,7 @@ void main() {
       final walletId = 'xpub-wallet-${DateTime.now().millisecondsSinceEpoch}';
       
       libspiffy.walletManager.tell(
-        CreateWalletMessage(walletId, 'Watch Only', xpub: xpub),
+        CreateWalletMessage(walletId, 'Watch Only', xpub: xpub, walletMetadata: const {'network': 'test'}),
         sender: receiver,
       );
 
@@ -153,7 +153,7 @@ void main() {
         actorSystem: actorSystem,
         isar: isar,
         dataDirectory: testDir.path,
-        enableP2P: false
+        enableP2P: false, networkType: 'test'
       );
 
       try {
@@ -170,7 +170,7 @@ void main() {
         // Create XPub Wallet
         final walletId = 'xpub-multi-addr-${DateTime.now().millisecondsSinceEpoch}';
         libspiffy.walletManager.tell(
-          CreateWalletMessage(walletId, 'Multi Address Wallet', xpub: xpub),
+          CreateWalletMessage(walletId, 'Multi Address Wallet', xpub: xpub, walletMetadata: const {'network': 'test'}),
           sender: receiver,
         );
 
@@ -255,7 +255,7 @@ void main() {
         actorSystem: actorSystem,
         isar: isar,
         dataDirectory: testDir.path,
-        enableP2P: false
+        enableP2P: false, networkType: 'test'
       );
 
       try {
@@ -272,7 +272,7 @@ void main() {
         // Create XPub Wallet
         final walletId = 'xpub-utxo-${DateTime.now().millisecondsSinceEpoch}';
         libspiffy.walletManager.tell(
-          CreateWalletMessage(walletId, 'UTXO Test Wallet', xpub: xpub),
+          CreateWalletMessage(walletId, 'UTXO Test Wallet', xpub: xpub, walletMetadata: const {'network': 'test'}),
           sender: receiver,
         );
 
@@ -345,7 +345,7 @@ void main() {
         actorSystem: actorSystem,
         isar: isar,
         dataDirectory: testDir.path,
-        enableP2P: false
+        enableP2P: false, networkType: 'test'
       );
 
       try {
@@ -375,7 +375,7 @@ void main() {
           const Duration(seconds: 12),
         );
         libspiffy.walletManager.tell(
-          CreateWalletMessage(walletId, 'Signing Test Wallet', xpub: xpub),
+          CreateWalletMessage(walletId, 'Signing Test Wallet', xpub: xpub, walletMetadata: const {'network': 'test'}),
           sender: receiver,
         );
 

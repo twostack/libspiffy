@@ -67,7 +67,7 @@ class SPVActor extends Actor {
     required ReadModelStorage storage,
     ActorRef? arcActor,
     ActorRef? headerSyncActor,
-    String networkType = 'test',
+    String networkType = 'main',
     Duration rejectedProofFullSweepInterval = const Duration(hours: 1),
     Duration awaitingProofSweepInterval = const Duration(minutes: 30),
     DateTime Function()? clock,

@@ -81,7 +81,7 @@ void main() {
     final setup = aggregate();
     await setup.preStart();
     await setup.commandHandler(
-        CreateWalletCommand(walletId: _walletId, walletName: 'client', mnemonic: _mnemonic));
+        CreateWalletCommand(walletId: _walletId, walletName: 'client', mnemonic: _mnemonic, walletMetadata: const {'network': 'test'}));
     await setup.commandHandler(GenerateAddressCommand(walletId: _walletId, label: 'r1'));
     await setup.commandHandler(GenerateAddressCommand(
         walletId: _walletId, label: 'c0', purpose: BitcoinWalletAggregate.changePurpose));

@@ -281,6 +281,7 @@ void main() {
       enableP2P: false,
       arcService: NetworkArc(),
       blockchainDataSource: mockDataSource,
+      networkType: 'test',
     );
 
     // Setup test block headers
@@ -300,6 +301,7 @@ void main() {
         walletId,
         'test1',
         xpriv: xPrivKey, // Using xpriv that matches the test UTXO
+        walletMetadata: const {'network': 'test'},
       ),
       sender: walletReceiver,
     );

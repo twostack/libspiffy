@@ -59,6 +59,7 @@ void main() {
       enableP2P: false,
       arcService: arc,
       secureStorage: secureStorage,
+      networkType: 'test',
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
   }

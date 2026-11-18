@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import 'package:dactor/dactor.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:isar_community/isar.dart';
 import 'package:test/test.dart';
 
@@ -49,7 +50,7 @@ void main() {
 
   setUpAll(ensureIsarInitialized);
 
-  Future<WalletCoordinator> start({BlockchainDataSource? chain}) async {
+  Future<WalletCoordinator> start({BlockchainDataSource? chain, String? network}) async {
     dir = await Directory.systemTemp.createTemp('coordinator_ask_');
     isar = await Isar.open(LibSpiffySchemas.allSchemas,
         directory: dir.path, name: 'ask_${DateTime.now().microsecondsSinceEpoch}');
@@ -62,6 +63,7 @@ void main() {
       enableP2P: false,
       secureStorage: secrets,
       blockchainDataSource: chain,
+      networkType: network ?? 'main',
     );
     return libspiffy.coordinator;
   }
@@ -113,6 +115,90 @@ void main() {
     expect(imported.transactionCount, 0);
     expect(await secrets.getMnemonic('m'), _mnemonic, reason: 'the wallet keeps the mnemonic it was imported from');
     expect(await libspiffy.walletStorage.getWallet('m'), isNotNull);
+  });
+
+  test('a mnemonic wallet is imported on the network the import names, not the default', () async {
+    final coordinator = await start(chain: _UnusedChain());
+    final request = ImportWalletCommand(
+        walletId: 'm', walletName: 'm', mnemonic: _mnemonic, gapLimit: 2, networkType: 'test');
+
+    await coordinator.ask(request, timeout: _wait);
+
+    final wallet = await libspiffy.walletStorage.getWallet('m');
+    expect(wallet?['network'], 'testnet',
+        reason: 'the wallet was created without the import\'s network, so it took the default');
+    expect(wallet?['rootAddress'], anyOf(startsWith('m'), startsWith('n')), reason: 'a testnet address');
+  });
+
+  test('a mnemonic wallet imported without a network is a mainnet wallet, the default', () async {
+    final coordinator = await start(chain: _UnusedChain());
+
+    await coordinator.ask(
+        ImportWalletCommand(walletId: 'm', walletName: 'm', mnemonic: _mnemonic, gapLimit: 2),
+        timeout: _wait);
+
+    final wallet = await libspiffy.walletStorage.getWallet('m');
+    expect(wallet?['network'], 'mainnet');
+    expect(wallet?['rootAddress'], startsWith('1'));
+  });
+
+  group('a wallet follows initialize() unless its command names a network', () {
+    test('a wallet created without a network on a testnet system is a testnet wallet', () async {
+      final coordinator = await start(network: 'test');
+
+      final created = await coordinator.ask(
+          CreateWalletCommand(walletId: 'w', name: 'w', mnemonic: _mnemonic), timeout: _wait);
+
+      expect(created.rootAddress, anyOf(startsWith('m'), startsWith('n')));
+      expect((await libspiffy.walletStorage.getWallet('w'))?['network'], 'testnet');
+    });
+
+    test('a network the create names wins over the system\'s', () async {
+      final coordinator = await start(network: 'test');
+
+      final created = await coordinator.ask(
+          CreateWalletCommand(
+              walletId: 'w', name: 'w', mnemonic: _mnemonic, walletMetadata: {'network': 'main', 'tag': 'x'}),
+          timeout: _wait);
+
+      expect(created.rootAddress, startsWith('1'));
+      final row = await libspiffy.walletStorage.getWallet('w');
+      expect(row?['network'], 'mainnet');
+    });
+
+    test('a mnemonic wallet imported without a network on a testnet system is a testnet wallet', () async {
+      final coordinator = await start(chain: _UnusedChain(), network: 'test');
+
+      await coordinator.ask(
+          ImportWalletCommand(walletId: 'm', walletName: 'm', mnemonic: _mnemonic, gapLimit: 2),
+          timeout: _wait);
+
+      final wallet = await libspiffy.walletStorage.getWallet('m');
+      expect(wallet?['network'], 'testnet');
+      expect(wallet?['rootAddress'], anyOf(startsWith('m'), startsWith('n')));
+    });
+
+    test('a testnet WIF imported without a network on a testnet system is accepted', () async {
+      final coordinator = await start(chain: _UnusedChain(), network: 'test');
+      final wif = dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST).toWIF();
+
+      final imported = await coordinator.ask(
+          ImportWalletCommand(walletId: 'k', walletName: 'k', wif: wif), timeout: _wait);
+
+      expect(imported.success, isTrue, reason: imported.error);
+      expect((await libspiffy.walletStorage.getWallet('k'))?['network'], 'testnet');
+    });
+
+    test('a network the import names wins over the system\'s', () async {
+      final coordinator = await start(chain: _UnusedChain(), network: 'test');
+
+      await coordinator.ask(
+          ImportWalletCommand(
+              walletId: 'm', walletName: 'm', mnemonic: _mnemonic, gapLimit: 2, networkType: 'main'),
+          timeout: _wait);
+
+      expect((await libspiffy.walletStorage.getWallet('m'))?['network'], 'mainnet');
+    });
   });
 
   test('without a blockchain data source an import is refused, not answered with a bare creation', () async {

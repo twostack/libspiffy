@@ -25,9 +25,9 @@ void main() {
       rootAddress: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
       isCreated: true,
       isDeleted: true,
-      // Not the empty state's network, which is testnet: this fixture's
+      // Not the empty state's network, which is mainnet: this fixture's
       // whole point is that no field holds its default.
-      networkType: 'mainnet',
+      networkType: 'testnet',
       walletType: WalletType.xpriv,
       timestamp: created,
       utxos: {

@@ -2,6 +2,7 @@
 
 Breaking: every default network is now mainnet, a wallet created or imported without a network follows the network the system was initialized with, and `BroadcastCallbackConfig.bridgeTestnet()` is removed. Up to 5.17.x, a network you did not name was testnet; now it is mainnet, where coins are real. A network you pass behaves exactly as before.
 
+- **Requires dartsv 3.1.4.** Earlier dartsv refused valid mainnet addresses shorter than 34 characters (about 3 in 100), which mainnet makes common: paying, scanning or deriving such an address threw `AddressFormatException`.
 - **What changed.** Each of these used testnet when no network was given and now uses mainnet:
   - `LibSpiffyActorSystem.initialize(networkType:)` and `initializeLibSpiffy(networkType:)`: `'main'` instead of `'test'`. That selects the mainnet genesis header, DNS seeds and address encoding, and, with no `arcConfig`, the mainnet Arcade (`ArcServiceConfig.bsvaArcadeMainnet()`).
   - The system's `importWalletFromXpriv`, `importWalletFromWif` and `resumeWalletImport`: `'main'`.

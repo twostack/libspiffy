@@ -49,7 +49,7 @@ dependencies:
   spiffynode: ^1.1.0
 
   # Bitcoin SV operations
-  dartsv: ^3.0.0
+  dartsv: ^3.1.4
 
   pointycastle: ^3.0.0
 
